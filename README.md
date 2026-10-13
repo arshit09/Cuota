@@ -19,19 +19,21 @@ The exe is self-contained, so you can copy `target\release\cuota.exe` anywhere. 
 
 ## Using it
 
-**Right-click** Cuota to open its settings. Under **Show as**, pick one:
+**Right-click** Cuota to open its settings. Under **Show as**, tick one or more:
 
 - **Popup** floats above all windows. Drag it to move it.
 - **Desktop** sits behind your windows, like a desktop widget. Drag it to move it.
 - **Taskbar** shows icons beside the clock. Click an icon for the full panel, or right-click it for settings. Windows puts new icons in the **^** overflow at first, so drag them onto the taskbar once.
 
-The **Panel** and **Taskbar** columns in the settings are set separately. In each one you can choose:
+Popup and Desktop are the same panel, so ticking one unticks the other. Taskbar works with either: clicking an icon then hides or shows the panel. At least one option stays ticked.
 
+Under **Display**, switch between **Panel** and **Taskbar** to set each one separately. For each you can choose:
+
+- **Bars** or **Pie** style
 - which limits to show
 - the percentage
 - time left (on the taskbar it appears when you hover an icon)
 - Clawd
-- **Bars** or **Pie** style
 
 Hover a meter to see its exact reset time. Meters turn amber at 75% and red at 90%. Turn off *Animate Clawd* to use almost no CPU.
 

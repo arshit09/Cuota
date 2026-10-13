@@ -7,6 +7,7 @@ mod overlay;
 mod settings;
 mod tray;
 mod view;
+mod widgets;
 mod win;
 
 use chrono::TimeDelta;
@@ -45,7 +46,7 @@ fn main() -> eframe::Result {
     let spark = mascot::spark_rgba();
     let side = mascot::SPARK_PIXELS as u32;
     let icon = Arc::new(IconData { rgba: spark.clone(), width: side, height: side });
-    let level = if settings.mode == Mode::Desktop { WindowLevel::AlwaysOnBottom } else { WindowLevel::AlwaysOnTop };
+    let level = if settings.pinned() == Some(Mode::Desktop) { WindowLevel::AlwaysOnBottom } else { WindowLevel::AlwaysOnTop };
 
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
@@ -57,8 +58,8 @@ fn main() -> eframe::Result {
             .with_resizable(false)
             .with_taskbar(false)
             .with_window_level(level)
-            // Taskbar mode starts as tray icons only; the panel opens from them.
-            .with_visible(settings.mode != Mode::Taskbar)
+            // Without Popup or Desktop it starts as tray icons only; the panel opens from them.
+            .with_visible(settings.pinned().is_some())
             .with_icon(icon.clone()),
         ..Default::default()
     };

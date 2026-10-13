@@ -1,20 +1,24 @@
 //! The window: a floating panel (Popup), a panel behind other windows (Desktop), or a flyout
-//! opened from the tray icons (Taskbar). It also hosts the settings window, and keeps itself
-//! sized, placed and layered for the chosen mode.
+//! opened from the tray icons (Taskbar alone). It also hosts the settings window, and keeps
+//! itself sized, placed and layered for the chosen modes.
 
 use crate::claude::{self, Limit, Shared, State};
 use crate::mascot::Mascot;
-use crate::settings::{Mode, Settings, Style, View};
+use crate::settings::{Mode, Settings, Style};
 use crate::tray::{Tray, TrayConfig, TrayEvent};
 use crate::view::{self, AMBER, DIM, TEXT};
+use crate::widgets::{self, Fonts, icon};
 use crate::win;
 use chrono::{TimeDelta, Utc};
 use eframe::egui::{
-    self, Align, Color32, FontData, FontFamily, FontId, IconData, Layout, PointerButton, Pos2,
-    Rect, RichText, Sense, Stroke, StrokeKind, Vec2, ViewportBuilder, ViewportCommand, ViewportId,
-    WindowLevel, pos2, vec2,
+    self, Align, Align2, Color32, FontData, FontFamily, FontId, Galley, IconData, Label, Layout,
+    Painter, PointerButton, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2,
+    ViewportBuilder, ViewportCommand, ViewportId, WindowLevel, pos2,
+    text::{LayoutJob, TextWrapping},
+    vec2,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -25,9 +29,9 @@ const MARGIN: f32 = 12.0;
 const GAP: f32 = 10.0;
 /// Wrap width for an error message when there are no meters to line up with.
 const NOTE_WIDTH: f32 = 220.0;
-const SETTINGS_WIDTH: f32 = 300.0;
+const SETTINGS_WIDTH: f32 = 340.0;
 const SAVE_DELAY: Duration = Duration::from_secs(1);
-/// After a mode change, the reported window position is trusted only once the move landed.
+/// After a Show as change, the reported window position is trusted only once the move landed.
 const SETTLE: Duration = Duration::from_millis(500);
 /// A tray click this soon after the flyout closed is the click that closed it.
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
@@ -35,10 +39,21 @@ const REOPEN_GUARD: Duration = Duration::from_millis(300);
 const BG: Color32 = Color32::from_rgb(28, 28, 30);
 const BORDER: Color32 = Color32::from_rgb(56, 56, 60);
 
-/// A per-view on/off option in the settings grid.
-type Toggle = fn(&mut View) -> &mut bool;
+/// Which view the settings' Display section edits.
+#[derive(Clone, Copy, PartialEq)]
+enum Surface {
+    Panel,
+    Taskbar,
+}
 
-/// The panel in Taskbar mode: shown beside the taskbar when an icon is clicked, and hidden
+impl Surface {
+    /// The one the user most likely means to change: the panel, unless only the icons show.
+    fn of(settings: &Settings) -> Self {
+        if settings.pinned().is_none() { Self::Taskbar } else { Self::Panel }
+    }
+}
+
+/// The panel with only Taskbar on: shown beside the taskbar when an icon is clicked, and hidden
 /// again when it loses focus, like Windows' own flyouts.
 #[derive(Clone, Copy, PartialEq)]
 enum Flyout {
@@ -59,21 +74,25 @@ pub struct Overlay {
     saved: Settings,
     save_at: Option<Instant>,
     mascot: Mascot,
-    strong: FontFamily,
+    fonts: Fonts,
     icon: Arc<IconData>,
     keep_bottom: Arc<AtomicBool>,
-    keeper_started: bool,
-    /// The mode the window was last set up for, and when.
-    applied: Option<(Mode, Instant)>,
+    /// Whether the native window has been fixed up and handed to the Desktop-mode keeper.
+    window_ready: bool,
+    /// The Show as choice the window was last set up for, and when.
+    applied: Option<(BTreeSet<Mode>, Instant)>,
     size: Vec2,
     flyout: Flyout,
-    /// The frame in which the flyout was last shown.
-    flyout_frame: u64,
+    /// The Popup or Desktop panel was hidden with a click on a tray icon.
+    hidden: bool,
+    /// The frame in which the flyout or a hidden panel was last shown.
+    shown_frame: u64,
     settings_open: bool,
     /// Settings asked for from the tray. eframe can only create the settings window once the
-    /// panel is on screen, so this waits for the flyout's first frame.
+    /// panel is on screen, so this waits for the panel's first frame.
     settings_requested: bool,
     settings_height: f32,
+    settings_surface: Surface,
 }
 
 impl Overlay {
@@ -89,7 +108,7 @@ impl Overlay {
         ctx.set_theme(egui::Theme::Dark);
         // Selectable labels would swallow the drag that moves the window.
         ctx.all_styles_mut(|style| style.interaction.selectable_labels = false);
-        let strong = setup_fonts(ctx);
+        let fonts = setup_fonts(ctx);
 
         let state: Shared = Arc::new(Mutex::new(Arc::new(if demo { claude::demo_state() } else { State::default() })));
         let (tray, tray_events) = Tray::spawn(state.clone(), ctx.clone());
@@ -117,46 +136,60 @@ impl Overlay {
             settings,
             save_at: None,
             mascot: Mascot::new(ctx, spark),
-            strong,
+            fonts,
             icon,
             keep_bottom: Arc::new(AtomicBool::new(false)),
-            keeper_started: false,
+            window_ready: false,
             applied: None,
             size: Vec2::ZERO,
             flyout: Flyout::Closed { at: None },
-            flyout_frame: 0,
+            hidden: false,
+            shown_frame: 0,
             settings_open: false,
             settings_requested: false,
             settings_height: 0.0,
+            settings_surface: Surface::Panel,
         }
     }
 
-    /// Sets the window up for a newly chosen mode.
-    fn apply_mode(&mut self, ctx: &egui::Context) {
-        let mode = self.settings.mode;
-        if self.applied.is_some_and(|(applied, _)| applied == mode) {
+    /// Sets the window up for a newly chosen set of modes.
+    fn apply_modes(&mut self, ctx: &egui::Context) {
+        if self.applied.as_ref().is_some_and(|(applied, _)| *applied == self.settings.show) {
             return;
         }
-        let level = if mode == Mode::Desktop { WindowLevel::AlwaysOnBottom } else { WindowLevel::AlwaysOnTop };
+        let pinned = self.settings.pinned();
+        let desktop = pinned == Some(Mode::Desktop);
+        let level = if desktop { WindowLevel::AlwaysOnBottom } else { WindowLevel::AlwaysOnTop };
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
-        self.keep_bottom.store(mode == Mode::Desktop, Ordering::Relaxed);
+        self.keep_bottom.store(desktop, Ordering::Relaxed);
         self.flyout = Flyout::Closed { at: None };
-        ctx.send_viewport_cmd(ViewportCommand::Visible(mode != Mode::Taskbar));
-        if mode != Mode::Taskbar
+        // Also brings back a panel hidden from the tray, in case the tray icons were just turned off.
+        self.hidden = false;
+        ctx.send_viewport_cmd(ViewportCommand::Visible(pinned.is_some()));
+        if pinned.is_some()
             && let Some([x, y]) = self.settings.panel_pos
         {
             ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos2(x, y)));
         }
-        self.applied = Some((mode, Instant::now()));
+        self.applied = Some((self.settings.show.clone(), Instant::now()));
     }
 
     /// Tells the tray thread about changed taskbar settings.
     fn sync_tray(&mut self) {
-        let enabled = self.settings.mode == Mode::Taskbar;
+        let enabled = self.settings.shows_as(Mode::Taskbar);
         let sent = &self.tray_config;
         if sent.enabled != enabled || sent.animate != self.settings.animate || sent.view != self.settings.taskbar {
             self.tray_config = TrayConfig { enabled, animate: self.settings.animate, view: self.settings.taskbar.clone() };
             self.tray.configure(self.tray_config.clone());
+        }
+    }
+
+    /// A tray click when Popup or Desktop keeps the panel on screen: hides it, or shows it again.
+    fn set_hidden(&mut self, ctx: &egui::Context, hidden: bool) {
+        if hidden != self.hidden {
+            self.hidden = hidden;
+            self.shown_frame = ctx.cumulative_frame_nr();
+            ctx.send_viewport_cmd(ViewportCommand::Visible(!hidden));
         }
     }
 
@@ -178,7 +211,7 @@ impl Overlay {
         let taskbar = Rect::from_min_max(pos2(bar.left as f32, bar.top as f32), pos2(bar.right as f32, bar.bottom as f32)) / ppp;
         let click = win::cursor();
         self.flyout = Flyout::Opening(taskbar, pos2(click.x as f32, click.y as f32) / ppp);
-        self.flyout_frame = ctx.cumulative_frame_nr();
+        self.shown_frame = ctx.cumulative_frame_nr();
         self.place_flyout(ctx);
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
@@ -218,12 +251,16 @@ impl Overlay {
     fn panel(&mut self, ui: &mut egui::Ui, state: &State) -> bool {
         let ctx = ui.ctx().clone();
         let full = ui.max_rect();
-        let docked = self.settings.mode == Mode::Taskbar;
+        let docked = self.settings.pinned().is_none();
 
         // Drag to move (the flyout stays put); right-click for settings.
         let background = ui.interact(full, ui.id().with("background"), Sense::click_and_drag());
         if background.secondary_clicked() {
-            self.settings_open = !self.settings_open;
+            if self.settings_open {
+                self.settings_open = false;
+            } else {
+                self.open_settings();
+            }
         }
         if !docked && background.drag_started_by(PointerButton::Primary) {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
@@ -237,7 +274,7 @@ impl Overlay {
         // Lay everything out first so the window can be sized to fit.
         let view = &self.settings.panel;
         let limits: Vec<&Limit> = state.limits.iter().filter(|l| view.shows(&l.label)).collect();
-        let builder = view::Builder { painter: &painter, strong: &self.strong, view, now: Utc::now() };
+        let builder = view::Builder { painter: &painter, strong: &self.fonts.strong, view, now: Utc::now() };
         let meters = builder.build(&limits);
         let note = note(state).map(|(text, color)| {
             painter.layout(text, FontId::proportional(12.0), color, meters.size.x.max(NOTE_WIDTH))
@@ -294,6 +331,11 @@ impl Overlay {
         }
     }
 
+    fn open_settings(&mut self) {
+        self.settings_open = true;
+        self.settings_surface = Surface::of(&self.settings);
+    }
+
     fn settings_window(&mut self, ctx: &egui::Context, state: &State) {
         let builder = ViewportBuilder::default()
             .with_title("Cuota settings")
@@ -306,8 +348,13 @@ impl Overlay {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 self.settings_open = false;
             }
-            let frame = egui::Frame::central_panel(ui.style()).show(ui, |ui| self.settings_ui(ui, state));
-            let height = frame.response.rect.height().ceil();
+            ui.painter().rect_filled(ui.max_rect(), 0, widgets::WINDOW);
+            // Scrolls rather than running off a short screen, leaving room for the title bar and taskbar.
+            let fits = ui.ctx().input(|i| i.viewport().monitor_size).map_or(f32::INFINITY, |size| size.y - 100.0);
+            let scroll = egui::ScrollArea::vertical().max_height(fits).show(ui, |ui| {
+                egui::Frame::new().inner_margin(16).show(ui, |ui| self.settings_ui(ui, state));
+            });
+            let height = scroll.content_size.y.min(fits).ceil();
             if (height - self.settings_height).abs() >= 1.0 {
                 self.settings_height = height;
                 ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(vec2(SETTINGS_WIDTH, height)));
@@ -315,113 +362,175 @@ impl Overlay {
         });
     }
 
+    /// The account on top, then General (where and how Cuota shows) and Display (what the
+    /// panel or the taskbar icons show), and Quit at the bottom.
     fn settings_ui(&mut self, ui: &mut egui::Ui, state: &State) {
-        ui.spacing_mut().item_spacing.y = 6.0;
-        let account = &state.account;
-        let plan = account.plan.as_deref().unwrap_or("Claude");
-        ui.label(RichText::new(plan).family(self.strong.clone()).size(16.0).color(TEXT));
-        for line in [&account.email, &account.organization].into_iter().flatten() {
-            ui.add(egui::Label::new(RichText::new(line).color(DIM)).truncate());
-        }
-        ui.horizontal(|ui| {
-            let updated = state.updated.map_or_else(|| "Not updated yet".into(), |t| t.format("Updated %H:%M").to_string());
-            ui.label(RichText::new(updated).color(DIM));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Refresh").clicked() {
-                    let _ = self.refresh.send(());
-                }
+        ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
+        self.settings_header(ui, state);
+        let Self { settings, settings_surface: surface, fonts, .. } = self;
+
+        ui.add_space(16.0);
+        widgets::heading(ui, fonts, "General", |_| {});
+        ui.add_space(4.0);
+        widgets::card(ui, |ui| {
+            let about = show_as_about(settings);
+            widgets::row_below(ui, fonts, icon::SHOW_AS, "Show as", Some(&about), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    for (mode, name) in [(Mode::Popup, "Popup"), (Mode::Desktop, "Desktop"), (Mode::Taskbar, "Taskbar")] {
+                        let mut shown = settings.shows_as(mode);
+                        // The last one stays on, so there's always something to right-click for settings.
+                        let last = shown && settings.show.len() == 1;
+                        let chip = ui.add_enabled_ui(!last, |ui| widgets::chip(ui, fonts, &mut shown, name)).inner;
+                        if chip.on_disabled_hover_text("At least one stays on").changed() {
+                            settings.set_shown_as(mode, shown);
+                            // Show the options for what was just turned on.
+                            *surface = match (mode, shown) {
+                                (Mode::Taskbar, true) => Surface::Taskbar,
+                                (_, true) => Surface::Panel,
+                                (_, false) => Surface::of(settings),
+                            };
+                        }
+                    }
+                });
+            });
+            widgets::divider(ui, fonts);
+            let opacity = format!("{:.0}%", settings.opacity * 100.0);
+            widgets::row(ui, fonts, icon::OPACITY, "Opacity", Some("Panel background"), 134.0, |ui| {
+                ui.add_sized([34.0, 20.0], Label::new(RichText::new(opacity).size(12.0).color(DIM)));
+                widgets::slider(ui, &mut settings.opacity, 0.3..=1.0, 92.0);
+            });
+            widgets::divider(ui, fonts);
+            let about = Some("Turn off to use almost no CPU");
+            widgets::row(ui, fonts, icon::ANIMATE, "Animate Clawd", about, widgets::TOGGLE_WIDTH, |ui| {
+                widgets::toggle(ui, &mut settings.animate);
             });
         });
 
-        ui.separator();
-        let settings = &mut self.settings;
-        ui.horizontal(|ui| {
-            ui.label("Show as");
-            ui.radio_value(&mut settings.mode, Mode::Popup, "Popup");
-            ui.radio_value(&mut settings.mode, Mode::Desktop, "Desktop");
-            ui.radio_value(&mut settings.mode, Mode::Taskbar, "Taskbar");
+        ui.add_space(16.0);
+        widgets::heading(ui, fonts, "Display", |ui| {
+            widgets::segmented(ui, surface, &[(Surface::Panel, "Panel"), (Surface::Taskbar, "Taskbar")], None);
         });
-        let about = match settings.mode {
-            Mode::Popup => "Floats above all windows. Drag to move.",
-            Mode::Desktop => "Sits behind your windows, like a desktop widget. Drag to move.",
-            Mode::Taskbar => {
-                "Icons beside the clock; click one for this panel. New icons start in the ^ overflow, \
-                 so drag them onto the taskbar once."
-            }
+        let taskbar = *surface == Surface::Taskbar;
+        let note = match (taskbar, settings.shows_as(Mode::Taskbar), settings.pinned()) {
+            (true, false, _) => Some("Used when Show as includes Taskbar."),
+            (false, _, None) => Some("The panel opens when you click a taskbar icon."),
+            _ => None,
         };
-        ui.add(egui::Label::new(RichText::new(about).color(DIM).size(12.0)).wrap());
-
-        ui.separator();
-        let Settings { panel, taskbar, .. } = &mut *settings;
-        let toggles: [(&str, Toggle); 3] = [
-            ("Percentage", |v| &mut v.percent),
-            ("Time left", |v| &mut v.time_left),
-            ("Clawd", |v| &mut v.clawd),
-        ];
-        egui::Grid::new("views").num_columns(3).spacing([32.0, 6.0]).show(ui, |ui| {
-            ui.label("");
-            ui.label(RichText::new("Panel").color(TEXT));
-            ui.label(RichText::new("Taskbar").color(TEXT));
-            ui.end_row();
-            for limit in &state.limits {
-                ui.label(&limit.label);
-                for view in [&mut *panel, &mut *taskbar] {
-                    let mut shown = view.shows(&limit.label);
-                    if ui.checkbox(&mut shown, "").changed() {
-                        view.set_shown(&limit.label, shown);
-                    }
+        if let Some(note) = note {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.add(Label::new(RichText::new(note).size(11.5).color(DIM)).wrap());
+            });
+        }
+        ui.add_space(4.0);
+        let view = if taskbar { &mut settings.taskbar } else { &mut settings.panel };
+        widgets::card(ui, |ui| {
+            let styles = [(Style::Bars, "Bars"), (Style::Pie, "Pie")];
+            let width = widgets::segmented_width(ui, &styles.map(|(_, name)| name));
+            widgets::row(ui, fonts, icon::STYLE, "Style", None, width, |ui| {
+                widgets::segmented(ui, &mut view.style, &styles, None);
+            });
+            widgets::divider(ui, fonts);
+            widgets::row_below(ui, fonts, icon::LIMITS, "Limits", Some("Pick the ones to show"), |ui| {
+                if state.limits.is_empty() {
+                    ui.label(RichText::new("They appear here once usage has loaded.").size(11.5).color(DIM));
                 }
-                ui.end_row();
-            }
-            for (name, field) in toggles {
-                ui.label(name);
-                ui.checkbox(field(panel), "");
-                ui.checkbox(field(taskbar), "");
-                ui.end_row();
-            }
-            ui.label("Style");
-            for view in [&mut *panel, &mut *taskbar] {
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut view.style, Style::Bars, "Bars");
-                    ui.selectable_value(&mut view.style, Style::Pie, "Pie");
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    for limit in &state.limits {
+                        let mut shown = view.shows(&limit.label);
+                        if widgets::chip(ui, fonts, &mut shown, &limit.label).changed() {
+                            view.set_shown(&limit.label, shown);
+                        }
+                    }
+                });
+            });
+            let (time_left, clawd) = if taskbar {
+                ("Shows when you hover an icon", "Shows if Claude is working")
+            } else {
+                ("Until each limit resets", "Dances while Claude works")
+            };
+            for (glyph, title, about, on) in [
+                (icon::PERCENT, "Percentage", None, &mut view.percent),
+                (icon::TIME_LEFT, "Time left", Some(time_left), &mut view.time_left),
+                (icon::CLAWD, "Clawd", Some(clawd), &mut view.clawd),
+            ] {
+                widgets::divider(ui, fonts);
+                widgets::row(ui, fonts, glyph, title, about, widgets::TOGGLE_WIDTH, |ui| {
+                    widgets::toggle(ui, on);
                 });
             }
-            ui.end_row();
-        });
-        ui.label(RichText::new("On the taskbar, time left shows when you hover an icon.").color(DIM).size(12.0));
-
-        ui.separator();
-        ui.checkbox(&mut settings.animate, "Animate Clawd");
-        ui.horizontal(|ui| {
-            ui.label("Panel opacity");
-            ui.add(egui::Slider::new(&mut settings.opacity, 0.3..=1.0).show_value(false));
         });
 
-        ui.separator();
-        ui.horizontal(|ui| {
-            if ui.button("Quit Cuota").clicked() {
-                ui.ctx().send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).color(DIM));
-            });
-        });
+        ui.add_space(16.0);
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+        let mut slot = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::left_to_right(Align::Center)));
+        if widgets::button(&mut slot, fonts, icon::QUIT, "Quit Cuota").clicked() {
+            ui.ctx().send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+        }
+        let version = concat!("Cuota v", env!("CARGO_PKG_VERSION"));
+        ui.painter().text(rect.right_center(), Align2::RIGHT_CENTER, version, FontId::proportional(11.5), DIM);
+    }
+
+    /// The Claude spark and the account, with when usage was last fetched and a button to
+    /// fetch it now.
+    fn settings_header(&self, ui: &mut egui::Ui, state: &State) {
+        const LOGO: f32 = 36.0;
+        const BUTTON: f32 = 28.0;
+        let account = &state.account;
+        let painter = ui.painter().clone();
+        let width = ui.available_width();
+
+        let updated = state.updated.map_or_else(|| "Not updated yet".into(), |t| t.format("Updated %H:%M").to_string());
+        let updated = painter.layout_no_wrap(updated, FontId::proportional(11.5), DIM);
+        let text_left = LOGO + 12.0;
+        let text_width = width - text_left - updated.size().x - BUTTON - 18.0;
+        let plan = account.plan.as_deref().unwrap_or("Claude");
+        let mut lines = vec![single_line(&painter, plan, FontId::new(16.0, self.fonts.strong.clone()), TEXT, text_width)];
+        for detail in [&account.email, &account.organization].into_iter().flatten() {
+            lines.push(single_line(&painter, detail, FontId::proportional(12.0), DIM, text_width));
+        }
+        let text_height: f32 = lines.iter().map(|line| line.size().y).sum();
+        let (rect, _) = ui.allocate_exact_size(vec2(width, text_height.max(LOGO)), Sense::hover());
+
+        self.mascot.paint_logo(&painter, pos2(rect.left() + LOGO / 2.0, rect.center().y), LOGO / 2.0 - 3.0);
+        let mut y = rect.center().y - text_height / 2.0;
+        for line in lines {
+            let height = line.size().y;
+            painter.galley(pos2(rect.left() + text_left, y), line, TEXT);
+            y += height;
+        }
+        let button = Rect::from_center_size(pos2(rect.right() - BUTTON / 2.0, rect.center().y), vec2(BUTTON, BUTTON));
+        let at = pos2(button.left() - 6.0 - updated.size().x, rect.center().y - updated.size().y / 2.0);
+        painter.galley(at, updated, DIM);
+        let mut slot = ui.new_child(UiBuilder::new().max_rect(button));
+        if widgets::icon_button(&mut slot, &self.fonts, icon::REFRESH, "Refresh").on_hover_text("Fetch usage now").clicked() {
+            let _ = self.refresh.send(());
+        }
     }
 }
 
 impl eframe::App for Overlay {
-    /// Runs even while the window is hidden (Taskbar mode), so tray clicks get through.
+    /// Runs even while the window is hidden, so tray clicks get through.
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if !self.keeper_started
+        if !self.window_ready
             && let Some(window) = native_window(frame)
         {
+            win::fill_window(window);
             win::keep_at_bottom(window, self.keep_bottom.clone());
-            self.keeper_started = true;
+            self.window_ready = true;
         }
-        self.apply_mode(ctx);
+        self.apply_modes(ctx);
         self.sync_tray();
         while let Ok(TrayEvent::Open { settings }) = self.tray_events.try_recv() {
-            if settings {
+            if self.settings.pinned().is_some() {
+                // Right-click: settings, showing the panel if it was hidden.
+                self.set_hidden(ctx, !settings && !self.hidden);
+                self.settings_requested |= settings;
+                ctx.request_repaint();
+            } else if settings {
                 // Right-click: settings, with the panel open beside them.
                 self.settings_requested = true;
                 if matches!(self.flyout, Flyout::Closed { .. }) {
@@ -437,8 +546,8 @@ impl eframe::App for Overlay {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let state = self.state.lock().unwrap().clone();
-        let docked = self.settings.mode == Mode::Taskbar;
-        let visible = !docked || !matches!(self.flyout, Flyout::Closed { .. });
+        let docked = self.settings.pinned().is_none();
+        let visible = if docked { !matches!(self.flyout, Flyout::Closed { .. }) } else { !self.hidden };
 
         let mut next_frame = None;
         if visible {
@@ -448,13 +557,13 @@ impl eframe::App for Overlay {
             } else {
                 Duration::from_millis(60_000 - Utc::now().timestamp_millis().rem_euclid(60_000) as u64)
             });
+            if self.settings_requested && ctx.cumulative_frame_nr() > self.shown_frame {
+                self.settings_requested = false;
+                self.open_settings();
+            }
             if docked {
-                if self.settings_requested && ctx.cumulative_frame_nr() > self.flyout_frame {
-                    self.settings_requested = false;
-                    self.settings_open = true;
-                }
                 self.track_flyout_focus(&ctx);
-            } else if self.applied.is_some_and(|(_, at)| at.elapsed() > SETTLE)
+            } else if self.applied.as_ref().is_some_and(|(_, at)| at.elapsed() > SETTLE)
                 && let Some(rect) = ctx.input(|i| i.viewport().outer_rect)
             {
                 self.settings.panel_pos = Some([rect.min.x, rect.min.y]);
@@ -477,6 +586,30 @@ impl eframe::App for Overlay {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]
     }
+}
+
+/// What the chosen Show as options do.
+fn show_as_about(settings: &Settings) -> String {
+    let mut about = match settings.pinned() {
+        Some(Mode::Popup) => "Floats above all windows. Drag to move.".to_owned(),
+        Some(Mode::Desktop) => "Sits behind your windows, like a desktop widget. Drag to move.".to_owned(),
+        _ => String::new(),
+    };
+    if settings.shows_as(Mode::Taskbar) {
+        let click = if settings.pinned().is_some() { "to hide or show this panel" } else { "for this panel" };
+        about += &format!(
+            " Icons beside the clock; click one {click}. New icons start in the ^ overflow, so drag \
+             them onto the taskbar once."
+        );
+    }
+    about.trim_start().to_owned()
+}
+
+/// `text` on one line, cut short with an ellipsis past `width`.
+fn single_line(painter: &Painter, text: &str, font: FontId, color: Color32, width: f32) -> Arc<Galley> {
+    let mut job = LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = TextWrapping::truncate_at_width(width);
+    painter.layout_job(job)
 }
 
 /// A status line under the meters: the last error, or "Loading..." before any data.
@@ -510,9 +643,8 @@ fn spawn_demo_toggle(state: Shared, on_update: impl Fn() + Send + 'static) {
     });
 }
 
-/// Windows' own UI font (egui's bundled fonts are left out of the build).
-/// Returns the family for emphasized text.
-fn setup_fonts(ctx: &egui::Context) -> FontFamily {
+/// Windows' own UI and icon fonts (egui's bundled fonts are left out of the build).
+fn setup_fonts(ctx: &egui::Context) -> Fonts {
     let dir = PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
     let load = |names: &[&str]| names.iter().find_map(|name| std::fs::read(dir.join(name)).ok());
     let mut fonts = egui::FontDefinitions::empty();
@@ -527,6 +659,13 @@ fn setup_fonts(ctx: &egui::Context) -> FontFamily {
     fonts.families.insert(FontFamily::Proportional, vec!["regular".into()]);
     fonts.families.insert(FontFamily::Monospace, vec!["regular".into()]);
     fonts.families.insert(strong.clone(), strong_fonts);
+    // Segoe Fluent Icons on Windows 11, Segoe MDL2 Assets on Windows 10.
+    let icons = load(&["SegoeIcons.ttf", "segmdl2.ttf"]).map(|bytes| {
+        fonts.font_data.insert("icons".into(), Arc::new(FontData::from_owned(bytes)));
+        let family = FontFamily::Name("icons".into());
+        fonts.families.insert(family.clone(), vec!["icons".into()]);
+        family
+    });
     ctx.set_fonts(fonts);
-    strong
+    Fonts { strong, icons }
 }

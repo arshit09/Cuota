@@ -4,14 +4,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Where Cuota shows. Several can be on at once, but Popup and Desktop place the same panel,
+/// so at most one of those two is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Mode {
     /// A floating panel above all windows.
-    #[default]
     Popup,
     /// A panel behind all windows, like a desktop widget.
     Desktop,
-    /// Icons in the taskbar's notification area; clicking one opens the panel.
+    /// Icons in the taskbar's notification area. Clicking one opens the panel, or hides and
+    /// shows it when Popup or Desktop keeps it on screen.
     Taskbar,
 }
 
@@ -57,7 +59,7 @@ impl View {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    pub mode: Mode,
+    pub show: BTreeSet<Mode>,
     pub animate: bool,
     pub opacity: f32,
     pub panel: View,
@@ -69,7 +71,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            mode: Mode::Popup,
+            show: BTreeSet::from([Mode::Popup]),
             animate: true,
             opacity: 0.96,
             panel: View::default(),
@@ -85,10 +87,39 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        Self::path()
+        let mut settings: Self = Self::path()
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Showing nowhere would leave nothing to right-click for settings.
+        if settings.show.is_empty() {
+            settings.show = Self::default().show;
+        }
+        settings
+    }
+
+    pub fn shows_as(&self, mode: Mode) -> bool {
+        self.show.contains(&mode)
+    }
+
+    /// Turning on Popup turns off Desktop, and the other way round.
+    pub fn set_shown_as(&mut self, mode: Mode, shown: bool) {
+        if !shown {
+            self.show.remove(&mode);
+            return;
+        }
+        match mode {
+            Mode::Popup => self.show.remove(&Mode::Desktop),
+            Mode::Desktop => self.show.remove(&Mode::Popup),
+            Mode::Taskbar => false,
+        };
+        self.show.insert(mode);
+    }
+
+    /// Popup or Desktop, whichever keeps the panel on screen. `None` when the panel only opens
+    /// from the tray icons.
+    pub fn pinned(&self) -> Option<Mode> {
+        [Mode::Popup, Mode::Desktop].into_iter().find(|&mode| self.shows_as(mode))
     }
 
     pub fn save(&self) {
@@ -99,5 +130,30 @@ impl Settings {
         if let Ok(text) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(path, text);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taskbar_goes_with_either_panel_but_popup_and_desktop_exclude_each_other() {
+        let mut settings = Settings::default();
+        settings.set_shown_as(Mode::Taskbar, true);
+        assert_eq!(settings.pinned(), Some(Mode::Popup));
+        settings.set_shown_as(Mode::Desktop, true);
+        assert_eq!(settings.show, BTreeSet::from([Mode::Desktop, Mode::Taskbar]));
+        assert_eq!(settings.pinned(), Some(Mode::Desktop));
+        settings.set_shown_as(Mode::Desktop, false);
+        assert_eq!(settings.pinned(), None);
+    }
+
+    #[test]
+    fn saves_the_modes_as_a_list() {
+        let settings = Settings { show: BTreeSet::from([Mode::Popup, Mode::Taskbar]), ..Settings::default() };
+        let text = serde_json::to_string(&settings).unwrap();
+        assert!(text.contains(r#""show":["Popup","Taskbar"]"#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), settings);
     }
 }
