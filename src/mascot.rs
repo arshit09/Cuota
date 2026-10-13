@@ -24,7 +24,7 @@ const ORBIT_CENTER: Vec2 = vec2(CANVAS.x / 2.0, 20.0);
 const ORBIT_RADIUS: Vec2 = vec2(29.0, 10.0);
 const SPARK_RADIUS: f32 = 9.0;
 
-const STAND: [&str; 8] = [
+pub const STAND: [&str; 8] = [
     ".#########.",
     ".#########.",
     "##o#####o##",

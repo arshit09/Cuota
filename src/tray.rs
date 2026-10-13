@@ -1,9 +1,9 @@
 //! Native icons in the notification area. In Taskbar mode, Clawd dances while Claude works and
 //! sleeps when idle, and each limit shows its percentage as pixel digits over a bar, or as a
-//! ring; otherwise a single Cuota icon stays there. Hovering shows details, clicking opens the
-//! panel, and right-clicking opens a menu with Settings and Quit. Runs on its own thread with
-//! a hidden window, so the icons stay live while the panel is hidden, and only redraws an icon
-//! when what it shows changed.
+//! ring; otherwise Clawd stands still there as Cuota's own icon. Hovering shows details,
+//! clicking opens the panel, and right-clicking opens a menu with Settings and Quit. Runs on
+//! its own thread with a hidden window, so the icons stay live while the panel is hidden, and
+//! only redraws an icon when what it shows changed.
 
 use crate::claude::{self, Limit, Shared, State};
 use crate::mascot::{self, CLAUDE_ORANGE, EYE, SNORE};
@@ -189,7 +189,7 @@ impl Icons {
             }
         } else {
             // Without the taskbar icons, Cuota keeps one of its own for the menu.
-            wanted.push((APP_ID, mascot::spark_rgba(size), app_tip(&state)));
+            wanted.push((APP_ID, draw_app(size), app_tip(&state)));
         }
 
         let gone: Vec<u32> = self.shown.iter().map(|s| s.0).filter(|id| !wanted.iter().any(|w| w.0 == *id)).collect();
@@ -440,6 +440,22 @@ impl Canvas {
         }
     }
 
+    /// Clawd's `sprite` with its top-left cell at `x`, `y`.
+    fn clawd(&mut self, sprite: &[&str; 8], x: i32, y: i32) {
+        let mut y = y;
+        for (line, height) in sprite.iter().zip(CLAWD_ROWS) {
+            for (col, pixel) in line.bytes().enumerate() {
+                let color = match pixel {
+                    b'#' => CLAUDE_ORANGE,
+                    b'o' | b'-' => EYE,
+                    _ => continue,
+                };
+                self.rect(x + col as i32, y, 1, height, color);
+            }
+            y += height;
+        }
+    }
+
     /// A ring filling clockwise from the top, anti-aliased by supersampling.
     fn ring(&mut self, percent: f32, fill: Color32, track: Color32) {
         const SAMPLES: usize = 4;
@@ -490,18 +506,7 @@ const SNORE_Z: [&str; 4] = ["####", "..#.", ".#..", "####"];
 fn draw_clawd(size: usize, working: bool, frame: u32) -> Vec<u8> {
     let (sprite, hop) = mascot::sprite(working, frame);
     let mut canvas = Canvas::new(size);
-    let mut y = 4 - i32::from(hop);
-    for (line, height) in sprite.iter().zip(CLAWD_ROWS) {
-        for (col, pixel) in line.bytes().enumerate() {
-            let color = match pixel {
-                b'#' => CLAUDE_ORANGE,
-                b'o' | b'-' => EYE,
-                _ => continue,
-            };
-            canvas.rect(2 + col as i32, y, 1, height, color);
-        }
-        y += height;
-    }
+    canvas.clawd(sprite, 2, 4 - i32::from(hop));
     if !working {
         let top = 1 - (frame % 2) as i32;
         for (row, line) in SNORE_Z.iter().enumerate() {
@@ -510,6 +515,13 @@ fn draw_clawd(size: usize, working: bool, frame: u32) -> Vec<u8> {
             }
         }
     }
+    canvas.rgba
+}
+
+/// Cuota's own icon: Clawd standing still, centered.
+fn draw_app(size: usize) -> Vec<u8> {
+    let mut canvas = Canvas::new(size);
+    canvas.clawd(&mascot::STAND, 2, 3);
     canvas.rgba
 }
 
@@ -600,6 +612,7 @@ mod tests {
                 assert!(opaque(&rgba) > 20, "{style:?} at {size}px is nearly empty");
             }
             assert!(opaque(&draw_clawd(size, true, 1)) > 40);
+            assert!(opaque(&draw_app(size)) > 40);
         }
     }
 
