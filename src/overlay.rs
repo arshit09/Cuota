@@ -91,6 +91,9 @@ pub struct Overlay {
     /// Settings asked for from the tray. eframe can only create the settings window once the
     /// panel is on screen, so this waits for the panel's first frame.
     settings_requested: bool,
+    /// Whether the settings window is on screen yet. A new one stays hidden until it has drawn
+    /// itself at its full height, or Windows shows it blank white for a moment.
+    settings_shown: bool,
     settings_height: f32,
     settings_surface: Surface,
     /// Whether Windows starts Cuota at sign-in, as last read from the registry.
@@ -149,6 +152,7 @@ impl Overlay {
             shown_frame: 0,
             settings_open: false,
             settings_requested: false,
+            settings_shown: false,
             settings_height: 0.0,
             settings_surface: Surface::Panel,
             starts_with_windows: false,
@@ -335,6 +339,9 @@ impl Overlay {
     }
 
     fn open_settings(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            self.settings_shown = false;
+        }
         self.settings_open = true;
         self.settings_surface = Surface::of(&self.settings);
         self.starts_with_windows = win::starts_with_windows();
@@ -349,6 +356,7 @@ impl Overlay {
             .with_resizable(false)
             .with_maximize_button(false)
             .with_always_on_top()
+            .with_visible(false)
             .with_icon(self.icon.clone());
         ctx.show_viewport_immediate(settings_viewport(), builder, |ui, _| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
@@ -364,6 +372,13 @@ impl Overlay {
             if (height - self.settings_height).abs() >= 1.0 {
                 self.settings_height = height;
                 ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(vec2(SETTINGS_WIDTH, height)));
+                // Drawn at the old height, so a hidden window waits for the next frame.
+                ui.ctx().request_repaint();
+            } else if !self.settings_shown {
+                // These run once this frame is on the window, so it appears already drawn.
+                self.settings_shown = true;
+                ui.ctx().send_viewport_cmd(ViewportCommand::Visible(true));
+                ui.ctx().send_viewport_cmd(ViewportCommand::Focus);
             }
         });
     }
