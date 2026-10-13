@@ -1,12 +1,14 @@
 # Cuota
 
-A tiny Windows widget for your Claude plan usage: session (5hr), weekly, and per-model limits such as Weekly Fable. These are the same numbers as Claude Code's **Account & Usage** panel. It comes with Clawd, the Claude Code mascot, who dances while Claude is working and sleeps when it's idle.
+A tiny Windows widget that shows your Claude plan usage: session (5hr), weekly, and per-model limits. Same numbers as Claude Code's **Account & Usage** panel.
+
+Clawd, the Claude Code mascot, dances while Claude works and sleeps when it's idle.
 
 ## Requirements
 
 - Windows 10/11
-- [Claude Code](https://claude.com/claude-code) logged in with a Claude subscription (Pro or Max). Cuota reuses that login, so there's no separate sign-in.
-- Rust (only needed to build it)
+- [Claude Code](https://claude.com/claude-code), logged in with Pro or Max (Cuota reuses that login)
+- Rust, to build
 
 ## Build & run
 
@@ -15,52 +17,49 @@ cargo build --release
 .\target\release\cuota.exe
 ```
 
-The exe is self-contained, so you can copy `target\release\cuota.exe` anywhere. To start it with Windows, press `Win+R`, type `shell:startup`, and put a shortcut to `cuota.exe` in that folder.
+The exe is self-contained, so copy it anywhere. To start it when you sign in, turn on **Start with Windows** in its settings. Only one Cuota runs at a time: launching it again opens the running one's settings.
+
+| Flag | Does |
+|---|---|
+| `--interval 120` | Refresh every 120 s while Claude is in use (default 60, min 30) |
+| `--demo` | Show fake data |
+| `--once` | Print usage to the terminal and exit |
 
 ## Using it
 
-**Right-click** Cuota to open its settings. Under **Show as**, tick one or more:
+**Right-click** Cuota for settings. It always has an icon in the tray by the clock, whose right-click menu has **Settings** and **Quit**.
 
-- **Popup** floats above all windows. Drag it to move it.
-- **Desktop** sits behind your windows, like a desktop widget. Drag it to move it.
-- **Taskbar** shows icons beside the clock. Click an icon for the full panel, or right-click it for settings. Windows puts new icons in the **^** overflow at first, so drag them onto the taskbar once.
+**Show as** (pick one or more):
 
-Popup and Desktop are the same panel, so ticking one unticks the other. Taskbar works with either: clicking an icon then hides or shows the panel. At least one option stays ticked.
+- **Popup**: floats above all windows
+- **Desktop**: sits behind windows, like a desktop widget
+- **Taskbar**: Clawd and each limit as tray icons. Click one for the panel.
 
-Under **Display**, switch between **Panel** and **Taskbar** to set each one separately. For each you can choose:
+Drag the panel to move it. Popup and Desktop are the same panel, so only one can be on.
 
-- **Bars** or **Pie** style
-- which limits to show
-- the percentage
-- time left (on the taskbar it appears when you hover an icon)
-- Clawd
+**Display** sets the Panel and Taskbar separately: Bars or Pie, which limits, percentage, time left, and Clawd.
 
-Hover a meter to see its exact reset time. Meters turn amber at 75% and red at 90%. Turn off *Animate Clawd* to use almost no CPU.
+Tips:
 
-Options: `--interval 120` sets how often usage refreshes while Claude is in use, in seconds (default 60, minimum 30). `--demo` shows fake data.
+- Hover a meter for its exact reset time.
+- Meters turn amber at 75% and red at 90%.
+- Turn off *Animate Clawd* to use almost no CPU.
 
 ## How it works
 
-Cuota reads the OAuth token that Claude Code saves in `%USERPROFILE%\.claude\.credentials.json`. It respects `CLAUDE_CONFIG_DIR` if you set one, and like Claude Code it uses `CLAUDE_CODE_OAUTH_TOKEN` instead when that's set. With the token it calls `https://api.anthropic.com/api/oauth/usage`, the same endpoint Claude Code uses. The token is sent only to Anthropic, and Cuota never writes to Claude's files.
+- Reads Claude Code's login token from `%USERPROFILE%\.claude\.credentials.json` (or `CLAUDE_CONFIG_DIR`, or `CLAUDE_CODE_OAUTH_TOKEN`).
+- Calls `api.anthropic.com/api/oauth/usage`, the same endpoint Claude Code uses. The token goes only to Anthropic.
+- Never writes to Claude's files. Its own settings live in `%APPDATA%\Cuota\settings.json`.
 
-To keep API calls rare, Cuota:
+API calls stay rare: about once a minute while Claude is working, every 10 minutes when idle, and right after a limit resets. It also reuses usage Claude Code already fetched.
 
-- reuses usage that Claude Code has already fetched
-- calls the API about once a minute while a Claude Code session is working
-- calls every 10 minutes when everything is idle
-- calls right after a limit resets
-
-Clawd's mood comes from the session status files Claude Code keeps in `%USERPROFILE%\.claude\sessions`. Cuota saves its own settings to `%APPDATA%\Cuota\settings.json`.
-
-The usage endpoint is undocumented, so a future Claude update could change it.
+The endpoint is undocumented, so a Claude update could break it.
 
 ## Troubleshooting
 
-| Message | Fix |
+| Problem | Fix |
 |---|---|
-| *Login token expired* | Claude Code refreshes the token when you use it. Open Claude Code and send a message, and Cuota picks up the new token within 15 s. |
+| *Login token expired* | Send a message in Claude Code. Cuota picks up the new token within 15 s. |
 | *No Claude login found* / *Login rejected* | Run `claude`, then `/login`. |
-| *Rate limited* | Cuota backs off automatically. Use a longer `--interval` if it keeps happening. |
-| Taskbar icons don't show | Click **^** next to the clock and drag the Cuota icons onto the taskbar. |
-
-`cargo run -- --once` prints your current usage (or the error) to the terminal.
+| *Rate limited* | Cuota backs off on its own. Try a longer `--interval`. |
+| Taskbar icons missing | Click **^** by the clock and drag the Cuota icons onto the taskbar. |
