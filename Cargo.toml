@@ -1,0 +1,30 @@
+[package]
+name = "cuota"
+version = "0.1.0"
+edition = "2024"
+description = "Windows overlay showing your Claude plan usage limits, with Clawd"
+
+[dependencies]
+chrono = "0.4.45"
+# glow (OpenGL) renders transparent windows reliably on Windows. Fonts come from Windows
+# itself, so egui's bundled fonts are left out.
+eframe = { version = "0.35.0", default-features = false, features = ["glow"] }
+raw-window-handle = "0.6"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+ureq = { version = "2", features = ["json"] }
+# Same version winit already builds, so this adds no extra compile.
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Registry",
+    "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = "thin"
+strip = true
