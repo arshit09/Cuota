@@ -93,6 +93,8 @@ pub struct Overlay {
     settings_requested: bool,
     settings_height: f32,
     settings_surface: Surface,
+    /// Whether Windows starts Cuota at sign-in, as last read from the registry.
+    starts_with_windows: bool,
 }
 
 impl Overlay {
@@ -149,6 +151,7 @@ impl Overlay {
             settings_requested: false,
             settings_height: 0.0,
             settings_surface: Surface::Panel,
+            starts_with_windows: false,
         }
     }
 
@@ -259,7 +262,7 @@ impl Overlay {
             if self.settings_open {
                 self.settings_open = false;
             } else {
-                self.open_settings();
+                self.open_settings(&ctx);
             }
         }
         if !docked && background.drag_started_by(PointerButton::Primary) {
@@ -331,9 +334,12 @@ impl Overlay {
         }
     }
 
-    fn open_settings(&mut self) {
+    fn open_settings(&mut self, ctx: &egui::Context) {
         self.settings_open = true;
         self.settings_surface = Surface::of(&self.settings);
+        self.starts_with_windows = win::starts_with_windows();
+        // Already open, maybe behind other windows.
+        ctx.send_viewport_cmd_to(settings_viewport(), ViewportCommand::Focus);
     }
 
     fn settings_window(&mut self, ctx: &egui::Context, state: &State) {
@@ -344,7 +350,7 @@ impl Overlay {
             .with_maximize_button(false)
             .with_always_on_top()
             .with_icon(self.icon.clone());
-        ctx.show_viewport_immediate(ViewportId::from_hash_of("settings"), builder, |ui, _| {
+        ctx.show_viewport_immediate(settings_viewport(), builder, |ui, _| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 self.settings_open = false;
             }
@@ -367,7 +373,7 @@ impl Overlay {
     fn settings_ui(&mut self, ui: &mut egui::Ui, state: &State) {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         self.settings_header(ui, state);
-        let Self { settings, settings_surface: surface, fonts, .. } = self;
+        let Self { settings, settings_surface: surface, fonts, starts_with_windows, .. } = self;
 
         ui.add_space(16.0);
         widgets::heading(ui, fonts, "General", |_| {});
@@ -393,6 +399,15 @@ impl Overlay {
                         }
                     }
                 });
+            });
+            widgets::divider(ui, fonts);
+            let about = Some("Opens Cuota when you sign in");
+            widgets::row(ui, fonts, icon::STARTUP, "Start with Windows", about, widgets::TOGGLE_WIDTH, |ui| {
+                let mut on = *starts_with_windows;
+                if widgets::toggle(ui, &mut on).changed() {
+                    win::set_start_with_windows(on);
+                    *starts_with_windows = win::starts_with_windows();
+                }
             });
             widgets::divider(ui, fonts);
             let opacity = format!("{:.0}%", settings.opacity * 100.0);
@@ -524,14 +539,22 @@ impl eframe::App for Overlay {
         }
         self.apply_modes(ctx);
         self.sync_tray();
-        while let Ok(TrayEvent::Open { settings }) = self.tray_events.try_recv() {
+        while let Ok(event) = self.tray_events.try_recv() {
+            let settings = match event {
+                TrayEvent::Click => false,
+                TrayEvent::Settings => true,
+                TrayEvent::Quit => {
+                    ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+                    continue;
+                }
+            };
             if self.settings.pinned().is_some() {
-                // Right-click: settings, showing the panel if it was hidden.
+                // A click hides or shows the panel; settings bring it back if it was hidden.
                 self.set_hidden(ctx, !settings && !self.hidden);
                 self.settings_requested |= settings;
                 ctx.request_repaint();
             } else if settings {
-                // Right-click: settings, with the panel open beside them.
+                // Settings, with the panel open beside them.
                 self.settings_requested = true;
                 if matches!(self.flyout, Flyout::Closed { .. }) {
                     self.open_flyout(ctx);
@@ -559,7 +582,7 @@ impl eframe::App for Overlay {
             });
             if self.settings_requested && ctx.cumulative_frame_nr() > self.shown_frame {
                 self.settings_requested = false;
-                self.open_settings();
+                self.open_settings(&ctx);
             }
             if docked {
                 self.track_flyout_focus(&ctx);
@@ -586,6 +609,10 @@ impl eframe::App for Overlay {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]
     }
+}
+
+fn settings_viewport() -> ViewportId {
+    ViewportId::from_hash_of("settings")
 }
 
 /// What the chosen Show as options do.

@@ -140,6 +140,11 @@ impl Mascot {
         }
     }
 
+    /// The Claude spark on its own, upright.
+    pub fn paint_logo(&self, painter: &Painter, center: Pos2, radius: f32) {
+        self.paint_spark(painter, center, radius, 0.0, Color32::WHITE);
+    }
+
     fn paint_spark(&self, painter: &Painter, center: Pos2, radius: f32, angle: f32, tint: Color32) {
         let (sin, cos) = angle.sin_cos();
         let corner = |x: f32, y: f32| center + vec2(x * cos - y * sin, x * sin + y * cos) * radius;
@@ -200,10 +205,10 @@ fn paint_grid(painter: &Painter, origin: Pos2, cell: Vec2, grid: &[&str], color:
     painter.add(Shape::mesh(mesh));
 }
 
-/// The spark rasterized to `SPARK_PIXELS` square RGBA, for the texture and the window icon.
-pub fn spark_rgba() -> Vec<u8> {
+/// The spark rasterized to `size` square RGBA: `SPARK_PIXELS` for the texture and the window
+/// icon, or the tray's icon size.
+pub fn spark_rgba(size: usize) -> Vec<u8> {
     const SAMPLES: usize = 4;
-    let size = SPARK_PIXELS;
     let scale = (size * SAMPLES) as f32 / SPARK_VIEWBOX;
     let outline: Vec<Vec2> = spark_outline().into_iter().map(|p| p * scale).collect();
     let edges: Vec<(Vec2, Vec2)> = outline.iter().zip(outline.iter().cycle().skip(1)).map(|(&a, &b)| (a, b)).collect();
@@ -341,7 +346,7 @@ mod tests {
 
     #[test]
     fn spark_covers_a_reasonable_area() {
-        let rgba = spark_rgba();
+        let rgba = spark_rgba(SPARK_PIXELS);
         let opaque = rgba.chunks(4).filter(|p| p[3] > 128).count();
         let share = opaque as f32 / (SPARK_PIXELS * SPARK_PIXELS) as f32;
         assert!((0.15..0.5).contains(&share), "spark covers {share}");

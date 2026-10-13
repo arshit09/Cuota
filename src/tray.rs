@@ -1,8 +1,9 @@
-//! Taskbar mode: native icons in the notification area. Clawd dances while Claude works and
-//! sleeps when idle; each limit shows its percentage as pixel digits over a bar, or as a ring.
-//! Hovering shows details and clicking opens the panel. Runs on its own thread with a hidden
-//! window, so the icons stay live while the panel is hidden, and only redraws an icon when
-//! what it shows changed.
+//! Native icons in the notification area. In Taskbar mode, Clawd dances while Claude works and
+//! sleeps when idle, and each limit shows its percentage as pixel digits over a bar, or as a
+//! ring; otherwise a single Cuota icon stays there. Hovering shows details, clicking opens the
+//! panel, and right-clicking opens a menu with Settings and Quit. Runs on its own thread with
+//! a hidden window, so the icons stay live while the panel is hidden, and only redraws an icon
+//! when what it shows changed.
 
 use crate::claude::{self, Limit, Shared, State};
 use crate::mascot::{self, CLAUDE_ORANGE, EYE, SNORE};
@@ -25,16 +26,23 @@ use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW,
-    GetMessageW, GetSystemMetrics, HICON, ICONINFO, KillTimer, MSG, PostMessageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SendMessageW, SetTimer, WM_APP, WM_CLOSE,
-    WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW,
-    WS_POPUP,
+    ASFW_ANY, AllowSetForegroundWindow, AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowExW, GetMessageW,
+    GetSystemMetrics, HICON, ICONINFO, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW,
+    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_MENUDROPALIGNMENT,
+    SendMessageW, SetForegroundWindow, SetTimer, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_NONOTIFY,
+    TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_CLOSE, WM_DESTROY,
+    WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
+const CLASS: &str = "CuotaTray";
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_REFRESH: u32 = WM_APP + 2;
+/// Sent by a second launch of Cuota, which exits and leaves this one to open its settings.
+const WM_SHOW_SETTINGS: u32 = WM_APP + 3;
 const CLAWD_ID: u32 = 1;
+/// Cuota's own icon, shown when the taskbar icons are off.
+const APP_ID: u32 = 2;
 const TIMER: usize = 1;
 /// Without animation, icons are still refreshed this often to keep "resets in" tooltips current.
 const TOOLTIP_REFRESH_MS: u32 = 30_000;
@@ -49,8 +57,12 @@ pub struct TrayConfig {
 }
 
 pub enum TrayEvent {
-    /// An icon was clicked: open the panel, and with a right-click the settings too.
-    Open { settings: bool },
+    /// An icon was clicked: open the panel, or hide or show it.
+    Click,
+    /// Settings, picked from an icon's menu or asked for by launching Cuota again.
+    Settings,
+    /// Quit, picked from an icon's menu.
+    Quit,
 }
 
 /// Handle to the tray thread.
@@ -68,6 +80,7 @@ impl Tray {
         let config = Arc::new(Mutex::new(TrayConfig::default()));
         let thread_config = config.clone();
         std::thread::spawn(move || unsafe {
+            win::dark_menus();
             let window = create_window();
             let taskbar_created = RegisterWindowMessageW(wide("TaskbarCreated").as_ptr());
             ICONS.set(Some(Icons {
@@ -132,11 +145,9 @@ impl Icons {
                 self.frame = self.frame.wrapping_add(1);
                 self.refresh();
             }
-            WM_TRAY => match lparam as u32 {
-                WM_LBUTTONUP => self.open(false),
-                WM_RBUTTONUP => self.open(true),
-                _ => {}
-            },
+            // Right-clicks open the menu in `window_proc`.
+            WM_TRAY if lparam as u32 == WM_LBUTTONUP => self.send(TrayEvent::Click),
+            WM_SHOW_SETTINGS => self.send(TrayEvent::Settings),
             WM_CLOSE => {
                 for (id, ..) in self.shown.drain(..) {
                     notify(self.window, NIM_DELETE, id, None);
@@ -153,8 +164,8 @@ impl Icons {
         true
     }
 
-    fn open(&self, settings: bool) {
-        let _ = self.events.send(TrayEvent::Open { settings });
+    fn send(&self, event: TrayEvent) {
+        let _ = self.events.send(event);
         self.ctx.request_repaint();
     }
 
@@ -176,6 +187,9 @@ impl Icons {
             if config.view.clawd || wanted.is_empty() {
                 wanted.insert(0, (CLAWD_ID, draw_clawd(size, state.working, frame), clawd_tip(&state)));
             }
+        } else {
+            // Without the taskbar icons, Cuota keeps one of its own for the menu.
+            wanted.push((APP_ID, mascot::spark_rgba(size), app_tip(&state)));
         }
 
         let gone: Vec<u32> = self.shown.iter().map(|s| s.0).filter(|id| !wanted.iter().any(|w| w.0 == *id)).collect();
@@ -197,24 +211,31 @@ impl Icons {
             }
         }
 
-        let interval = match (animating, config.enabled) {
-            (true, _) => Some(if state.working { 250 } else { 800 }),
-            (false, true) => Some(TOOLTIP_REFRESH_MS),
-            (false, false) => None,
+        let interval = match (animating, state.working) {
+            (true, true) => 250,
+            (true, false) => 800,
+            (false, _) => TOOLTIP_REFRESH_MS,
         };
-        if interval != self.timer {
-            self.timer = interval;
-            unsafe {
-                match interval {
-                    Some(ms) => SetTimer(self.window, TIMER, ms, None),
-                    None => KillTimer(self.window, TIMER) as usize,
-                };
-            }
+        if self.timer != Some(interval) {
+            self.timer = Some(interval);
+            unsafe { SetTimer(self.window, TIMER, interval, None) };
         }
     }
 }
 
 unsafe extern "system" fn window_proc(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // The menu runs a message loop of its own, so it opens outside the borrow below, which
+    // lets the icons keep updating meanwhile.
+    if message == WM_TRAY && lparam as u32 == WM_RBUTTONUP {
+        if let Some(event) = pick_from_menu(window) {
+            ICONS.with_borrow(|icons| {
+                if let Some(icons) = icons {
+                    icons.send(event);
+                }
+            });
+        }
+        return 0;
+    }
     let handled = ICONS.with(|icons| match icons.try_borrow_mut() {
         Ok(mut icons) => icons.as_mut().is_some_and(|icons| icons.handle(message, lparam)),
         // Re-entered while redrawing: try again once the current refresh is done.
@@ -224,9 +245,55 @@ unsafe extern "system" fn window_proc(window: HWND, message: u32, wparam: WPARAM
     if handled { 0 } else { unsafe { DefWindowProcW(window, message, wparam, lparam) } }
 }
 
+/// The icons' menu, at the cursor: Cuota's name and version, Settings and Quit.
+fn pick_from_menu(window: HWND) -> Option<TrayEvent> {
+    const SETTINGS: usize = 1;
+    const QUIT: usize = 2;
+    let title = wide(concat!("Cuota v", env!("CARGO_PKG_VERSION")));
+    let (settings, quit) = (wide("Settings"), wide("Quit"));
+    let picked = unsafe {
+        let menu = CreatePopupMenu();
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        AppendMenuW(menu, MF_STRING, SETTINGS, settings.as_ptr());
+        AppendMenuW(menu, MF_STRING, QUIT, quit.as_ptr());
+        // Without this, clicking elsewhere wouldn't close the menu.
+        SetForegroundWindow(window);
+        let side = if GetSystemMetrics(SM_MENUDROPALIGNMENT) != 0 { TPM_RIGHTALIGN } else { TPM_LEFTALIGN };
+        let flags = TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | side;
+        let at = win::cursor();
+        let picked = TrackPopupMenu(menu, flags, at.x, at.y, 0, window, null());
+        PostMessageW(window, WM_NULL, 0, 0);
+        DestroyMenu(menu);
+        picked as usize
+    };
+    match picked {
+        SETTINGS => Some(TrayEvent::Settings),
+        QUIT => Some(TrayEvent::Quit),
+        _ => None,
+    }
+}
+
+/// Asks the Cuota that's already running to open its settings.
+pub fn open_running_settings() {
+    let class = wide(CLASS);
+    unsafe {
+        // Lets it bring its settings window to the front.
+        AllowSetForegroundWindow(ASFW_ANY);
+        let mut window = 0;
+        loop {
+            window = FindWindowExW(0, window, class.as_ptr(), null());
+            if window == 0 {
+                break;
+            }
+            PostMessageW(window, WM_SHOW_SETTINGS, 0, 0);
+        }
+    }
+}
+
 /// A hidden top-level window: message-only windows miss the TaskbarCreated broadcast.
 unsafe fn create_window() -> HWND {
-    let class = wide("CuotaTray");
+    let class = wide(CLASS);
     unsafe {
         let instance = GetModuleHandleW(null());
         let window_class = WNDCLASSW {
@@ -483,7 +550,17 @@ fn limit_id(label: &str) -> u32 {
 fn clawd_tip(state: &State) -> String {
     let plan = state.account.plan.as_deref().unwrap_or("Claude");
     let status = if state.working { "working" } else { "idle" };
-    let mut tip = format!("{plan} · Claude is {status}");
+    usage_tip(format!("{plan} · Claude is {status}"), state)
+}
+
+fn app_tip(state: &State) -> String {
+    let plan = state.account.plan.as_deref().unwrap_or("Claude");
+    usage_tip(format!("Cuota · {plan}"), state)
+}
+
+/// `heading`, then each limit with its percentage and time left, and the last error.
+fn usage_tip(heading: String, state: &State) -> String {
+    let mut tip = heading;
     let now = Utc::now();
     for limit in &state.limits {
         let left = limit.resets_at.map(|t| format!(" · {}", claude::until(t, now))).unwrap_or_default();

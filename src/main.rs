@@ -33,6 +33,11 @@ fn main() -> eframe::Result {
         print_once();
         return Ok(());
     }
+    if !win::first_instance() {
+        // Already running, say from startup: show that one's settings instead of a second copy.
+        tray::open_running_settings();
+        return Ok(());
+    }
     let interval = args
         .iter()
         .position(|a| a == "--interval")
@@ -43,7 +48,7 @@ fn main() -> eframe::Result {
 
     let mut settings = Settings::load();
     let position = initial_position(&mut settings);
-    let spark = mascot::spark_rgba();
+    let spark = mascot::spark_rgba(mascot::SPARK_PIXELS);
     let side = mascot::SPARK_PIXELS as u32;
     let icon = Arc::new(IconData { rgba: spark.clone(), width: side, height: side });
     let level = if settings.pinned() == Some(Mode::Desktop) { WindowLevel::AlwaysOnBottom } else { WindowLevel::AlwaysOnTop };
