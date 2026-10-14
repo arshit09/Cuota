@@ -22,6 +22,7 @@ ureq = { version = "2", features = ["json"] }
 # Same version winit already builds, so this adds no extra compile.
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Media_Audio",
     "Win32_System_Com",

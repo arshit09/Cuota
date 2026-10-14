@@ -6,14 +6,16 @@ use std::mem::{size_of, transmute, zeroed};
 use std::path::Path;
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HWND, LPARAM,
     LRESULT, POINT, RECT, STILL_ACTIVE, WPARAM,
 };
+use windows_sys::Win32::Graphics::Dwm::{DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DwmEnableBlurBehindWindow};
 use windows_sys::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint,
+    CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO,
+    MonitorFromPoint, RGN_OR, SetWindowRgn,
 };
 use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -35,10 +37,10 @@ use windows_sys::Win32::UI::Shell::{
     ABM_GETTASKBARPOS, APPBARDATA, DefSubclassProc, SHAppBarMessage, SetWindowSubclass, ShellExecuteW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, GetCursorPos,
+    DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, GetClientRect, GetCursorPos,
     GetForegroundWindow, GetMessageW, HWND_BOTTOM, MSG, SW_SHOWNORMAL, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WINEVENT_OUTOFCONTEXT,
-    WM_NCCALCSIZE,
+    WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED, WM_NCCALCSIZE, WM_SIZE,
 };
 
 /// claude.ai's page of plan usage.
@@ -339,7 +341,10 @@ pub fn system_scale() -> f32 {
     dpi as f32 / 96.0
 }
 
-unsafe extern "system" fn whole_client_area(
+/// The panel's corner radius in physical pixels (as f32 bits), which its window is cut to.
+static CORNER_RADIUS: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "system" fn panel_window(
     window: HWND,
     message: u32,
     wparam: WPARAM,
@@ -347,22 +352,100 @@ unsafe extern "system" fn whole_client_area(
     _: usize,
     _: usize,
 ) -> LRESULT {
-    // Returning 0 leaves the proposed rectangle as is: the client area is the whole window.
-    if message == WM_NCCALCSIZE && wparam != 0 {
-        return 0;
+    match message {
+        // Returning 0 leaves the proposed rectangle as is: the client area is the whole window.
+        WM_NCCALCSIZE if wparam != 0 => return 0,
+        // The new width and height are the low and high words.
+        WM_SIZE => cut_corners(window, (lparam & 0xffff) as i32, (lparam >> 16 & 0xffff) as i32),
+        WM_DWMCOMPOSITIONCHANGED | WM_DISPLAYCHANGE => see_through(window),
+        _ => {}
     }
     unsafe { DefSubclassProc(window, message, wparam, lparam) }
 }
 
-/// Makes a borderless window's client area cover all of it. egui asks winit for a drop shadow
-/// on every borderless window, which winit gets by moving the client area down a pixel: that
-/// leaves a line along the top and cuts the bottom row (the panel's bottom border) off.
-pub fn fill_window(window: HWND) {
+/// Sets up the panel's borderless window: its client area covers all of it, it's see-through,
+/// and it's cut to the panel's rounded corners as it resizes (see [`round_corners`]).
+///
+/// egui asks winit for a drop shadow on every borderless window, which winit gets by moving
+/// the client area down a pixel: that leaves a line along the top and cuts the bottom row (the
+/// panel's bottom border) off.
+pub fn set_up_panel(window: HWND) {
     unsafe {
-        SetWindowSubclass(window, Some(whole_client_area), 1, 0);
+        SetWindowSubclass(window, Some(panel_window), 1, 0);
         let flags = SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
         SetWindowPos(window, 0, 0, 0, 0, 0, flags);
     }
+    see_through(window);
+}
+
+/// Lets the desktop show through wherever the window's pixels are transparent. winit asks
+/// Windows for this once, when it makes the window; if Windows doesn't keep it, the panel's
+/// transparent pixels turn black. Asked again here once the window is drawing, and after
+/// display and compositor changes.
+fn see_through(window: HWND) {
+    unsafe {
+        // An empty blur region: see-through without blurring what's behind.
+        let region = CreateRectRgn(0, 0, -1, -1);
+        let behind = DWM_BLURBEHIND {
+            dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION,
+            fEnable: 1,
+            hRgnBlur: region,
+            fTransitionOnMaximized: 0,
+        };
+        let result = DwmEnableBlurBehindWindow(window, &behind);
+        DeleteObject(region);
+        if result < 0 {
+            crate::log::warn!("Windows couldn't make the panel see-through (error {result:#x})");
+        }
+    }
+}
+
+/// Cuts the panel's window to rounded corners of `radius` physical pixels, now and whenever it
+/// resizes, so the corners stay clear even if Windows stops showing the desktop through it.
+/// Only acts when the radius changes, so it can be called every frame.
+pub fn round_corners(window: HWND, radius: f32) {
+    if CORNER_RADIUS.swap(radius.to_bits(), Ordering::Relaxed) != radius.to_bits() {
+        let mut client: RECT = unsafe { zeroed() };
+        unsafe { GetClientRect(window, &mut client) };
+        cut_corners(window, client.right, client.bottom);
+    }
+}
+
+fn cut_corners(window: HWND, width: i32, height: i32) {
+    let insets = corner_insets(f32::from_bits(CORNER_RADIUS.load(Ordering::Relaxed)));
+    let rows = (insets.len() as i32).min(height / 2);
+    unsafe {
+        if rows == 0 {
+            SetWindowRgn(window, 0, 1);
+            return;
+        }
+        let region = CreateRectRgn(0, rows, width, height - rows);
+        for (y, &inset) in (0..rows).zip(&insets) {
+            let inset = inset.min(width / 2);
+            for top in [y, height - 1 - y] {
+                let row = CreateRectRgn(inset, top, width - inset, top + 1);
+                CombineRgn(region, region, row, RGN_OR);
+                DeleteObject(row);
+            }
+        }
+        // Windows owns the region from here on.
+        SetWindowRgn(window, region, 1);
+    }
+}
+
+/// How many pixels each row of a rounded corner leaves out, from the outermost row in: the ones
+/// wholly outside an arc of `radius` pixels, widened by half a pixel for its anti-aliased edge.
+fn corner_insets(radius: f32) -> Vec<i32> {
+    let reach = radius + 0.5;
+    (0..radius.ceil() as i32)
+        .map(|y| {
+            // From the arc's centre to the row's nearest edge, and how far the arc spreads there.
+            let down = (radius - (y + 1) as f32).max(0.0);
+            let spread = (reach * reach - down * down).max(0.0).sqrt();
+            // Pixel x is out when even its inner edge, at x + 1, lies beyond the arc.
+            ((radius - spread - 1.0).ceil() as i32).max(0)
+        })
+        .collect()
 }
 
 fn left_button_down() -> bool {
@@ -413,5 +496,39 @@ mod tests {
         assert_eq!(folder_of(r"C:\Tools\notes.bat").as_deref(), Some(r"C:\Tools"));
         assert_eq!(folder_of("notes.bat"), None);
         assert_eq!(folder_of(""), None);
+    }
+
+    #[test]
+    fn corners_keep_every_pixel_the_edge_touches() {
+        assert!(corner_insets(0.0).is_empty());
+        let insets = corner_insets(12.0);
+        assert_eq!(insets.len(), 12);
+        // Pixel 5 of the top row is 12.53 px from the arc's centre, past its 12.5 px reach; pixel 6 is within it.
+        assert_eq!(insets[0], 6);
+        assert_eq!(insets[11], 0);
+        assert!(insets.windows(2).all(|pair| pair[0] >= pair[1]));
+        // A fractional radius, as at a smaller panel size: its last row holds the arc's centre and keeps everything.
+        assert_eq!(corner_insets(9.6).last(), Some(&0));
+    }
+
+    #[test]
+    fn the_panel_window_is_cut_to_its_rounded_corners() {
+        use windows_sys::Win32::Graphics::Gdi::{GetWindowRgn, PtInRegion};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_POPUP};
+        unsafe {
+            let class = wide("STATIC");
+            let window = CreateWindowExW(0, class.as_ptr(), null(), WS_POPUP, 0, 0, 200, 80, 0, 0, 0, null());
+            assert_ne!(window, 0);
+            round_corners(window, 12.0);
+            let region = CreateRectRgn(0, 0, 0, 0);
+            GetWindowRgn(window, region);
+            let inside = |x, y| PtInRegion(region, x, y) != 0;
+            // Each corner loses the pixels its top row leaves out, mirrored.
+            assert!(!inside(0, 0) && !inside(5, 0) && inside(6, 0));
+            assert!(!inside(194, 79) && inside(193, 79));
+            assert!(inside(0, 40) && inside(199, 40) && inside(100, 0) && inside(100, 79));
+            DeleteObject(region);
+            DestroyWindow(window);
+        }
     }
 }

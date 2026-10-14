@@ -33,6 +33,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const MARGIN: f32 = 12.0;
+/// The panel's corner radius.
+const CORNER: f32 = 12.0;
 const GAP: f32 = 10.0;
 /// Between Clawd's status and the meters under it.
 const STATUS_GAP: f32 = 4.0;
@@ -238,8 +240,8 @@ pub struct Overlay {
     scripts: Scripts,
     icon: Arc<IconData>,
     keep_bottom: Arc<AtomicBool>,
-    /// Whether the native window has been fixed up and handed to the Desktop-mode keeper.
-    window_ready: bool,
+    /// The native window, once it has been set up and handed to the Desktop-mode keeper.
+    window: Option<isize>,
     /// The Show as choice the window was last set up for, and when.
     applied: Option<(BTreeSet<Mode>, Instant)>,
     size: Vec2,
@@ -331,7 +333,7 @@ impl Overlay {
             scripts: Scripts::default(),
             icon,
             keep_bottom: Arc::new(AtomicBool::new(false)),
-            window_ready: false,
+            window: None,
             applied: None,
             size: Vec2::ZERO,
             wheel: Wheel::default(),
@@ -541,8 +543,8 @@ impl Overlay {
         let scale = self.settings.size;
         let margin = MARGIN * scale;
         let alpha = (self.settings.opacity * 255.0) as u8;
-        painter.rect_filled(full, 12.0 * scale, Color32::from_rgba_unmultiplied(BG.r(), BG.g(), BG.b(), alpha));
-        painter.rect_stroke(full, 12.0 * scale, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+        painter.rect_filled(full, CORNER * scale, Color32::from_rgba_unmultiplied(BG.r(), BG.g(), BG.b(), alpha));
+        painter.rect_stroke(full, CORNER * scale, Stroke::new(1.0, BORDER), StrokeKind::Inside);
 
         // Lay everything out first so the window can be sized to fit.
         let view = &self.settings.panel;
@@ -1044,12 +1046,15 @@ impl Overlay {
 impl eframe::App for Overlay {
     /// Runs even while the window is hidden, so tray clicks get through.
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if !self.window_ready
+        if self.window.is_none()
             && let Some(window) = native_window(frame)
         {
-            win::fill_window(window);
+            win::set_up_panel(window);
             win::keep_at_bottom(window, self.keep_bottom.clone());
-            self.window_ready = true;
+            self.window = Some(window);
+        }
+        if let Some(window) = self.window {
+            win::round_corners(window, CORNER * self.settings.size * ctx.pixels_per_point());
         }
         self.apply_modes(ctx);
         self.sync_tray();
