@@ -82,6 +82,8 @@ pub const SIZES: [f32; 10] = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6];
 pub struct Settings {
     pub show: BTreeSet<Mode>,
     pub animate: bool,
+    /// Clawd's 8-bit sound effects while Claude works.
+    pub sounds: bool,
     pub opacity: f32,
     /// How big the panel is: one of [`SIZES`].
     pub size: f32,
@@ -102,6 +104,7 @@ impl Default for Settings {
         Self {
             show: BTreeSet::from([Mode::AlwaysOnTop]),
             animate: true,
+            sounds: true,
             opacity: 0.96,
             size: 1.0,
             wheel_resize: true,
@@ -208,6 +211,15 @@ mod tests {
     fn loads_the_old_popup_name_as_always_on_top() {
         let settings: Settings = serde_json::from_str(r#"{"show":["Popup","Taskbar"]}"#).unwrap();
         assert_eq!(settings.show, BTreeSet::from([Mode::AlwaysOnTop, Mode::Taskbar]));
+    }
+
+    #[test]
+    fn sound_effects_are_on_unless_turned_off_even_in_older_settings() {
+        let older: Settings = serde_json::from_str(r#"{"animate":false}"#).unwrap();
+        assert!(older.sounds && !older.animate);
+        let off = Settings { sounds: false, ..Settings::default() };
+        let text = serde_json::to_string(&off).unwrap();
+        assert!(!serde_json::from_str::<Settings>(&text).unwrap().sounds);
     }
 
     #[test]

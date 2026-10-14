@@ -34,7 +34,7 @@ const REST_SPELL: Range<u64> = 60..180;
 const SPELL_WORTH_MARKING: Duration = Duration::from_secs(45);
 /// With no session busy for this long, Clawd falls asleep. Sessions are often left open all
 /// day, so he doesn't wait for them to close.
-const DOZE: Duration = Duration::from_secs(60);
+pub const DOZE: Duration = Duration::from_secs(60);
 /// Mipmaps keep the pixel art smooth when it's drawn smaller than the frame.
 const OPTIONS: TextureOptions = TextureOptions { mipmap_mode: Some(TextureFilter::Linear), ..TextureOptions::LINEAR };
 
@@ -461,10 +461,10 @@ fn shrink(canvas: &[u8], width: usize, area: Area, small: &mut [Color32], small_
 }
 
 /// xorshift64*, seeded from the clock: plenty for picking animations.
-struct Rng(u64);
+pub struct Rng(u64);
 
 impl Rng {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
         Self((nanos ^ (u64::from(std::process::id()) << 32)) | 1)
     }
@@ -476,11 +476,11 @@ impl Rng {
         self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
-    fn below(&mut self, n: usize) -> usize {
+    pub fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
     }
 
-    fn seconds(&mut self, range: Range<u64>) -> Duration {
+    pub fn seconds(&mut self, range: Range<u64>) -> Duration {
         Duration::from_secs(range.start + self.next() % (range.end - range.start))
     }
 }
