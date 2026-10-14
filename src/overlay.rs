@@ -44,6 +44,8 @@ const PAGE_WIDTH: f32 = 760.0;
 /// The page's title, above what scrolls, and the room either side of the page.
 const PAGE_TITLE: f32 = 68.0;
 const PAGE_GUTTER: f32 = 16.0;
+/// Where Cuota's code lives, which the sidebar links to.
+const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 /// Between a page's cards.
 const CARD_GAP: f32 = 4.0;
 /// A slider and its value beside it.
@@ -697,7 +699,7 @@ impl Overlay {
         });
     }
 
-    /// A sidebar with the account, the pages and Quit, beside the page picked in it, as in
+    /// A sidebar with the account, the pages, GitHub and Quit, beside the page picked in it, as in
     /// Windows' Settings: the page's title stays put while its settings scroll under it. Returns
     /// how tall the page is, whether or not the window has room for all of it.
     fn settings_ui(&mut self, ui: &mut egui::Ui, state: &State) -> f32 {
@@ -727,7 +729,7 @@ impl Overlay {
         PAGE_TITLE + scroll.content_size.y
     }
 
-    /// The account on top, then the pages, and Quit at the bottom.
+    /// The account on top, then the pages, and a link to Cuota's GitHub over Quit at the bottom.
     fn settings_sidebar(&mut self, ui: &mut egui::Ui, state: &State) {
         self.settings_account(ui, state);
         ui.add_space(20.0);
@@ -740,6 +742,12 @@ impl Overlay {
 
         let bottom = ui.max_rect();
         let footer = Rect::from_min_max(pos2(bottom.left(), bottom.bottom() - 32.0), bottom.max);
+        let link = Rect::from_min_size(pos2(bottom.left(), footer.top() - 8.0 - 36.0), vec2(bottom.width(), 36.0));
+        let mut slot = ui.new_child(UiBuilder::new().max_rect(link));
+        let github = widgets::nav_link(&mut slot, &self.fonts, icon::GITHUB, "View on GitHub");
+        if github.on_hover_text(REPOSITORY).clicked() {
+            win::open_page(REPOSITORY);
+        }
         let mut slot = ui.new_child(UiBuilder::new().max_rect(footer).layout(Layout::left_to_right(Align::Center)));
         if widgets::button(&mut slot, &self.fonts, icon::QUIT, "Quit Cuota").clicked() {
             ui.ctx().send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
@@ -1260,5 +1268,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The GitHub link hangs from the foot of the sidebar, so a short window brings it up
+    /// toward the pages.
+    #[test]
+    fn the_github_link_stays_clear_of_the_pages_in_the_smallest_window() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        let output = ctx.run_ui(window(SETTINGS_MIN), |ui| {
+            overlay.settings_ui(ui, &state);
+        });
+        let middle_of = |name: &str| {
+            let in_sidebar = output.shapes.iter().find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == name && text.pos.x < SIDEBAR_WIDTH => {
+                    Some(text.visual_bounding_rect().center().y)
+                }
+                _ => None,
+            });
+            in_sidebar.unwrap_or_else(|| panic!("the sidebar has no {name:?}"))
+        };
+        let last_page = Page::ALL.last().unwrap().name();
+        // Sidebar entries are 36 points tall, centered on their names, with 4 between them.
+        let gap = middle_of("View on GitHub") - middle_of(last_page) - 36.0;
+        assert!(gap >= 4.0, "the GitHub link is {gap} below {last_page}");
     }
 }

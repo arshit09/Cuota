@@ -3,6 +3,8 @@ name = "cuota"
 version = "0.1.0"
 edition = "2024"
 description = "Windows overlay showing your Claude plan usage limits, with Clawd"
+# The settings sidebar links here.
+repository = "https://github.com/arshit09/Cuota"
 # Cuota's own code. The mascot GIFs and Anthropic's marks aren't covered; see the README.
 license = "GPL-3.0-or-later"
 

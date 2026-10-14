@@ -61,6 +61,10 @@ pub mod icon {
     pub const CLAWD: char = '\u{E76E}';
     pub const DETAILS: char = '\u{E9D2}';
     pub const DOUBLE_CLICK: char = '\u{E962}';
+    /// Leads out of the app, as to a web page.
+    pub const EXTERNAL: char = '\u{E8A7}';
+    /// Code, as the font has no GitHub mark.
+    pub const GITHUB: char = '\u{E943}';
     pub const LIMITS: char = '\u{E9F9}';
     pub const OPACITY: char = '\u{E793}';
     pub const PANEL: char = '\u{E737}';
@@ -157,8 +161,28 @@ pub fn rule(ui: &mut Ui) {
 /// A page's entry in a sidebar, like in Windows' own Settings: its icon and name, filled in
 /// and marked with an accent bar while its page shows.
 pub fn nav_item(ui: &mut Ui, fonts: &Fonts, glyph: char, name: &str, selected: bool) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    let (_, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, ui.is_enabled(), selected, name));
+    paint_nav_entry(ui, fonts, &response, glyph, name, selected);
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// A sidebar entry that opens a web page rather than a page of its own, like the links at the
+/// foot of Windows apps' sidebars, with an arrow saying it leads out of the app.
+pub fn nav_link(ui: &mut Ui, fonts: &Fonts, glyph: char, name: &str) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Link, ui.is_enabled(), name));
+    paint_nav_entry(ui, fonts, &response, glyph, name, false);
+    if let Some(font) = fonts.icon(12.0) {
+        let at = pos2(rect.right() - 14.0, rect.center().y);
+        ui.painter().text(at, Align2::RIGHT_CENTER, icon::EXTERNAL, font, SECONDARY);
+    }
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// A sidebar entry's fill, accent bar, icon and name.
+fn paint_nav_entry(ui: &Ui, fonts: &Fonts, response: &Response, glyph: char, name: &str, selected: bool) {
+    let rect = response.rect;
     let fill = match (selected, response.hovered(), response.is_pointer_button_down_on()) {
         (_, _, true) | (true, true, _) => SUBTLE_PRESSED,
         (true, false, _) | (false, true, _) => SUBTLE,
@@ -176,8 +200,7 @@ pub fn nav_item(ui: &mut Ui, fonts: &Fonts, glyph: char, name: &str, selected: b
     }
     let text_left = if fonts.icons.is_some() { left + 34.0 } else { left };
     painter.text(pos2(text_left, rect.center().y), Align2::LEFT_CENTER, name, FontId::proportional(BODY), PRIMARY);
-    focus_ring(ui, &response, rect, 4.0);
-    response.on_hover_cursor(CursorIcon::PointingHand)
+    focus_ring(ui, response, rect, 4.0);
 }
 
 /// A note at the top of a page, like Windows' info bars.

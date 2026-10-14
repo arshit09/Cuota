@@ -157,6 +157,11 @@ pub fn open_target(target: &str) {
     shell_open(vec![target.to_owned()], folder_of(target));
 }
 
+/// Opens a web page in the default browser.
+pub fn open_page(url: &str) {
+    shell_open(vec![url.to_owned()], None);
+}
+
 /// The folder `path` is in, if it names one.
 fn folder_of(path: &str) -> Option<String> {
     let folder = Path::new(path).parent()?.to_string_lossy();
