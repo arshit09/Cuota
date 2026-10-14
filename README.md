@@ -73,6 +73,23 @@ The endpoint is undocumented, so a Claude update could break it.
 | *Rate limited* | Cuota backs off on its own. Try a longer `--interval`. |
 | Taskbar icons missing | Click **^** by the clock and drag the Cuota icons onto the taskbar. |
 
-## Credits
+## Credits and legal notice
 
-Clawd's animations are the GIFs from [Mascot Studio](https://github.com/Harriszed/mascot-studio), an unofficial community project by Harriszed, built on [Ayotomiwa Wale-Durojaye's reference animation](https://ayotomcs.me/claude-mascot). The Claude character belongs to Anthropic. The artwork comes with no redistribution license, so it's here for personal use; see [assets/mascot/NOTICE.md](assets/mascot/NOTICE.md). The GIFs are built into the exe, which makes it about 3.5 MB bigger.
+Cuota is an unofficial project. It isn't made, endorsed or supported by Anthropic, and has no affiliation with Anthropic.
+
+**Anthropic's names, logo and mascot.** Claude, Claude Code and Anthropic are trademarks of Anthropic PBC. The Claude logo and Clawd, the Claude Code mascot, are Anthropic's too. Cuota and its author don't own any of them. Cuota uses the names only to say which product it works with, and Anthropic hasn't reviewed or approved Cuota or how it uses any of them.
+
+- The Claude spark (Cuota's window icon and the logo in the panel) and the tray's pixel-art Clawd are drawn from `claude-logo.svg` and `clawd.svg`, which ship with Anthropic's Claude Code extension for VS Code. Claude Code is © Anthropic PBC, all rights reserved, and its use is subject to [Anthropic's Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms).
+- See Anthropic's [trademark guidelines](https://www.anthropic.com/legal/trademark-guidelines) before you use any of these in your own work.
+
+**Clawd's animations.** The 62 GIFs in [assets/mascot](assets/mascot) come from [Mascot Studio](https://github.com/Harriszed/mascot-studio), an unofficial community project by Harriszed, built on [Ayotomiwa Wale-Durojaye's reference animation](https://ayotomcs.me/claude-mascot). Neither grants a license to the artwork. As of 2026-10-14:
+
+- Mascot Studio has no license. Its notice, copied unchanged in [assets/mascot/NOTICE.md](assets/mascot/NOTICE.md), says it grants no open-source or commercial-use license and that permission to redistribute the artwork is unverified.
+- The reference animation's page says "© Copyright 2025" and gives no permission to reuse it.
+- The character they draw is Anthropic's.
+
+The GIFs are here, with credit, for personal, non-commercial use. Being in this repo gives you no rights to them. They're built into the exe (about 3.5 MB of it), so the same goes for any `cuota.exe` you build. Get permission from their owners before you reuse them, share them, or share a build that includes them.
+
+**Removal.** If you own any of this and want it taken down, [open an issue](https://github.com/arshit09/Cuota/issues) and it will be removed.
+
+**No warranty.** Cuota is provided as is, without warranty of any kind. It uses your Claude Code login and an undocumented Anthropic endpoint, so use it at your own risk.
