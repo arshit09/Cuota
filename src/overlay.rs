@@ -8,6 +8,7 @@ use crate::claude::{self, Limit, Shared, State};
 use crate::details;
 use crate::mascot::Mascot;
 use crate::settings::{DoubleClick, Mode, SIZES, Settings, Style};
+use crate::sound::{self, Cues};
 use crate::stats::Transcripts;
 use crate::status::Status;
 use crate::tray::{Tray, TrayConfig, TrayEvent};
@@ -221,6 +222,7 @@ pub struct Overlay {
     mascot: Mascot,
     clawd: Clawd,
     status: Status,
+    cues: Cues,
     fonts: Fonts,
     icon: Arc<IconData>,
     keep_bottom: Arc<AtomicBool>,
@@ -312,6 +314,7 @@ impl Overlay {
             mascot: Mascot::new(ctx, spark),
             clawd: Clawd::new(ctx),
             status: Status::new(),
+            cues: Cues::new(),
             fonts,
             icon,
             keep_bottom: Arc::new(AtomicBool::new(false)),
@@ -885,6 +888,10 @@ impl Overlay {
                 widgets::setting(ui, fonts, icon::ANIMATE, "Animate Clawd", about, widgets::TOGGLE_WIDTH, |ui| {
                     widgets::toggle(ui, &mut settings.animate);
                 });
+                let about = Some("Pixel blips while Claude works");
+                widgets::setting(ui, fonts, icon::SOUND, "Sound effects", about, widgets::TOGGLE_WIDTH, |ui| {
+                    widgets::toggle(ui, &mut settings.sounds);
+                });
             }
             Page::Panel | Page::Taskbar => {
                 let taskbar = page == Page::Taskbar;
@@ -980,6 +987,16 @@ impl eframe::App for Overlay {
             } else {
                 self.toggle_flyout(ctx);
             }
+        }
+
+        // Sounds follow Claude's sessions, whether or not the panel shows.
+        let now = Instant::now();
+        let state = self.state.lock().unwrap().clone();
+        if let Some(sound) = self.cues.update(&state, self.settings.sounds, now) {
+            sound::play(sound);
+        }
+        if let Some(due) = self.cues.due() {
+            ctx.request_repaint_after(due.saturating_duration_since(now));
         }
     }
 

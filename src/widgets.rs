@@ -74,6 +74,7 @@ pub mod icon {
     pub const SETTINGS: char = '\u{E713}';
     pub const SHOW_AS: char = '\u{E7F4}';
     pub const SIZE: char = '\u{E740}';
+    pub const SOUND: char = '\u{E767}';
     pub const STARTUP: char = '\u{EC4A}';
     pub const STATUS: char = '\u{E8BD}';
     pub const STYLE: char = '\u{EB05}';

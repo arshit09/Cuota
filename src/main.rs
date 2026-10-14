@@ -7,6 +7,7 @@ mod details;
 mod mascot;
 mod overlay;
 mod settings;
+mod sound;
 mod stats;
 mod status;
 mod tray;
