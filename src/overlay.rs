@@ -6,17 +6,18 @@
 use crate::animations::{self, Clawd};
 use crate::claude::{self, Limit, Shared, State};
 use crate::details;
+use crate::glance;
 use crate::mascot::Mascot;
 use crate::settings::{DoubleClick, Mode, SIZES, Settings, Style};
 use crate::stats::Transcripts;
 use crate::status::Status;
 use crate::tray::{Tray, TrayConfig, TrayEvent};
 use crate::view::{self, AMBER, DIM, TEXT};
-use crate::widgets::{self, Fonts, icon, single_line};
+use crate::widgets::{self, Fonts, SortRow, Sorted, icon, single_line};
 use crate::win;
 use chrono::{TimeDelta, Utc};
 use eframe::egui::{
-    self, Align, Align2, Color32, FontData, FontFamily, FontId, IconData, Label, Layout, Margin, MouseWheelUnit,
+    self, Align, Align2, Color32, FontData, FontFamily, FontId, IconData, Id, Label, Layout, Margin, MouseWheelUnit,
     PointerButton, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId, WindowLevel, pos2, vec2,
 };
@@ -32,8 +33,11 @@ const MARGIN: f32 = 12.0;
 const GAP: f32 = 10.0;
 /// Between Clawd's status and the meters under it.
 const STATUS_GAP: f32 = 4.0;
-/// Wrap width for an error message when there are no meters to line up with.
+/// Wrap width for an error message, or the details picked to show under the meters, when the
+/// meters are narrower.
 const NOTE_WIDTH: f32 = 220.0;
+/// Between the meters and those details.
+const GLANCE_GAP: f32 = 6.0;
 /// The settings window, a landscape one like other Windows apps' settings: this big when the
 /// screen has room, and resizable down to `SETTINGS_MIN`. A sidebar lists the pages, and the
 /// one shown runs no wider than `PAGE_WIDTH`.
@@ -60,7 +64,8 @@ const TITLE_BAR: Vec2 = vec2(16.0, 39.0);
 const SCROLL_LANE: f32 = 10.0;
 const DETAILS_WIDTH: f32 = 348.0 + SCROLL_LANE;
 const DETAILS_HEIGHT: f32 = 520.0;
-/// How often the expanded panel reads what Claude Code has done since it last looked.
+/// How often the panel reads what Claude Code has done since it last looked, while it shows
+/// any of it.
 const STATS_REFRESH: Duration = Duration::from_secs(15);
 /// Keeps an expanded panel this far from its screen's edges.
 const SCREEN_GAP: f32 = 8.0;
@@ -124,18 +129,21 @@ enum Page {
     Appearance,
     /// What the panel shows.
     Panel,
+    /// More the panel shows under its meters, and in what order.
+    Details,
     /// What the taskbar icons show.
     Taskbar,
 }
 
 impl Page {
-    const ALL: [Self; 4] = [Self::General, Self::Appearance, Self::Panel, Self::Taskbar];
+    const ALL: [Self; 5] = [Self::General, Self::Appearance, Self::Panel, Self::Details, Self::Taskbar];
 
     fn name(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Panel => "Panel",
+            Self::Details => "Details",
             Self::Taskbar => "Taskbar",
         }
     }
@@ -145,6 +153,7 @@ impl Page {
             Self::General => icon::SETTINGS,
             Self::Appearance => icon::APPEARANCE,
             Self::Panel => icon::PANEL,
+            Self::Details => icon::DETAILS,
             Self::Taskbar => icon::TASKBAR,
         }
     }
@@ -261,7 +270,7 @@ pub struct Overlay {
     /// How tall the details were when last drawn.
     details_height: f32,
     transcripts: Transcripts,
-    /// When the expanded panel last asked for Claude Code's stats.
+    /// When the panel last asked for Claude Code's stats.
     stats_asked: Option<Instant>,
 }
 
@@ -477,8 +486,9 @@ impl Overlay {
         }
     }
 
-    /// Asks for Claude Code's latest stats every `STATS_REFRESH` while the panel is expanded.
-    /// Returns how long until the next ask.
+    /// Asks for Claude Code's latest stats every `STATS_REFRESH` while the panel is expanded,
+    /// shows a detail from them, or settings show examples of those. Returns how long until the
+    /// next ask.
     fn refresh_stats(&mut self, state: &State) -> Duration {
         let wait = self.stats_asked.map_or(Duration::ZERO, |at| STATS_REFRESH.saturating_sub(at.elapsed()));
         if !wait.is_zero() {
@@ -529,12 +539,16 @@ impl Overlay {
 
         // Lay everything out first so the window can be sized to fit.
         let view = &self.settings.panel;
+        let now = Utc::now();
         let limits: Vec<&Limit> = state.limits.iter().filter(|l| view.shows(&l.label)).collect();
-        let builder = view::Builder { painter: &painter, strong: &self.fonts.strong, view, now: Utc::now(), scale };
+        let builder = view::Builder { painter: &painter, strong: &self.fonts.strong, view, now, scale };
         let meters = builder.build(&limits);
-        let note = note(state).map(|(text, color)| {
-            painter.layout(text, FontId::proportional(12.0 * scale), color, meters.size.x.max(NOTE_WIDTH * scale))
-        });
+        let width = meters.size.x.max(NOTE_WIDTH * scale);
+        let note = note(state).map(|(text, color)| painter.layout(text, FontId::proportional(12.0 * scale), color, width));
+        // Whatever more was picked to show under them.
+        let stats = self.transcripts.latest();
+        let source = glance::Source { state, stats: stats.as_deref(), limits: &limits, now };
+        let glance = glance::Builder { painter: &painter, source, scale, width }.build(view.details.shown());
         // Clawd's status, when it shows, heads the meters.
         let animate = self.settings.animate;
         let status = view.clawd && view.status;
@@ -552,9 +566,12 @@ impl Overlay {
         let note_size = note.as_ref().map_or(Vec2::ZERO, |n| n.size());
         let note_gap = if note.is_some() && meters.size.y > 0.0 { 4.0 * scale } else { 0.0 };
         let status_gap = if status && meters.size.y + note_size.y > 0.0 { STATUS_GAP * scale } else { 0.0 };
+        // The meters with the status over them and the note under them, then any details.
+        let head = status_size.y + status_gap + meters.size.y + note_gap + note_size.y;
+        let glance_gap = if glance.size.y > 0.0 && head > 0.0 { GLANCE_GAP * scale } else { 0.0 };
         let body = vec2(
-            meters.size.x.max(note_size.x).max(status_size.x),
-            status_size.y + status_gap + meters.size.y + note_gap + note_size.y,
+            meters.size.x.max(note_size.x).max(status_size.x).max(glance.size.x),
+            head + glance_gap + glance.size.y,
         );
         let gap = if clawd.x > 0.0 && body.x > 0.0 { GAP * scale } else { 0.0 };
         let row = vec2(clawd.x + gap + body.x, clawd.y.max(body.y));
@@ -581,7 +598,9 @@ impl Overlay {
         let details = details.map(|details| Rect::from_min_size(origin + vec2(0.0, row.y), vec2(inner.x, details.y)));
         let mut next_frame = None;
         if clawd.x > 0.0 {
-            let slot = Rect::from_min_size(origin + vec2(0.0, (row.y - clawd.y) / 2.0), clawd);
+            // Level with the meters, so the details under them run on below him.
+            let level = (row.y - body.y) / 2.0 + (head - clawd.y) / 2.0;
+            let slot = Rect::from_min_size(origin + vec2(0.0, level.clamp(0.0, row.y - clawd.y)), clawd);
             next_frame = self.clawd.paint(&painter, slot, animate, scale);
         }
         let body_at = origin + vec2(clawd.x + gap, (row.y - body.y) / 2.0);
@@ -590,17 +609,20 @@ impl Overlay {
             let next = self.status.paint(&painter, body_at, working, animate, scale);
             next_frame = next_frame.into_iter().chain(next).min();
         }
-        let hints = meters.paint(&painter, body_at + vec2(0.0, status_size.y + status_gap));
+        let meters_at = body_at + vec2(0.0, status_size.y + status_gap);
+        let mut below = meters_at.y + meters.size.y + note_gap;
+        let mut hints = meters.paint(&painter, meters_at);
         if let Some(note) = note {
-            painter.galley(body_at + vec2(0.0, body.y - note_size.y), note, TEXT);
+            painter.galley(pos2(body_at.x, below), note, TEXT);
+            below += note_size.y;
         }
+        hints.extend(glance.paint(&painter, pos2(body_at.x, below + glance_gap)));
         for (i, (rect, hint)) in hints.into_iter().enumerate() {
             ui.interact(rect, ui.id().with(("hint", i)), Sense::hover()).on_hover_text(hint);
         }
 
         if let Some(area) = details {
             painter.hline(full.left() + margin..=full.right() - margin, area.top() + 6.0, Stroke::new(1.0, BORDER));
-            let stats = self.transcripts.latest();
             let mut slot = ui.new_child(UiBuilder::new().max_rect(area));
             // Dragging anywhere moves the panel, so the details scroll by wheel and scroll bar.
             let scroll_by = egui::scroll_area::ScrollSource { drag: egui::scroll_area::ScrollSource::NONE.drag, ..Default::default() };
@@ -803,7 +825,9 @@ impl Overlay {
         let page = *page;
 
         let note = match page {
-            Page::Panel if settings.pinned().is_none() => Some("The panel opens when you click a taskbar icon."),
+            Page::Panel | Page::Details if settings.pinned().is_none() => {
+                Some("The panel opens when you click a taskbar icon.")
+            }
             Page::Taskbar if !settings.shows_as(Mode::Taskbar) => {
                 Some("These apply once Show as, under General, includes Taskbar.")
             }
@@ -936,6 +960,38 @@ impl Overlay {
                     });
                 }
             }
+            Page::Details => {
+                let view = &mut settings.panel;
+                // Each row's example is what the panel would show now, where it can.
+                let stats = self.transcripts.latest();
+                let limits: Vec<&Limit> = state.limits.iter().filter(|limit| view.shows(&limit.label)).collect();
+                let source = glance::Source { state, stats: stats.as_deref(), limits: &limits, now: Utc::now() };
+                let items = view.details.items();
+                let examples: Vec<String> = items.iter().map(|&(detail, _)| glance::example(detail, &source)).collect();
+                let rows: Vec<SortRow> = items
+                    .iter()
+                    .zip(&examples)
+                    .map(|(&(detail, on), example)| SortRow {
+                        id: Id::new(("detail", detail)),
+                        on,
+                        title: glance::title(detail),
+                        description: example,
+                    })
+                    .collect();
+                let summary = match view.details.shown().count() {
+                    0 => "None".to_owned(),
+                    shown => format!("{shown} shown"),
+                };
+                let about = Some("Pick what the panel shows there, and drag them into order");
+                let sorted = widgets::group(ui, fonts, icon::CHECKLIST, "Under the meters", about, &summary, |ui| {
+                    widgets::sortable(ui, fonts, &rows)
+                });
+                match sorted {
+                    Some(Sorted::Toggled(index)) => view.details.toggle(index),
+                    Some(Sorted::Moved { from, to }) => view.details.move_item(from, to),
+                    None => {}
+                }
+            }
         }
     }
 }
@@ -995,7 +1051,9 @@ impl eframe::App for Overlay {
             next_frame = Some(self.panel(ui, &state).unwrap_or_else(|| {
                 Duration::from_millis(60_000 - Utc::now().timestamp_millis().rem_euclid(60_000) as u64)
             }));
-            if self.expanded {
+            // Claude Code's stats, while something shows them.
+            let details = &self.settings.panel.details;
+            if self.expanded || details.use_stats() || self.settings_open && self.settings_page == Page::Details {
                 let wait = self.refresh_stats(&state);
                 next_frame = next_frame.map(|next| next.min(wait));
             }
@@ -1090,7 +1148,7 @@ fn spawn_demo_toggle(state: Shared, on_update: impl Fn() + Send + 'static) {
 }
 
 /// Windows' own UI and icon fonts (egui's bundled fonts are left out of the build).
-fn setup_fonts(ctx: &egui::Context) -> Fonts {
+pub(crate) fn setup_fonts(ctx: &egui::Context) -> Fonts {
     let dir = PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
     let load = |names: &[&str]| names.iter().find_map(|name| std::fs::read(dir.join(name)).ok());
     let mut fonts = egui::FontDefinitions::empty();
@@ -1125,6 +1183,7 @@ fn setup_fonts(ctx: &egui::Context) -> Fonts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{Detail, Details};
 
     #[test]
     fn windows_fonts_have_the_stars_of_clawds_status() {
@@ -1194,6 +1253,163 @@ mod tests {
         assert_eq!(settings.size, SIZES[9]);
     }
 
+    /// Lays the panel out in a frame, and returns the size it asks the window to be.
+    fn panel_size(ctx: &egui::Context, overlay: &mut Overlay, state: &State) -> Vec2 {
+        let _ = ctx.run_ui(window(vec2(1600.0, 1200.0)), |ui| {
+            overlay.panel(ui, state);
+        });
+        overlay.size
+    }
+
+    #[test]
+    fn the_panel_grows_to_fit_the_details_it_shows_but_no_wider_than_its_meters() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        let all: Details = Detail::ALL.map(|detail| (detail, true)).into_iter().collect();
+        let mut grown = Vec::new();
+        for size in [SIZES[0], 1.0, SIZES[9]] {
+            overlay.settings.size = size;
+            // Without Clawd the panel is as tall as what would be beside him.
+            overlay.settings.panel.clawd = false;
+            overlay.settings.panel.details = Details::default();
+            let plain = panel_size(&ctx, &mut overlay, &state);
+            let widest = plain.x.max(((NOTE_WIDTH + 2.0 * MARGIN) * size).round());
+            // The demo has something for every detail to show.
+            for detail in Detail::ALL {
+                overlay.settings.panel.details = [(detail, true)].into_iter().collect();
+                let shown = panel_size(&ctx, &mut overlay, &state);
+                assert!(shown.y > plain.y, "{detail:?} at {size} leaves the panel at {shown:?}");
+                assert!(shown.x <= widest, "{detail:?} at {size} widens the panel to {shown:?}");
+            }
+            overlay.settings.panel.details = all.clone();
+            let everything = panel_size(&ctx, &mut overlay, &state);
+            assert!(everything.x <= widest, "at {size} all of them widen the panel to {everything:?}");
+            grown.push(everything.y - plain.y);
+            // Beside Clawd too, they make room for themselves.
+            overlay.settings.panel.clawd = true;
+            assert!(panel_size(&ctx, &mut overlay, &state).y > (animations::SIZE.y + 2.0 * MARGIN) * size);
+        }
+        assert!(grown.windows(2).all(|pair| pair[0] < pair[1]), "they scale with the panel: {grown:?}");
+    }
+
+    /// Where the settings drew `text`, the first time.
+    fn drawn(output: &egui::FullOutput, text: &str) -> Rect {
+        let rect = output.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(shape) if shape.galley.text() == text => Some(shape.visual_bounding_rect()),
+            _ => None,
+        });
+        rect.unwrap_or_else(|| panic!("nothing says {text:?}"))
+    }
+
+    #[test]
+    fn a_detail_dragged_by_its_gripper_lands_where_it_is_dropped() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        overlay.settings_page = Page::Details;
+        let mut time = 0.0;
+        let mut frame = |overlay: &mut Overlay, events: Vec<egui::Event>| {
+            time += 0.05;
+            let input = egui::RawInput { events, time: Some(time), ..window(SETTINGS_SIZE) };
+            ctx.run_ui(input, |ui| {
+                overlay.settings_ui(ui, &state);
+            })
+        };
+        let button = |pos: Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let order = |overlay: &Overlay| -> Vec<Detail> {
+            overlay.settings.panel.details.items().iter().map(|(detail, _)| *detail).collect()
+        };
+        let [first, second, third] = [0, 1, 2].map(|i| glance::title(Detail::ALL[i]));
+
+        let output = frame(&mut overlay, vec![]);
+        let (top, row) = (drawn(&output, first).top(), drawn(&output, second).top() - drawn(&output, first).top());
+        // The gripper on the first row, the one level with its title.
+        let grip = output.shapes.iter().filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(shape) if shape.galley.text() == icon::REORDER.to_string() => {
+                Some(shape.visual_bounding_rect().center())
+            }
+            _ => None,
+        });
+        let grip = grip.min_by(|a, b| (a.y - top).abs().total_cmp(&(b.y - top).abs())).unwrap();
+        assert!(grip.x < drawn(&output, first).left());
+
+        // Picked up and carried down past the middles of the next two rows.
+        frame(&mut overlay, vec![egui::Event::PointerMoved(grip)]);
+        frame(&mut overlay, vec![button(grip, true)]);
+        let carried = 2.25 * row;
+        let mut output = None;
+        for step in 1..=9 {
+            let at = grip + vec2(0.0, carried * step as f32 / 9.0);
+            output = Some(frame(&mut overlay, vec![egui::Event::PointerMoved(at)]));
+        }
+        // Held there while the rows slide.
+        for _ in 0..4 {
+            output = Some(frame(&mut overlay, vec![]));
+        }
+        let output = output.unwrap();
+        assert!((drawn(&output, first).top() - (top + carried)).abs() < 1.0, "it follows the pointer");
+        for (title, slot) in [(second, 0.0), (third, 1.0)] {
+            assert!((drawn(&output, title).top() - (top + slot * row)).abs() < 1.0, "{title} makes room");
+        }
+        assert_eq!(order(&overlay), Detail::ALL, "nothing moves until it's dropped");
+        frame(&mut overlay, vec![button(grip + vec2(0.0, carried), false)]);
+        let dropped = order(&overlay);
+        assert_eq!(dropped[..4], [Detail::ALL[1], Detail::ALL[2], Detail::ALL[0], Detail::ALL[3]]);
+
+        // Escape puts a dragged row back.
+        let grip = grip + vec2(0.0, 2.0 * row);
+        frame(&mut overlay, vec![egui::Event::PointerMoved(grip)]);
+        frame(&mut overlay, vec![button(grip, true)]);
+        frame(&mut overlay, vec![egui::Event::PointerMoved(grip - vec2(0.0, row))]);
+        frame(&mut overlay, vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        frame(&mut overlay, vec![button(grip - vec2(0.0, 2.0 * row), false)]);
+        assert_eq!(order(&overlay), dropped);
+
+        // A click on a row checks it, but not one on its gripper.
+        let title = drawn(&frame(&mut overlay, vec![]), glance::title(dropped[3])).center();
+        for at in [grip, title] {
+            frame(&mut overlay, vec![egui::Event::PointerMoved(at)]);
+            frame(&mut overlay, vec![button(at, true)]);
+            frame(&mut overlay, vec![button(at, false)]);
+        }
+        let shown: Vec<Detail> = overlay.settings.panel.details.shown().collect();
+        assert_eq!(shown, [dropped[3]]);
+    }
+
+    #[test]
+    fn alt_and_an_arrow_move_the_detail_with_keyboard_focus() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        overlay.settings_page = Page::Details;
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::ALT,
+        };
+        let frame = |overlay: &mut Overlay, events| {
+            let _ = ctx.run_ui(egui::RawInput { events, ..window(SETTINGS_SIZE) }, |ui| {
+                overlay.settings_ui(ui, &state);
+            });
+        };
+        frame(&mut overlay, vec![]);
+        ctx.memory_mut(|memory| memory.request_focus(Id::new(("detail", Detail::ALL[0]))));
+        frame(&mut overlay, vec![key(egui::Key::ArrowDown)]);
+        frame(&mut overlay, vec![key(egui::Key::ArrowDown)]);
+        let order: Vec<Detail> = overlay.settings.panel.details.items().iter().map(|(detail, _)| *detail).collect();
+        assert_eq!(order[..3], [Detail::ALL[1], Detail::ALL[2], Detail::ALL[0]], "focus goes with it");
+        frame(&mut overlay, vec![key(egui::Key::ArrowUp)]);
+        assert_eq!(overlay.settings.panel.details.items()[1].0, Detail::ALL[0]);
+    }
+
     /// An overlay showing the demo's usage, the context it draws in, and that usage.
     fn settings_overlay() -> (egui::Context, Overlay, Arc<State>) {
         let ctx = egui::Context::default();
@@ -1235,7 +1451,8 @@ mod tests {
         for settings in tallest_settings() {
             let show = settings.show.clone();
             overlay.settings = settings;
-            for page in Page::ALL {
+            // Details is a list of everything the panel can show, which scrolls like any long list.
+            for page in Page::ALL.into_iter().filter(|&page| page != Page::Details) {
                 overlay.settings_page = page;
                 let mut height = 0.0;
                 let _ = ctx.run_ui(window(SETTINGS_SIZE), |ui| height = overlay.settings_ui(ui, &state));

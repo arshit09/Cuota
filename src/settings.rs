@@ -51,11 +51,23 @@ pub struct View {
     pub style: Style,
     /// Labels of the limits the user hid, e.g. "Fable".
     pub hidden: BTreeSet<String>,
+    /// More it shows under the meters, from what the expanded panel's details tell. The panel
+    /// only, and left out of the file until changed.
+    #[serde(skip_serializing_if = "Details::is_default")]
+    pub details: Details,
 }
 
 impl Default for View {
     fn default() -> Self {
-        Self { clawd: true, status: true, percent: true, time_left: true, style: Style::Bars, hidden: BTreeSet::new() }
+        Self {
+            clawd: true,
+            status: true,
+            percent: true,
+            time_left: true,
+            style: Style::Bars,
+            hidden: BTreeSet::new(),
+            details: Details::default(),
+        }
     }
 }
 
@@ -70,6 +82,161 @@ impl View {
         } else {
             self.hidden.insert(label.to_owned());
         }
+    }
+}
+
+/// Something more the panel can show under its meters, from what its expanded details tell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Detail {
+    /// When each limit resets.
+    Resets,
+    /// Where each limit is headed at the pace it's going.
+    Pace,
+    /// How much of the Weekly limit each model's own limit has used.
+    WeeklyShare,
+    /// What the week's usage went to, as a split bar.
+    Apps,
+    /// The plan, and since when.
+    Plan,
+    /// Whether extra usage is on, and what it has spent.
+    ExtraUsage,
+    /// How many Claude Code sessions are running, and how many of them work.
+    Sessions,
+    /// The running sessions' titles.
+    SessionTitles,
+    /// Claude Code's replies, tool calls and tokens this week.
+    ClaudeCode,
+    /// Claude Code's tokens each day this week, as little bars.
+    TokensPerDay,
+    /// The hour of the day it replies most.
+    BusiestHour,
+    /// The model Claude Code used most this week, by tokens.
+    TopModel,
+    /// The folder it worked in most.
+    TopProject,
+    /// When usage was last fetched.
+    Updated,
+}
+
+impl Detail {
+    /// In the order the expanded panel's details tell them.
+    pub const ALL: [Self; 14] = [
+        Self::Resets,
+        Self::Pace,
+        Self::WeeklyShare,
+        Self::Apps,
+        Self::Plan,
+        Self::ExtraUsage,
+        Self::Sessions,
+        Self::SessionTitles,
+        Self::ClaudeCode,
+        Self::TokensPerDay,
+        Self::BusiestHour,
+        Self::TopModel,
+        Self::TopProject,
+        Self::Updated,
+    ];
+
+    /// Whether it comes from Claude Code's transcripts, which are only read while something
+    /// shows them.
+    pub fn uses_stats(self) -> bool {
+        matches!(self, Self::ClaudeCode | Self::TokensPerDay | Self::BusiestHour | Self::TopModel | Self::TopProject)
+    }
+}
+
+/// Every [`Detail`] in the order the panel draws them, and whether each one shows. None do
+/// until picked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Details(Vec<(Detail, bool)>);
+
+impl Default for Details {
+    fn default() -> Self {
+        Self(Detail::ALL.map(|detail| (detail, false)).to_vec())
+    }
+}
+
+/// Keeps the first of each detail, in the order given, and adds any left out at the end,
+/// hidden, so a detail newer than the list still has a place in it.
+impl FromIterator<(Detail, bool)> for Details {
+    fn from_iter<I: IntoIterator<Item = (Detail, bool)>>(items: I) -> Self {
+        let mut list: Vec<(Detail, bool)> = Vec::new();
+        for (detail, shown) in items {
+            if !list.iter().any(|(listed, _)| *listed == detail) {
+                list.push((detail, shown));
+            }
+        }
+        for detail in Detail::ALL {
+            if !list.iter().any(|(listed, _)| *listed == detail) {
+                list.push((detail, false));
+            }
+        }
+        Self(list)
+    }
+}
+
+impl Details {
+    /// Each detail, in order, and whether it shows.
+    pub fn items(&self) -> &[(Detail, bool)] {
+        &self.0
+    }
+
+    /// The details that show, in order.
+    pub fn shown(&self) -> impl Iterator<Item = Detail> + '_ {
+        self.0.iter().filter(|(_, shown)| *shown).map(|(detail, _)| *detail)
+    }
+
+    /// Whether any detail that shows needs Claude Code's stats.
+    pub fn use_stats(&self) -> bool {
+        self.shown().any(Detail::uses_stats)
+    }
+
+    /// Shows the detail at `index`, or hides it if it shows.
+    pub fn toggle(&mut self, index: usize) {
+        if let Some((_, shown)) = self.0.get_mut(index) {
+            *shown = !*shown;
+        }
+    }
+
+    /// Moves the detail at `from` to `to`, where it lands once out of the way, sliding the ones
+    /// between over by one.
+    pub fn move_item(&mut self, from: usize, to: usize) {
+        if from < self.0.len() {
+            let item = self.0.remove(from);
+            self.0.insert(to.min(self.0.len()), item);
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// A detail as saved: by name, so a name this version doesn't know (one from a newer version)
+/// is skipped rather than failing the whole file.
+#[derive(Serialize, Deserialize)]
+struct Saved {
+    #[serde(deserialize_with = "known")]
+    detail: Option<Detail>,
+    #[serde(default)]
+    shown: bool,
+}
+
+/// The detail named, or `None` for one this version doesn't know, whatever form its name takes.
+fn known<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Detail>, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(deserializer)?).ok())
+}
+
+impl Serialize for Details {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let saved: Vec<Saved> = self.0.iter().map(|&(detail, shown)| Saved { detail: Some(detail), shown }).collect();
+        saved.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Details {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let saved = Vec::<Saved>::deserialize(deserializer)?;
+        Ok(saved.into_iter().filter_map(|saved| Some((saved.detail?, saved.shown))).collect())
     }
 }
 
@@ -217,6 +384,77 @@ mod tests {
         let off = Settings { panel: View { status: false, ..View::default() }, ..Settings::default() };
         let text = serde_json::to_string(&off).unwrap();
         assert!(!serde_json::from_str::<Settings>(&text).unwrap().panel.status);
+    }
+
+    fn order(details: &Details) -> Vec<Detail> {
+        details.items().iter().map(|(detail, _)| *detail).collect()
+    }
+
+    #[test]
+    fn the_panel_shows_no_details_until_some_are_picked_and_older_settings_still_load() {
+        let settings = Settings::default();
+        assert_eq!(settings.panel.details.shown().count(), 0);
+        assert_eq!(order(&settings.panel.details), Detail::ALL);
+        let text = serde_json::to_string(&settings).unwrap();
+        assert!(!text.contains("details"), "untouched, they stay out of the file: {text}");
+        let older: Settings = serde_json::from_str(r#"{"panel":{"clawd":true,"percent":false},"opacity":0.8}"#).unwrap();
+        assert_eq!(older.panel.details, Details::default());
+        assert_eq!(older.opacity, 0.8);
+    }
+
+    #[test]
+    fn picked_details_keep_their_order_when_saved() {
+        let mut settings = Settings::default();
+        let details = &mut settings.panel.details;
+        details.move_item(Detail::ALL.len() - 1, 0);
+        details.toggle(0);
+        details.toggle(3);
+        let shown: Vec<Detail> = settings.panel.details.shown().collect();
+        assert_eq!(shown, [Detail::Updated, Detail::WeeklyShare]);
+        let text = serde_json::to_string(&settings).unwrap();
+        assert!(text.contains(r#"{"detail":"Updated","shown":true}"#), "{text}");
+        let loaded: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(loaded.panel.details, settings.panel.details);
+        assert_eq!(loaded.taskbar.details, Details::default());
+    }
+
+    #[test]
+    fn details_from_another_version_load_without_losing_the_rest() {
+        // A detail this version doesn't know, one listed twice, and most of them left out.
+        let text = r#"{"opacity":0.7,"panel":{"details":[
+            {"detail":"TokensPerDay","shown":true},
+            {"detail":"Horoscope","shown":true},
+            {"detail":{"Weather":"Oslo"},"shown":true},
+            {"detail":"Pace"},
+            {"detail":"TokensPerDay","shown":false}
+        ]}}"#;
+        let settings: Settings = serde_json::from_str(text).unwrap();
+        assert_eq!(settings.opacity, 0.7);
+        let details = &settings.panel.details;
+        assert_eq!(details.shown().collect::<Vec<_>>(), [Detail::TokensPerDay]);
+        let listed = order(details);
+        assert_eq!(listed[..2], [Detail::TokensPerDay, Detail::Pace]);
+        // The rest follow in their usual order, hidden.
+        let rest: Vec<Detail> = Detail::ALL.into_iter().filter(|d| ![Detail::TokensPerDay, Detail::Pace].contains(d)).collect();
+        assert_eq!(listed[2..], rest);
+    }
+
+    #[test]
+    fn a_moved_detail_lands_where_it_was_dropped() {
+        let mut details = Details::default();
+        let [a, b, c, d] = [Detail::ALL[0], Detail::ALL[1], Detail::ALL[2], Detail::ALL[3]];
+        details.move_item(0, 2);
+        assert_eq!(order(&details)[..4], [b, c, a, d], "down");
+        details.move_item(2, 0);
+        assert_eq!(order(&details)[..4], [a, b, c, d], "and back up");
+        details.move_item(3, 1);
+        assert_eq!(order(&details)[..4], [a, d, b, c], "up past two");
+        details.move_item(1, 1);
+        assert_eq!(order(&details)[..4], [a, d, b, c], "dropped where it was");
+        details.move_item(0, 99);
+        assert_eq!(*order(&details).last().unwrap(), a, "past the end, to the end");
+        details.move_item(99, 0);
+        assert_eq!(order(&details).len(), Detail::ALL.len(), "nothing there to move");
     }
 
     #[test]
