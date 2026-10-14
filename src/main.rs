@@ -5,6 +5,7 @@ mod animations;
 mod claude;
 mod details;
 mod glance;
+mod log;
 mod mascot;
 mod overlay;
 mod settings;
@@ -36,12 +37,22 @@ fn main() -> eframe::Result {
         println!("{USAGE}");
         return Ok(());
     }
+    log::start();
+    let build = if cfg!(debug_assertions) { " (debug build)" } else { "" };
+    let with = if args.is_empty() { String::new() } else { format!(" with {}", args.join(" ")) };
+    log::info!(
+        "Cuota {}{build} started{with}, on {} at {:.0}% scale",
+        env!("CARGO_PKG_VERSION"),
+        win::windows_version(),
+        win::system_scale() * 100.0
+    );
     if flag("--once") {
         print_once();
         return Ok(());
     }
     if !win::first_instance() {
         // Already running, say from startup: show that one's settings instead of a second copy.
+        log::info!("Cuota was already running, so this copy opened its settings and quit");
         tray::open_running_settings();
         return Ok(());
     }
@@ -75,14 +86,20 @@ fn main() -> eframe::Result {
             .with_icon(icon.clone()),
         ..Default::default()
     };
-    eframe::run_native(
+    let run = eframe::run_native(
         "Cuota",
         options,
         Box::new(move |cc| {
             let interval = TimeDelta::seconds(interval);
             Ok(Box::new(overlay::Overlay::new(cc, settings, interval, demo, &spark, icon)))
         }),
-    )
+    );
+    match &run {
+        Ok(()) => log::info!("Cuota quit"),
+        // Such as OpenGL missing, which a release build has no console to say.
+        Err(e) => log::error!("Cuota's window couldn't run: {e}"),
+    }
+    run
 }
 
 /// The saved panel position if it's still on a monitor, otherwise near the top-left.

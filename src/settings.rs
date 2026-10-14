@@ -1,8 +1,10 @@
 //! User preferences, saved as JSON in `%APPDATA%\Cuota\settings.json`.
 
+use crate::log;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 /// Where Cuota shows. Several can be on at once, but Always on top and Desktop place the same
 /// panel, so at most one of those two is.
@@ -302,10 +304,7 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        let mut settings: Self = Self::path()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
+        let mut settings = Self::path().and_then(|path| Self::read(&path)).unwrap_or_default();
         // Showing nowhere would leave nothing to right-click for settings.
         if settings.show.is_empty() {
             settings.show = Self::default().show;
@@ -313,6 +312,22 @@ impl Settings {
         // A size edited into the file by hand snaps to the nearest step.
         settings.size = SIZES[settings.size_step()];
         settings
+    }
+
+    /// The settings saved at `path`. None are saved before the first change, but settings that
+    /// can't be read are logged, since the defaults replace them at the next save.
+    fn read(path: &Path) -> Option<Self> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == ErrorKind::NotFound => return None,
+            Err(e) => {
+                log::warn!("Couldn't open the settings in {}, so they start over: {e}", path.display());
+                return None;
+            }
+        };
+        serde_json::from_str(&text)
+            .inspect_err(|e| log::warn!("Couldn't read the settings in {}, so they start over: {e}", path.display()))
+            .ok()
     }
 
     /// The Size slider's step nearest to `size`.
@@ -353,11 +368,14 @@ impl Settings {
 
     pub fn save(&self) {
         let Some(path) = Self::path() else { return };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, text);
+        let save = || -> std::io::Result<()> {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&path, serde_json::to_string_pretty(self)?)
+        };
+        if let Err(e) = save() {
+            log::error!("Couldn't save the settings to {}: {e}", path.display());
         }
     }
 }

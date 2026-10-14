@@ -378,7 +378,11 @@ fn notify(window: HWND, message: u32, id: u32, icon: Option<(&[u8], usize, &str)
             *slot = unit;
         }
     }
-    unsafe { Shell_NotifyIconW(message, &data) };
+    let done = unsafe { Shell_NotifyIconW(message, &data) } != 0;
+    // Updates go out many times a minute, so only a missing icon is worth logging.
+    if !done && message == NIM_ADD {
+        crate::log::warn!("Windows didn't add tray icon {id}");
+    }
     if handle != 0 {
         // Windows keeps its own copy.
         unsafe { DestroyIcon(handle) };

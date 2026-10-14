@@ -66,8 +66,10 @@ pub mod icon {
     pub const DOUBLE_CLICK: char = '\u{E962}';
     /// Leads out of the app, as to a web page.
     pub const EXTERNAL: char = '\u{E8A7}';
+    pub const FOLDER: char = '\u{E838}';
     pub const HEAR: char = '\u{E7F6}';
     pub const LIMITS: char = '\u{E9F9}';
+    pub const LOG: char = '\u{E8A5}';
     pub const OPACITY: char = '\u{E793}';
     pub const PANEL: char = '\u{E737}';
     pub const PERCENT: char = '\u{E94C}';

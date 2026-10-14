@@ -118,6 +118,7 @@ Tips:
 - Calls `api.anthropic.com/api/oauth/usage`, the same endpoint Claude Code uses. The token goes only to Anthropic.
 - For usage details, reads Claude Code's session transcripts in `%USERPROFILE%\.claude\projects`, only while the panel is expanded or shows a detail from them. They stay on your PC.
 - Never writes to Claude's files. Its own settings live in `%APPDATA%\Cuota\settings.json`.
+- Logs rate limits, failed requests, crashes and other problems to `%LOCALAPPDATA%\Cuota\Logs\cuota.log`. Past 1 MB it moves to `cuota.old.log`, so the log stays small. The log leaves out your email and what your sessions are about.
 
 API calls stay rare: about once a minute while Claude is working, every 10 minutes when idle, and right after a limit resets. It also reuses usage Claude Code already fetched.
 
@@ -131,6 +132,7 @@ The endpoint is undocumented, so a Claude update could break it.
 | *No Claude login found* / *Login rejected* | Run `claude`, then `/login`. |
 | *Rate limited* | Cuota backs off on its own. Try a longer `--interval`. |
 | Taskbar icons missing | Click **^** by the clock and drag the Cuota icons onto the taskbar. |
+| Anything else | Open **Settings › General › Log file** to see what Cuota ran into, and attach `cuota.log` to an issue. |
 
 ## License
 

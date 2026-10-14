@@ -7,6 +7,7 @@ use crate::animations::{self, Clawd};
 use crate::claude::{self, Limit, Shared, State, Step};
 use crate::details;
 use crate::glance;
+use crate::log;
 use crate::mascot::Mascot;
 use crate::settings::{DoubleClick, Mode, SIZES, Settings, SoundMode, Style};
 use crate::sound::{self, Cues};
@@ -890,6 +891,17 @@ impl Overlay {
                         *starts_with_windows = win::starts_with_windows();
                     }
                 });
+
+                if let Some(log) = log::path() {
+                    let about = Some("Rate limits, errors and other things Cuota ran into");
+                    let width = widgets::button_width(ui, fonts, "Open folder");
+                    widgets::setting(ui, fonts, icon::LOG, "Log file", about, width, |ui| {
+                        let button = widgets::button(ui, fonts, icon::FOLDER, "Open folder");
+                        if button.on_hover_text(log.display().to_string()).clicked() {
+                            win::show_in_folder(&log);
+                        }
+                    });
+                }
             }
             Page::Appearance => {
                 let size = format!("{:.0}%", settings.size * 100.0);

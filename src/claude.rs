@@ -2,6 +2,7 @@
 //! its per-session busy/idle/waiting status and the steps its transcripts show, and the plan
 //! usage endpoint.
 
+use crate::log;
 use chrono::{DateTime, Local, TimeDelta, Utc};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -9,6 +10,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -285,8 +287,23 @@ pub enum Error {
     Expired,
     Unauthorized,
     RateLimited(Option<TimeDelta>),
-    Http(u16),
+    /// The status, and the start of what the server said, for the log.
+    Http(u16, String),
     Network(String),
+}
+
+impl Error {
+    /// What the log says: the message, with the server's reply or how long it asked us to wait.
+    fn logged(&self) -> String {
+        match self {
+            Error::RateLimited(Some(after)) => {
+                format!("Rate limited by the usage API, which asked to wait {}s", after.num_seconds())
+            }
+            Error::RateLimited(None) => "Rate limited by the usage API".into(),
+            Error::Http(code, reply) if !reply.is_empty() => format!("Usage API returned HTTP {code}: {reply}"),
+            e => e.to_string().trim_end_matches('.').to_owned(),
+        }
+    }
 }
 
 impl std::fmt::Display for Error {
@@ -296,7 +313,7 @@ impl std::fmt::Display for Error {
             Error::Expired => write!(f, "Login token expired. Open Claude Code once to refresh it."),
             Error::Unauthorized => write!(f, "Login rejected. Run `claude` and /login again."),
             Error::RateLimited(_) => write!(f, "Rate limited by the API, retrying later."),
-            Error::Http(code) => write!(f, "Usage API returned HTTP {code}."),
+            Error::Http(code, _) => write!(f, "Usage API returned HTTP {code}."),
             Error::Network(why) => write!(f, "Network error: {why}"),
         }
     }
@@ -610,7 +627,7 @@ pub fn fetch() -> Result<Usage, Error> {
     for pause in QUICK_RETRIES {
         let started = Instant::now();
         match request(&login.access_token) {
-            Err(Error::Network(_) | Error::Http(500..=599)) if started.elapsed() < QUICK_FAILURE => {
+            Err(Error::Network(_) | Error::Http(500..=599, _)) if started.elapsed() < QUICK_FAILURE => {
                 std::thread::sleep(pause);
             }
             result => return result,
@@ -633,10 +650,27 @@ fn request(token: &str) -> Result<Usage, Error> {
             let after = r.header("retry-after").and_then(|s| s.parse().ok());
             return Err(Error::RateLimited(after.map(TimeDelta::seconds)));
         }
-        Err(ureq::Error::Status(code, _)) => return Err(Error::Http(code)),
+        Err(ureq::Error::Status(code, r)) => return Err(Error::Http(code, reply(r))),
         Err(e) => return Err(Error::Network(e.to_string())),
     };
-    Ok(parse_usage(&body))
+    let usage = parse_usage(&body);
+    // Most likely the API changed. Once is enough to tell.
+    static TOLD: AtomicBool = AtomicBool::new(false);
+    if usage.limits.is_empty() && !TOLD.swap(true, Ordering::Relaxed) {
+        let fields = body.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "));
+        log::warn!("The usage API's reply had no limits Cuota knows. Its fields: {}", fields.unwrap_or_default());
+    }
+    Ok(usage)
+}
+
+/// The start of an error reply, on one line, for the log.
+fn reply(response: ureq::Response) -> String {
+    let text = response.into_string().unwrap_or_default();
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match text.char_indices().nth(300) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text,
+    }
 }
 
 /// Turns the usage response into display rows. Prefers the `limits` list that Claude Code's
@@ -811,6 +845,18 @@ struct Poller {
     backoff: TimeDelta,
     /// What's been read of each running session's transcript.
     transcripts: HashMap<PathBuf, Transcript>,
+    /// Whether the API has answered yet, so the first answer is logged.
+    fetched: bool,
+    failing: Option<Failing>,
+}
+
+/// Fetches failing in a row, as the log tells of them.
+struct Failing {
+    since: DateTime<Utc>,
+    tries: u32,
+    /// The last failure logged, and when.
+    logged: String,
+    logged_at: DateTime<Utc>,
 }
 
 impl Poller {
@@ -824,6 +870,8 @@ impl Poller {
             retry_at: None,
             backoff: active_interval,
             transcripts: HashMap::new(),
+            fetched: false,
+            failing: None,
         }
     }
 
@@ -849,6 +897,9 @@ impl Poller {
             let local = read_claude_json();
             let mut shared = state.lock().unwrap();
             let s = Arc::make_mut(&mut shared);
+            if s.account.plan != local.account.plan {
+                log::info!("Claude plan: {}", local.account.plan.as_deref().unwrap_or("none found"));
+            }
             s.account = local.account;
             if let Some((usage, fetched_at)) = local.cached_usage
                 && self.data_time < Some(fetched_at)
@@ -864,6 +915,7 @@ impl Poller {
             let s = Arc::make_mut(&mut shared);
             match result {
                 Ok(usage) => {
+                    self.log_success(&usage, now);
                     self.show(s, usage, now);
                     self.retry_at = None;
                     self.backoff = self.active_interval;
@@ -878,6 +930,7 @@ impl Poller {
                         _ => self.active_interval,
                     };
                     self.retry_at = Some(now + wait);
+                    self.log_failure(&e, now, wait);
                     s.error = Some(e.to_string());
                 }
             }
@@ -885,6 +938,48 @@ impl Poller {
         }
         changed |= roll_over(&mut state.lock().unwrap(), now);
         changed
+    }
+
+    /// Logs the first usage fetched, and usage fetched again after failing.
+    fn log_success(&mut self, usage: &Usage, now: DateTime<Utc>) {
+        let limits: Vec<String> = usage.limits.iter().map(|l| format!("{} {:.0}%", l.label, l.percent)).collect();
+        if let Some(failing) = self.failing.take() {
+            let since = failing.since.with_timezone(&Local).format("%H:%M");
+            log::info!(
+                "Usage fetched again, after {} failed tries since {since} ({} ago): {}",
+                failing.tries,
+                until(now, failing.since),
+                limits.join(", ")
+            );
+        } else if !self.fetched {
+            log::info!("Usage fetched: {}", limits.join(", "));
+        }
+        self.fetched = true;
+    }
+
+    /// Logs a failed fetch and when the next try is. The same failure again is logged only
+    /// once an hour, so a night offline doesn't fill the log, except a rate limit, since each
+    /// one waits longer.
+    fn log_failure(&mut self, e: &Error, now: DateTime<Utc>, wait: TimeDelta) {
+        let message = e.logged();
+        let failing = self.failing.get_or_insert_with(|| Failing {
+            since: now,
+            tries: 0,
+            logged: String::new(),
+            logged_at: now,
+        });
+        failing.tries += 1;
+        let again = failing.logged == message;
+        if again && now - failing.logged_at < TimeDelta::hours(1) && !matches!(e, Error::RateLimited(_)) {
+            return;
+        }
+        let tries = match failing.tries {
+            1 => String::new(),
+            tries => format!(" ({tries} failed tries in a row)"),
+        };
+        log::warn!("{message}{tries}. Trying again in {}.", until(now + wait, now));
+        failing.logged = message;
+        failing.logged_at = now;
     }
 
     fn api_due(&self, now: DateTime<Utc>) -> bool {
@@ -1001,6 +1096,30 @@ pub fn demo_state() -> State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_same_failure_is_logged_once_an_hour_but_every_rate_limit_is() {
+        let mut poller = Poller::new(TimeDelta::minutes(1));
+        let now = Utc::now();
+        let at = |mins| now + TimeDelta::minutes(mins);
+        let logged_at = |poller: &Poller| poller.failing.as_ref().unwrap().logged_at;
+        let offline = Error::Network("offline".into());
+
+        poller.log_failure(&offline, now, TimeDelta::minutes(1));
+        poller.log_failure(&offline, at(30), TimeDelta::minutes(1));
+        assert_eq!(logged_at(&poller), now);
+        poller.log_failure(&offline, at(61), TimeDelta::minutes(1));
+        assert_eq!(logged_at(&poller), at(61));
+
+        let limited = Error::RateLimited(Some(TimeDelta::minutes(2)));
+        poller.log_failure(&limited, at(62), TimeDelta::minutes(2));
+        poller.log_failure(&limited, at(64), TimeDelta::minutes(4));
+        assert_eq!(logged_at(&poller), at(64));
+        assert_eq!(poller.failing.as_ref().unwrap().tries, 5);
+
+        poller.log_success(&Usage { limits: Vec::new(), breakdown: None, extra: None }, at(68));
+        assert!(poller.failing.is_none());
+    }
 
     #[test]
     fn parses_limits_list() {

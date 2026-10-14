@@ -129,7 +129,25 @@ pub fn set_start_with_windows(on: bool) -> bool {
             status => status,
         }
     };
+    let on_off = if on { "on" } else { "off" };
+    if status == 0 {
+        crate::log::info!("Start with Windows turned {on_off}");
+    } else {
+        crate::log::warn!("Couldn't turn Start with Windows {on_off}: error {status}");
+    }
     status == 0
+}
+
+/// Such as "Windows 11 24H2 (build 26100)", for the log.
+pub fn windows_version() -> String {
+    const KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+    let Some(build) = registry_string(HKEY_LOCAL_MACHINE, KEY, "CurrentBuild") else { return "Windows".into() };
+    // Windows 11 still calls itself Windows 10 in ProductName; its builds start at 22000.
+    let name = if build.parse::<u32>().is_ok_and(|build| build >= 22_000) { "Windows 11" } else { "Windows 10" };
+    match registry_string(HKEY_LOCAL_MACHINE, KEY, "DisplayVersion") {
+        Some(version) => format!("{name} {version} (build {build})"),
+        None => format!("{name} (build {build})"),
+    }
 }
 
 /// How to start the Claude desktop app, from the handler for claude:// links that it registers:
@@ -177,12 +195,27 @@ fn shell_open(targets: Vec<String>, directory: Option<String>) {
         let verb = wide("open");
         let directory = directory.map(|directory| wide(&directory));
         let directory = directory.as_ref().map_or(null(), |directory| directory.as_ptr());
-        for target in targets {
-            let target = wide(&target);
-            // Values above 32 mean it opened.
-            if ShellExecuteW(0, verb.as_ptr(), target.as_ptr(), null(), directory, SW_SHOWNORMAL as _) > 32 {
-                break;
+        let mut failure = 0;
+        for target in &targets {
+            let wide_target = wide(target);
+            // Values above 32 mean it opened; the others say why not.
+            failure = ShellExecuteW(0, verb.as_ptr(), wide_target.as_ptr(), null(), directory, SW_SHOWNORMAL as _);
+            if failure > 32 {
+                return;
             }
+        }
+        crate::log::warn!("Couldn't open {} (error {failure})", targets.join(" or "));
+    });
+}
+
+/// Opens File Explorer on the folder `file` is in, with `file` picked out.
+pub fn show_in_folder(file: &Path) {
+    let file = file.display().to_string();
+    std::thread::spawn(move || unsafe {
+        CoInitializeEx(null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as _);
+        let (verb, explorer, select) = (wide("open"), wide("explorer.exe"), wide(&format!("/select,\"{file}\"")));
+        if ShellExecuteW(0, verb.as_ptr(), explorer.as_ptr(), select.as_ptr(), null(), SW_SHOWNORMAL as _) <= 32 {
+            crate::log::warn!("Couldn't show {file} in File Explorer");
         }
     });
 }
