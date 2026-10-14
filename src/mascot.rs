@@ -1,29 +1,19 @@
-//! Clawd and the Claude spark, drawn from the artwork that ships with the Claude Code VS Code
-//! extension (`clawd.svg`, `claude-logo.svg`). While a Claude session works, the spark orbits
-//! Clawd and he dances, following it with his eyes; when every session is idle he sleeps.
+//! Clawd's pixel sprites and the Claude spark, drawn from the artwork that ships with the
+//! Claude Code VS Code extension (`clawd.svg`, `claude-logo.svg`). The sprites are for the
+//! tray icons, where he dances while a session works and sleeps otherwise; the panel's Clawd
+//! is in `animations`.
 
 use eframe::egui::{
-    Color32, ColorImage, Context, Mesh, Painter, Pos2, Rect, Shape, TextureFilter, TextureHandle,
-    TextureOptions, Vec2, epaint::Vertex, pos2, vec2,
+    Color32, ColorImage, Context, Mesh, Painter, Pos2, Shape, TextureFilter, TextureHandle, TextureOptions, Vec2,
+    epaint::Vertex, pos2, vec2,
 };
-use std::f32::consts::{PI, TAU};
-use std::time::Duration;
 
 pub const CLAUDE_ORANGE: Color32 = Color32::from_rgb(217, 119, 87);
 pub const EYE: Color32 = Color32::from_rgb(24, 24, 26);
 pub const SNORE: Color32 = Color32::from_rgb(150, 160, 180);
 
-/// One cell of Clawd's grid. `clawd.svg` is 11 columns by 4 rows of 4.15 x 9 units; rows are
-/// split in half here because his eyes are half-height gaps.
-const CELL: Vec2 = vec2(4.0, 4.5);
-const SPRITE: Vec2 = vec2(11.0 * CELL.x, 8.0 * CELL.y);
-/// Room around him for the hop and the spark's orbit, at scale 1.
-const CANVAS: Vec2 = vec2(76.0, 54.0);
-const HOP: f32 = CELL.y;
-const ORBIT_CENTER: Vec2 = vec2(CANVAS.x / 2.0, 20.0);
-const ORBIT_RADIUS: Vec2 = vec2(29.0, 10.0);
-const SPARK_RADIUS: f32 = 9.0;
-
+/// Clawd on a grid of 11 columns by 8 rows: `clawd.svg` has 4 rows, split in half here because
+/// his eyes are half-height gaps. '#' body, 'o' open eye, '-' closed eye.
 pub const STAND: [&str; 8] = [
     ".#########.",
     ".#########.",
@@ -74,7 +64,6 @@ const ASLEEP_INHALE: [&str; 8] = [
     ".#########.",
     ".#########.",
 ];
-const SNORE_Z: [&str; 5] = ["#####", "...#.", "..#..", ".#...", "#####"];
 
 /// The path from `claude-logo.svg` (24 x 24 viewBox).
 const SPARK_PATH: &str = "M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z";
@@ -91,53 +80,6 @@ impl Mascot {
         // Mipmaps keep the rays crisp when the spark is drawn far smaller than the texture.
         let options = TextureOptions { mipmap_mode: Some(TextureFilter::Linear), ..TextureOptions::LINEAR };
         Self { spark: ctx.load_texture("claude-spark", image, options) }
-    }
-
-    pub fn size(scale: f32) -> Vec2 {
-        CANVAS * scale
-    }
-
-    /// How long the current animation frame lasts.
-    pub fn frame_time(working: bool) -> Duration {
-        Duration::from_millis(if working { 83 } else { 166 })
-    }
-
-    /// Paints Clawd into `rect` (sized by [`Self::size`]). A fixed `time` gives a still frame.
-    pub fn paint(&self, painter: &Painter, rect: Rect, working: bool, time: f64) {
-        let scale = rect.width() / CANVAS.x;
-        let at = |x: f32, y: f32| rect.left_top() + vec2(x, y) * scale;
-        let time = time as f32;
-
-        if !working {
-            let (asleep, _) = sprite(false, (time / 1.6) as u32);
-            paint_sprite(painter, at(0.0, 0.0), scale, asleep, 0.0, Vec2::ZERO);
-            for i in 0..3 {
-                let phase = (time / 3.0 + i as f32 / 3.0).fract();
-                let pixel = (0.8 + phase * 0.8) * scale;
-                let color = SNORE.gamma_multiply((phase * PI).sin());
-                paint_grid(painter, at(56.0 + phase * 14.0, 22.0 - phase * 20.0), vec2(pixel, pixel), &SNORE_Z, color);
-            }
-            return;
-        }
-
-        // The spark circles his head; it is behind him on the upper half of the orbit.
-        let angle = time * 1.6 % TAU;
-        let (sin, cos) = angle.sin_cos();
-        let spark_at = at(ORBIT_CENTER.x + ORBIT_RADIUS.x * cos, ORBIT_CENTER.y + ORBIT_RADIUS.y * sin);
-        let behind = sin < 0.0;
-        let spark_radius = SPARK_RADIUS * scale * if behind { 0.75 } else { 1.0 };
-        let spin = time * 2.0;
-        // Eyes follow the spark: up to half a column sideways, a little up or down.
-        let gaze = vec2((cos * 2.0).round(), (sin * 1.5).round()) * scale;
-
-        let (dancing, hop) = sprite(true, (time / 0.3) as u32);
-        if behind {
-            self.paint_spark(painter, spark_at, spark_radius, spin, Color32::from_white_alpha(200));
-        }
-        paint_sprite(painter, at(0.0, 0.0), scale, dancing, if hop { HOP } else { 0.0 }, gaze);
-        if !behind {
-            self.paint_spark(painter, spark_at, spark_radius, spin, Color32::WHITE);
-        }
     }
 
     /// The Claude spark on its own, upright.
@@ -158,7 +100,7 @@ impl Mascot {
 }
 
 /// Clawd's pose for animation step `frame`, and whether he is mid-hop: dancing while working
-/// (arms up in turn), breathing while asleep. '#' body, 'o' open eye, '-' closed eye.
+/// (arms up in turn), breathing while asleep.
 pub fn sprite(working: bool, frame: u32) -> (&'static [&'static str; 8], bool) {
     match (working, frame % 4) {
         (true, 1) => (&LEFT_ARM_UP, true),
@@ -167,42 +109,6 @@ pub fn sprite(working: bool, frame: u32) -> (&'static [&'static str; 8], bool) {
         (false, f) if f % 2 == 1 => (&ASLEEP_INHALE, false),
         (false, _) => (&ASLEEP, false),
     }
-}
-
-/// Clawd standing on the canvas floor, `hop` points up, eyes shifted by `gaze`.
-fn paint_sprite(painter: &Painter, canvas: Pos2, scale: f32, sprite: &[&str; 8], hop: f32, gaze: Vec2) {
-    let left = (CANVAS.x - SPRITE.x) / 2.0;
-    let origin = canvas + vec2(left, CANVAS.y - SPRITE.y - hop) * scale;
-    let cell = CELL * scale;
-    paint_grid(painter, origin, cell, sprite, CLAUDE_ORANGE);
-
-    let mut eyes = Mesh::default();
-    for (row, line) in sprite.iter().enumerate() {
-        for (col, pixel) in line.bytes().enumerate() {
-            let socket = Rect::from_min_size(origin + vec2(col as f32 * cell.x, row as f32 * cell.y), cell);
-            match pixel {
-                b'o' => eyes.add_colored_rect(socket.translate(gaze), EYE),
-                b'-' => {
-                    let lid = Rect::from_min_max(pos2(socket.left(), socket.bottom() - 1.5 * scale), socket.right_bottom());
-                    eyes.add_colored_rect(lid, EYE);
-                }
-                _ => {}
-            }
-        }
-    }
-    painter.add(Shape::mesh(eyes));
-}
-
-/// Fills every non-'.' cell of `grid` as one mesh: separately anti-aliased rects leave seams.
-fn paint_grid(painter: &Painter, origin: Pos2, cell: Vec2, grid: &[&str], color: Color32) {
-    let mut mesh = Mesh::default();
-    for (row, line) in grid.iter().enumerate() {
-        for (col, _) in line.bytes().enumerate().filter(|&(_, b)| b != b'.') {
-            let min = origin + vec2(col as f32 * cell.x, row as f32 * cell.y);
-            mesh.add_colored_rect(Rect::from_min_size(min, cell), color);
-        }
-    }
-    painter.add(Shape::mesh(mesh));
 }
 
 /// The spark rasterized to `size` square RGBA: `SPARK_PIXELS` for the texture and the window

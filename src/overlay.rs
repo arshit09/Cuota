@@ -3,6 +3,7 @@
 //! details. It also hosts the settings window, and keeps itself sized, placed and layered for
 //! the chosen modes.
 
+use crate::animations::{self, Clawd};
 use crate::claude::{self, Limit, Shared, State};
 use crate::details;
 use crate::mascot::Mascot;
@@ -84,6 +85,7 @@ pub struct Overlay {
     saved: Settings,
     save_at: Option<Instant>,
     mascot: Mascot,
+    clawd: Clawd,
     fonts: Fonts,
     icon: Arc<IconData>,
     keep_bottom: Arc<AtomicBool>,
@@ -167,6 +169,7 @@ impl Overlay {
             settings,
             save_at: None,
             mascot: Mascot::new(ctx, spark),
+            clawd: Clawd::new(ctx),
             fonts,
             icon,
             keep_bottom: Arc::new(AtomicBool::new(false)),
@@ -338,8 +341,8 @@ impl Overlay {
     }
 
     /// Clawd beside the meters, and usage details under them when expanded, with the window
-    /// sized to fit. Returns whether Clawd animates.
-    fn panel(&mut self, ui: &mut egui::Ui, state: &State) -> bool {
+    /// sized to fit. Returns when Clawd's next frame is due, if he animates.
+    fn panel(&mut self, ui: &mut egui::Ui, state: &State) -> Option<Duration> {
         let ctx = ui.ctx().clone();
         let full = ui.max_rect();
         let docked = self.settings.pinned().is_none();
@@ -377,8 +380,7 @@ impl Overlay {
         let note = note(state).map(|(text, color)| {
             painter.layout(text, FontId::proportional(12.0), color, meters.size.x.max(NOTE_WIDTH))
         });
-        let clawd = if view.clawd { Mascot::size(1.0) } else { Vec2::ZERO };
-        let animating = self.settings.animate && view.clawd;
+        let clawd = if view.clawd { animations::SIZE } else { Vec2::ZERO };
 
         let note_size = note.as_ref().map_or(Vec2::ZERO, |n| n.size());
         let note_gap = if note.is_some() && meters.size.y > 0.0 { 4.0 } else { 0.0 };
@@ -404,10 +406,10 @@ impl Overlay {
         }
 
         let origin = full.min + Vec2::splat(MARGIN);
+        let mut next_frame = None;
         if clawd.x > 0.0 {
-            let time = if self.settings.animate { ui.input(|i| i.time) } else { 0.0 };
             let at = origin + vec2(0.0, (row.y - clawd.y) / 2.0);
-            self.mascot.paint(&painter, Rect::from_min_size(at, clawd), state.working, time);
+            next_frame = self.clawd.paint(&painter, Rect::from_min_size(at, clawd), state, self.settings.animate);
         }
         let body_at = origin + vec2(clawd.x + gap, (row.y - body.y) / 2.0);
         let hints = meters.paint(&painter, body_at);
@@ -440,7 +442,7 @@ impl Overlay {
                 ctx.request_repaint();
             }
         }
-        animating
+        next_frame
     }
 
     /// Repaints only when something on screen changes: the next animation frame, or the next
@@ -617,7 +619,7 @@ impl Overlay {
             let (time_left, clawd) = if taskbar {
                 ("Shows when you hover an icon", "Shows if Claude is working")
             } else {
-                ("Until each limit resets", "Dances while Claude works")
+                ("Until each limit resets", "A random animation while Claude works")
             };
             for (glyph, title, about, on) in [
                 (icon::PERCENT, "Percentage", None, &mut view.percent),
@@ -730,12 +732,10 @@ impl eframe::App for Overlay {
 
         let mut next_frame = None;
         if visible {
-            let animating = self.panel(ui, &state);
-            next_frame = Some(if animating {
-                Mascot::frame_time(state.working)
-            } else {
+            // Clawd's next frame, or the next minute for the countdowns.
+            next_frame = Some(self.panel(ui, &state).unwrap_or_else(|| {
                 Duration::from_millis(60_000 - Utc::now().timestamp_millis().rem_euclid(60_000) as u64)
-            });
+            }));
             if self.expanded {
                 let wait = self.refresh_stats(&state);
                 next_frame = next_frame.map(|next| next.min(wait));

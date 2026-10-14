@@ -9,6 +9,8 @@ chrono = "0.4.45"
 # glow (OpenGL) renders transparent windows reliably on Windows. Fonts come from Windows
 # itself, so egui's bundled fonts are left out.
 eframe = { version = "0.35.0", default-features = false, features = ["glow"] }
+# Decodes the Mascot Studio GIFs in assets/mascot; its encoder-only color_quant is left out.
+gif = { version = "0.14", default-features = false, features = ["std"] }
 raw-window-handle = "0.6"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -27,6 +29,12 @@ windows-sys = { version = "0.52", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# Debug builds still decode the mascot GIFs quickly (weezl is gif's LZW decoder).
+[profile.dev.package.gif]
+opt-level = 3
+[profile.dev.package.weezl]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

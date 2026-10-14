@@ -1,6 +1,7 @@
 // Release builds are GUI-only; debug builds keep a console for logs.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod animations;
 mod claude;
 mod details;
 mod mascot;

@@ -2,7 +2,7 @@
 
 A tiny Windows widget that shows your Claude plan usage: session (5hr), weekly, and per-model limits. Same numbers as Claude Code's **Account & Usage** panel.
 
-Clawd, the Claude Code mascot, dances while Claude works and sleeps when it's idle.
+Clawd, the Claude Code mascot, acts out a random activity while Claude works: a new one whenever a session starts working, and another every so often. He greets you as work starts and celebrates when it's done, waits around while sessions sit idle, and sleeps when none is open. The 62 animations come from [Mascot Studio](https://github.com/Harriszed/mascot-studio).
 
 ## Requirements
 
@@ -72,3 +72,7 @@ The endpoint is undocumented, so a Claude update could break it.
 | *No Claude login found* / *Login rejected* | Run `claude`, then `/login`. |
 | *Rate limited* | Cuota backs off on its own. Try a longer `--interval`. |
 | Taskbar icons missing | Click **^** by the clock and drag the Cuota icons onto the taskbar. |
+
+## Credits
+
+Clawd's animations are the GIFs from [Mascot Studio](https://github.com/Harriszed/mascot-studio), an unofficial community project by Harriszed, built on [Ayotomiwa Wale-Durojaye's reference animation](https://ayotomcs.me/claude-mascot). The Claude character belongs to Anthropic. The artwork comes with no redistribution license, so it's here for personal use; see [assets/mascot/NOTICE.md](assets/mascot/NOTICE.md). The GIFs are built into the exe, which makes it about 3.5 MB bigger.
