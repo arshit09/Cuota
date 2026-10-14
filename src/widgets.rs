@@ -6,7 +6,7 @@ use crate::view::{DIM, TEXT};
 use eframe::egui::{
     Align, Align2, Color32, CursorIcon, EventFilter, FontFamily, FontId, Frame, Galley, Key, Layout,
     Margin, Painter, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder, WidgetInfo, WidgetType, emath,
-    pos2,
+    emath::GuiRounding, pos2,
     text::{LayoutJob, TextWrapping},
     vec2,
 };
@@ -192,6 +192,9 @@ pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
     let hovered = response.hovered();
     let off = if hovered { HOVER } else { TRACK };
     let on_color = if hovered { ACCENT.lerp_to_gamma(Color32::WHITE, 0.12) } else { ACCENT };
+    // The track gets snapped to whole pixels when painted but the knob doesn't, so snap the
+    // track here and center the knob in it. Otherwise the knob can sit half a pixel high.
+    let rect = rect.round_to_pixels(ui.pixels_per_point());
     let radius = rect.height() / 2.0;
     let painter = ui.painter();
     painter.rect_filled(rect, radius, off.lerp_to_gamma(on_color, t));
