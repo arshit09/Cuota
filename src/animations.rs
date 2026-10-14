@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn mood_follows_the_sessions() {
-        let session = |busy| Session { name: "x".into(), title: None, project: None, app: "VS Code".into(), busy, started: None };
+        let session = |busy| Session { name: "x".into(), app: "VS Code".into(), busy, ..Session::default() };
         let now = Instant::now();
         let just = Some(now);
         let state = State { working: true, sessions: vec![session(true)], error: Some("down".into()), ..State::default() };
@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn clawd_falls_asleep_when_nothing_happens_though_sessions_are_open() {
-        let session = Session { name: "x".into(), title: None, project: None, app: "VS Code".into(), busy: false, started: None };
+        let session = Session { name: "x".into(), app: "VS Code".into(), ..Session::default() };
         let state = State { sessions: vec![session], ..State::default() };
         let now = Instant::now();
         assert_eq!(Mood::of(&state, Some(now), now + DOZE), Mood::Asleep);

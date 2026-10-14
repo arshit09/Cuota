@@ -4,11 +4,11 @@
 //! the chosen modes.
 
 use crate::animations::{self, Clawd};
-use crate::claude::{self, Limit, Shared, State};
+use crate::claude::{self, Limit, Shared, State, Step};
 use crate::details;
 use crate::glance;
 use crate::mascot::Mascot;
-use crate::settings::{DoubleClick, Mode, SIZES, Settings, Style};
+use crate::settings::{DoubleClick, Mode, SIZES, Settings, SoundMode, Style};
 use crate::sound::{self, Cues};
 use crate::stats::Transcripts;
 use crate::status::Status;
@@ -126,7 +126,7 @@ fn custom_target(
 enum Page {
     /// Where Cuota shows, what double-clicking it does, and starting with Windows.
     General,
-    /// The panel's size and opacity, and Clawd's animation.
+    /// The panel's size and opacity, Clawd's animation, and the sound effects.
     Appearance,
     /// What the panel shows.
     Panel,
@@ -303,7 +303,7 @@ impl Overlay {
         let (refresh, wake) = mpsc::channel();
         let transcripts = if demo {
             let since = state.lock().unwrap().week_start();
-            spawn_demo_toggle(state.clone(), on_update);
+            spawn_demo_story(state.clone(), on_update);
             Transcripts::demo(since)
         } else {
             claude::spawn_poller(state.clone(), wake, interval, on_update);
@@ -916,6 +916,29 @@ impl Overlay {
                 widgets::setting(ui, fonts, icon::SOUND, "Sound effects", about, widgets::TOGGLE_WIDTH, |ui| {
                     widgets::toggle(ui, &mut settings.sounds);
                 });
+                let modes = [(SoundMode::Normal, "Normal"), (SoundMode::Lively, "Lively")];
+                let width = widgets::dropdown_width(ui, &modes.map(|(_, name)| name));
+                let about = match settings.sound_mode {
+                    SoundMode::Normal => "Only what matters: work starts, Claude needs you, work's done",
+                    SoundMode::Lively => "A sound for each kind of step too, to hear what Claude's up to",
+                };
+                ui.add_enabled_ui(settings.sounds, |ui| {
+                    widgets::setting(ui, fonts, icon::SOUND_MODE, "Sound mode", Some(about), width, |ui| {
+                        widgets::dropdown(ui, fonts, &mut settings.sound_mode, &modes, width);
+                    });
+                });
+                // Even with sounds off, to hear them before turning them on.
+                let open = open_expanders.entry((page, "Hear the sounds")).or_default();
+                let about = Some("Learn what each one means");
+                widgets::expander(ui, fonts, open, icon::HEAR, "Hear the sounds", about, "", |ui| {
+                    for guide in &sound::GUIDE {
+                        let about =
+                            if guide.normal { guide.about.to_owned() } else { format!("{} \u{B7} Lively only", guide.about) };
+                        if widgets::action_item(ui, fonts, icon::PLAY, guide.title, Some(&about)).clicked() {
+                            sound::play(guide.sound);
+                        }
+                    }
+                });
             }
             Page::Panel | Page::Taskbar => {
                 let taskbar = page == Page::Taskbar;
@@ -1045,10 +1068,14 @@ impl eframe::App for Overlay {
             }
         }
 
-        // Sounds follow Claude's sessions, whether or not the panel shows.
+        // Sounds follow Claude's sessions, whether or not the panel shows. They're made in the
+        // background as Cuota starts, or once they're turned on.
+        if self.settings.sounds {
+            sound::prepare();
+        }
         let now = Instant::now();
         let state = self.state.lock().unwrap().clone();
-        if let Some(sound) = self.cues.update(&state, self.settings.sounds, now) {
+        if let Some(sound) = self.cues.update(&state, self.settings.sounds, self.settings.sound_mode, now) {
             sound::play(sound);
         }
         if let Some(due) = self.cues.due() {
@@ -1149,15 +1176,46 @@ fn native_window(frame: &eframe::Frame) -> Option<isize> {
     }
 }
 
-/// `--demo`: flips between working and idle so both animations can be previewed.
-fn spawn_demo_toggle(state: Shared, on_update: impl Fn() + Send + 'static) {
+/// Plays a session out over and over in the demo, a scene every 3 seconds: work starting, a
+/// step of each kind, a question for you, and a rest, so Clawd and the sounds have something
+/// to follow.
+fn spawn_demo_story(state: Shared, on_update: impl Fn() + Send + 'static) {
+    const WORK: (bool, bool) = (true, false);
+    const ASK: (bool, bool) = (false, true);
+    const REST: (bool, bool) = (false, false);
+    const STORY: [((bool, bool), Option<Step>); 16] = [
+        (WORK, Some(Step::Think)),
+        (WORK, Some(Step::Look)),
+        (WORK, Some(Step::Look)),
+        (WORK, Some(Step::Edit)),
+        (WORK, Some(Step::Run)),
+        (ASK, None),
+        (ASK, None),
+        (WORK, Some(Step::Web)),
+        (WORK, Some(Step::Delegate)),
+        (WORK, Some(Step::Plan)),
+        (WORK, Some(Step::Fail)),
+        (WORK, Some(Step::Edit)),
+        (WORK, Some(Step::Compact)),
+        (REST, None),
+        (REST, None),
+        (REST, None),
+    ];
     std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(6));
+        for ((busy, waiting), step) in STORY.into_iter().cycle() {
+            std::thread::sleep(Duration::from_secs(3));
             {
                 let mut shared = state.lock().unwrap();
                 let s = Arc::make_mut(&mut shared);
-                s.working = !s.working;
+                if let Some(session) = s.sessions.first_mut() {
+                    session.busy = busy;
+                    session.waiting = waiting;
+                    if step.is_some() {
+                        session.steps += 1;
+                        session.step = step;
+                    }
+                }
+                s.working = s.sessions.iter().any(|session| session.busy);
             }
             on_update();
         }
@@ -1487,7 +1545,7 @@ mod tests {
                 overlay.settings = settings;
                 for page in Page::ALL {
                     overlay.settings_page = page;
-                    for title in ["Show as", "Limits"] {
+                    for title in ["Show as", "Limits", "Hear the sounds"] {
                         overlay.open_expanders.insert((page, title), true);
                     }
                     let output = ctx.run_ui(window(size), |ui| {

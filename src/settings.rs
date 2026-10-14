@@ -25,6 +25,16 @@ pub enum Style {
     Pie,
 }
 
+/// How much the sound effects have to say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SoundMode {
+    /// Only what matters: work starting, Claude asking you something, work done, and trouble.
+    #[default]
+    Normal,
+    /// A sound for each kind of step Claude takes too, so you can hear what it's up to.
+    Lively,
+}
+
 /// What double-clicking the panel does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DoubleClick {
@@ -251,6 +261,7 @@ pub struct Settings {
     pub animate: bool,
     /// Clawd's 8-bit sound effects while Claude works.
     pub sounds: bool,
+    pub sound_mode: SoundMode,
     pub opacity: f32,
     /// How big the panel is: one of [`SIZES`].
     pub size: f32,
@@ -272,6 +283,7 @@ impl Default for Settings {
             show: BTreeSet::from([Mode::AlwaysOnTop]),
             animate: true,
             sounds: true,
+            sound_mode: SoundMode::Normal,
             opacity: 0.96,
             size: 1.0,
             wheel_resize: true,
@@ -384,6 +396,11 @@ mod tests {
     fn sound_effects_are_on_unless_turned_off_even_in_older_settings() {
         let older: Settings = serde_json::from_str(r#"{"animate":false}"#).unwrap();
         assert!(older.sounds && !older.animate);
+        assert_eq!(older.sound_mode, SoundMode::Normal);
+        let lively = Settings { sound_mode: SoundMode::Lively, ..Settings::default() };
+        let text = serde_json::to_string(&lively).unwrap();
+        assert!(text.contains(r#""sound_mode":"Lively""#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().sound_mode, SoundMode::Lively);
         let off = Settings { sounds: false, ..Settings::default() };
         let text = serde_json::to_string(&off).unwrap();
         assert!(!serde_json::from_str::<Settings>(&text).unwrap().sounds);

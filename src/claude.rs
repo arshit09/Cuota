@@ -1,5 +1,6 @@
 //! Everything that comes from Claude: the login and usage cache Claude Code keeps on disk,
-//! its per-session busy/idle status, and the plan usage endpoint.
+//! its per-session busy/idle/waiting status and the steps its transcripts show, and the plan
+//! usage endpoint.
 
 use chrono::{DateTime, Local, TimeDelta, Utc};
 use serde::Deserialize;
@@ -137,7 +138,7 @@ pub struct Account {
 }
 
 /// A Claude Code session running on this PC.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Session {
     pub name: String,
     /// What the conversation is called: Claude Code's AI title, or what it was renamed to.
@@ -147,7 +148,96 @@ pub struct Session {
     /// Where it runs: "VS Code", "Terminal", "Claude app"...
     pub app: String,
     pub busy: bool,
+    /// Waiting on you: a permission prompt, a question or another dialog.
+    pub waiting: bool,
     pub started: Option<DateTime<Utc>>,
+    /// How many steps its transcript has shown since Cuota began watching it, and the latest.
+    pub steps: u32,
+    pub step: Option<Step>,
+}
+
+/// A kind of step Claude Code takes, as its transcript tells it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Thought it over.
+    Think,
+    /// Read or searched files.
+    Look,
+    /// Wrote or changed a file.
+    Edit,
+    /// Ran a command.
+    Run,
+    /// Went online, or out to another app through MCP.
+    Web,
+    /// Handed work to another agent.
+    Delegate,
+    /// Planned, or worked through its to-do list.
+    Plan,
+    /// A tool failed, or was turned down.
+    Fail,
+    /// Summed up the conversation to make room in its context.
+    Compact,
+}
+
+impl Step {
+    /// The step a call to the tool `name` is. Asking you a question isn't one: the session
+    /// waits on you then.
+    fn of_tool(name: &str) -> Option<Self> {
+        Some(match name {
+            "Read" | "Grep" | "Glob" | "LS" | "NotebookRead" | "ToolSearch" => Self::Look,
+            "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => Self::Edit,
+            "Bash" | "BashOutput" | "KillBash" | "KillShell" | "PowerShell" | "Monitor" => Self::Run,
+            "WebFetch" | "WebSearch" | "web_fetch" | "web_search" => Self::Web,
+            "Task" | "Agent" | "Workflow" | "SendMessage" => Self::Delegate,
+            "TodoWrite" | "TaskCreate" | "TaskUpdate" | "EnterPlanMode" | "ExitPlanMode" | "Skill" => Self::Plan,
+            name if name.starts_with("mcp__") => Self::Web,
+            _ => return None,
+        })
+    }
+
+    /// The step a transcript line records, if any. Only assistant lines are parsed; the rest
+    /// are told apart by text that can't appear unescaped inside a message.
+    fn of_line(line: &str) -> Option<Self> {
+        if line.contains(r#""is_error":true"#) {
+            return Some(Self::Fail);
+        }
+        if line.contains(r#""subtype":"compact_boundary""#) {
+            return Some(Self::Compact);
+        }
+        if !line.contains(r#""type":"assistant""#) {
+            return None;
+        }
+        let entry: StepLine = serde_json::from_str(line).ok()?;
+        if entry.kind != "assistant" {
+            return None;
+        }
+        entry.message.content.iter().find_map(|block| match block.kind.as_str() {
+            "thinking" | "redacted_thinking" => Some(Self::Think),
+            "tool_use" | "server_tool_use" => block.name.as_deref().and_then(Self::of_tool),
+            _ => None,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct StepLine {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    message: StepMessage,
+}
+
+#[derive(Deserialize, Default)]
+struct StepMessage {
+    #[serde(default)]
+    content: Vec<StepBlock>,
+}
+
+#[derive(Deserialize)]
+struct StepBlock {
+    #[serde(rename = "type")]
+    kind: String,
+    name: Option<String>,
 }
 
 impl Session {
@@ -359,7 +449,7 @@ struct SessionFile {
 }
 
 impl SessionFile {
-    fn session(&self, busy: bool, title: Option<String>) -> Session {
+    fn session(&self, busy: bool, read: &Transcript) -> Session {
         let folder = Path::new(&self.cwd).file_name().map(|name| name.to_string_lossy().into_owned());
         // The Claude app runs its sessions in scratch folders under %APPDATA%.
         let app_data = std::env::var("APPDATA").unwrap_or_default().to_lowercase();
@@ -376,24 +466,30 @@ impl SessionFile {
                 .filter(|n| !n.is_empty())
                 .or_else(|| project.clone())
                 .unwrap_or_else(|| "Session".into()),
-            title,
+            title: read.title(),
             project,
             app,
             busy,
+            waiting: self.status == "waiting",
             started: self.started_at.and_then(DateTime::<Utc>::from_timestamp_millis),
+            steps: read.steps,
+            step: read.step,
         }
     }
 }
 
-/// What a transcript says its conversation is called. Claude Code appends an `ai-title` line
-/// once it has named the conversation and a `custom-title` one when it's renamed, and repeats
-/// them as the transcript grows, so the latest of each counts.
+/// What a transcript says its conversation is called, and the steps it records. Claude Code
+/// appends an `ai-title` line once it has named the conversation and a `custom-title` one
+/// when it's renamed, and repeats them as the transcript grows, so the latest of each counts.
 #[derive(Default)]
-struct Titles {
+struct Transcript {
     /// How far the transcript has been read: the end of its last whole line.
     read: u64,
     ai: Option<String>,
     custom: Option<String>,
+    /// Steps added since it was first read, and the latest.
+    steps: u32,
+    step: Option<Step>,
 }
 
 #[derive(Deserialize)]
@@ -405,7 +501,7 @@ struct TitleLine {
     custom_title: Option<String>,
 }
 
-impl Titles {
+impl Transcript {
     /// A rename wins over the AI's title.
     fn title(&self) -> Option<String> {
         self.custom.clone().or_else(|| self.ai.clone())
@@ -421,12 +517,18 @@ impl Titles {
         }
         if len > self.read {
             let from = self.read;
-            self.read = read_lines(path, from, |line| self.take(line));
+            // What was done before Cuota looked isn't news.
+            let count_steps = from > 0;
+            self.read = read_lines(path, from, |line| self.take(line, count_steps));
         }
     }
 
-    fn take(&mut self, line: &[u8]) {
+    fn take(&mut self, line: &[u8], count_steps: bool) {
         let Ok(text) = std::str::from_utf8(line) else { return };
+        if count_steps && let Some(step) = Step::of_line(text) {
+            self.steps = self.steps.wrapping_add(1);
+            self.step = Some(step);
+        }
         // Most lines aren't titles; skip them without parsing. In a message's text the quote
         // after `-title` would be escaped.
         if !text.contains(r#"-title""#) {
@@ -451,9 +553,9 @@ struct Activity {
 }
 
 /// Claude Code keeps a `sessions/<pid>.json` per running session (CLI, VS Code, desktop)
-/// with a `busy`/`idle` status. `titles` holds what was read of each running session's
-/// transcript, by its path.
-fn session_activity(now: DateTime<Utc>, titles: &mut HashMap<PathBuf, Titles>) -> Activity {
+/// with a `busy`/`idle`/`waiting` status. `transcripts` holds what was read of each running
+/// session's transcript, by its path.
+fn session_activity(now: DateTime<Utc>, transcripts: &mut HashMap<PathBuf, Transcript>) -> Activity {
     let dir = claude_dir();
     let mut activity = Activity { working: false, last_active: None, sessions: Vec::new() };
     let Ok(entries) = std::fs::read_dir(dir.join("sessions")) else { return activity };
@@ -482,14 +584,14 @@ fn session_activity(now: DateTime<Utc>, titles: &mut HashMap<PathBuf, Titles>) -
         activity.working |= busy;
         // A session that crashed leaves its file behind.
         if session.pid.is_none_or(crate::win::process_alive) {
-            let mut read = titles.remove(&transcript).unwrap_or_default();
+            let mut read = transcripts.remove(&transcript).unwrap_or_default();
             read.update(&transcript);
-            activity.sessions.push(session.session(busy, read.title()));
+            activity.sessions.push(session.session(busy, &read));
             running.insert(transcript, read);
         }
     }
     // Sessions that ended are forgotten.
-    *titles = running;
+    *transcripts = running;
     activity
         .sessions
         .sort_by(|a, b| b.busy.cmp(&a.busy).then_with(|| a.display_name().cmp(b.display_name())));
@@ -708,7 +810,7 @@ struct Poller {
     retry_at: Option<DateTime<Utc>>,
     backoff: TimeDelta,
     /// What's been read of each running session's transcript.
-    titles: HashMap<PathBuf, Titles>,
+    transcripts: HashMap<PathBuf, Transcript>,
 }
 
 impl Poller {
@@ -721,14 +823,14 @@ impl Poller {
             claude_json_modified: None,
             retry_at: None,
             backoff: active_interval,
-            titles: HashMap::new(),
+            transcripts: HashMap::new(),
         }
     }
 
     /// Returns true when `state` changed.
     fn tick(&mut self, state: &Mutex<Arc<State>>, force: bool) -> bool {
         let now = Utc::now();
-        let activity = session_activity(now, &mut self.titles);
+        let activity = session_activity(now, &mut self.transcripts);
         self.last_activity = self.last_activity.max(activity.last_active);
         let mut changed = false;
         {
@@ -866,7 +968,10 @@ pub fn demo_state() -> State {
         project: Some(project.into()),
         app: app.into(),
         busy,
+        waiting: false,
         started: Some(now - TimeDelta::minutes(mins)),
+        steps: 0,
+        step: None,
     };
     State {
         limits: vec![limit("Session", 15.0, 134, five_hours), limit("Weekly", 49.0, 1_630, week), fable],
@@ -1036,6 +1141,66 @@ mod tests {
     }
 
     #[test]
+    fn reads_steps_as_the_transcript_grows_but_not_what_came_before() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("cuota-steps-{}.jsonl", std::process::id()));
+        let append = |lines: &[&str]| {
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
+            for line in lines {
+                writeln!(file, "{line}").unwrap();
+            }
+        };
+        let tool = |name: &str| {
+            format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t","name":"{name}","input":{{}}}}]}}}}"#)
+        };
+        let _ = std::fs::remove_file(&path);
+        let mut read = Transcript::default();
+        append(&[&tool("Edit"), r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Hm"}]}}"#]);
+        read.update(&path);
+        assert_eq!((read.steps, read.step), (0, None), "steps from before Cuota looked");
+
+        append(&[r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Hm"}]}}"#]);
+        read.update(&path);
+        assert_eq!((read.steps, read.step), (1, Some(Step::Think)));
+        for (name, step) in [
+            ("Grep", Step::Look),
+            ("Write", Step::Edit),
+            ("Bash", Step::Run),
+            ("WebFetch", Step::Web),
+            ("mcp__claude-in-chrome__navigate", Step::Web),
+            ("Agent", Step::Delegate),
+            ("TodoWrite", Step::Plan),
+        ] {
+            append(&[&tool(name)]);
+            read.update(&path);
+            assert_eq!(read.step, Some(step), "{name}");
+        }
+        assert_eq!(read.steps, 8);
+
+        append(&[
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","is_error":true,"content":"No"}]}}"#,
+        ]);
+        read.update(&path);
+        assert_eq!((read.steps, read.step), (9, Some(Step::Fail)));
+        append(&[r#"{"type":"system","subtype":"compact_boundary","content":"Conversation compacted"}"#]);
+        read.update(&path);
+        assert_eq!((read.steps, read.step), (10, Some(Step::Compact)));
+
+        // Text and results, questions for you, tools it doesn't know, and steps quoted in a
+        // message aren't steps.
+        append(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}"#,
+            &tool("AskUserQuestion"),
+            &tool("SomethingNew"),
+            r#"{"type":"user","message":{"content":"grep '{\"type\":\"assistant\",\"is_error\":true}'"}}"#,
+        ]);
+        read.update(&path);
+        assert_eq!((read.steps, read.step), (10, Some(Step::Compact)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn reads_titles_as_the_transcript_grows() {
         use std::io::Write;
         let path = std::env::temp_dir().join(format!("cuota-titles-{}.jsonl", std::process::id()));
@@ -1044,7 +1209,7 @@ mod tests {
             file.write_all(text.as_bytes()).unwrap();
         };
         let _ = std::fs::remove_file(&path);
-        let mut titles = Titles::default();
+        let mut titles = Transcript::default();
         titles.update(&path);
         assert_eq!(titles.title(), None, "no transcript yet");
 

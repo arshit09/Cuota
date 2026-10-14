@@ -66,10 +66,12 @@ pub mod icon {
     pub const DOUBLE_CLICK: char = '\u{E962}';
     /// Leads out of the app, as to a web page.
     pub const EXTERNAL: char = '\u{E8A7}';
+    pub const HEAR: char = '\u{E7F6}';
     pub const LIMITS: char = '\u{E9F9}';
     pub const OPACITY: char = '\u{E793}';
     pub const PANEL: char = '\u{E737}';
     pub const PERCENT: char = '\u{E94C}';
+    pub const PLAY: char = '\u{E768}';
     pub const QUIT: char = '\u{E7E8}';
     pub const REFRESH: char = '\u{E72C}';
     /// A gripper, to drag a row into another order by.
@@ -78,6 +80,7 @@ pub mod icon {
     pub const SHOW_AS: char = '\u{E7F4}';
     pub const SIZE: char = '\u{E740}';
     pub const SOUND: char = '\u{E767}';
+    pub const SOUND_MODE: char = '\u{E9E9}';
     pub const STARTUP: char = '\u{EC4A}';
     pub const STATUS: char = '\u{E8BD}';
     pub const STYLE: char = '\u{EB05}';
@@ -442,6 +445,46 @@ pub fn check_item(ui: &mut Ui, fonts: &Fonts, on: &mut bool, title: &str, descri
         painter.galley(at, description, SECONDARY);
     }
     focus_ring(ui, &response, check, 4.0);
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// One of an [`expander`]'s rows that does something when clicked, like playing a sound: a
+/// title and an optional description, with a button showing `glyph` on the right. All of it
+/// is clickable.
+pub fn action_item(ui: &mut Ui, fonts: &Fonts, glyph: char, title: &str, description: Option<&str>) -> Response {
+    const BUTTON: f32 = 28.0;
+    let width = ui.available_width();
+    let text_left = CARD_PADDING + fonts.indent();
+    let wrap = (width - text_left - CONTROL_GAP - BUTTON - CARD_PADDING).max(60.0);
+    let painter = ui.painter().clone();
+    let title_galley = painter.layout(title.to_owned(), FontId::proportional(BODY), PRIMARY, wrap);
+    let description = description.map(|d| painter.layout(d.to_owned(), FontId::proportional(CAPTION), SECONDARY, wrap));
+    let text_height = title_galley.size().y + description.as_ref().map_or(0.0, |d| 1.0 + d.size().y);
+    let height = (text_height + 2.0 * CARD_PADDING_Y).max(48.0);
+
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), title));
+    // A line along the top, as between check items.
+    painter.hline(rect.x_range(), rect.top() - 0.5, Stroke::new(1.0, SETTING_EDGE));
+    let center = pos2(rect.right() - CARD_PADDING - BUTTON / 2.0, rect.center().y);
+    let button = Rect::from_center_size(center, Vec2::splat(BUTTON));
+    let fill = match (response.hovered(), response.is_pointer_button_down_on()) {
+        (_, true) => SUBTLE_PRESSED,
+        (true, false) => SUBTLE,
+        (false, false) => Color32::TRANSPARENT,
+    };
+    painter.rect_filled(button, 4, fill);
+    if let Some(font) = fonts.icon(14.0) {
+        painter.text(button.center(), Align2::CENTER_CENTER, glyph, font, PRIMARY);
+    }
+    let mut at = pos2(rect.left() + text_left, rect.center().y - text_height / 2.0);
+    let title_height = title_galley.size().y;
+    painter.galley(at, title_galley, PRIMARY);
+    if let Some(description) = description {
+        at.y += title_height + 1.0;
+        painter.galley(at, description, SECONDARY);
+    }
+    focus_ring(ui, &response, button, 4.0);
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 

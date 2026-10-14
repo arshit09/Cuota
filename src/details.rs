@@ -224,7 +224,11 @@ fn sessions(ui: &mut Ui, sessions: &[Session], now: DateTime<Utc>) {
 fn session_row(ui: &mut Ui, session: &Session, now: DateTime<Utc>) {
     const INDENT: f32 = 16.0;
     const PADDING: f32 = 9.0;
-    let (status, color) = if session.busy { ("Working", TEXT) } else { ("Idle", DIM) };
+    let (status, color) = match (session.busy, session.waiting) {
+        (true, _) => ("Working", TEXT),
+        (false, true) => ("Waiting on you", AMBER),
+        (false, false) => ("Idle", DIM),
+    };
     let status = text(ui, status, SMALL, color);
     let width = ui.available_width();
     let room = width - INDENT - status.size().x - 12.0;

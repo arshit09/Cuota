@@ -104,7 +104,7 @@ To keep some of them in view, pick them on the **Details** page of settings: the
 
 Drag the panel to move it. Always on top and Desktop are the same panel, so only one can be on.
 
-Settings has a page for each part, picked in its sidebar: **General** (Show as, Double-click, Start with Windows), **Appearance** (the panel's size and opacity, and Clawd's animation), and **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel. **View on GitHub**, at the foot of the sidebar, opens this repository.
+Settings has a page for each part, picked in its sidebar: **General** (Show as, Double-click, Start with Windows), **Appearance** (the panel's size and opacity, Clawd's animation, and 8-bit sound effects: Normal plays only what matters, like work starting, Claude asking you something and work finishing, while Lively adds a sound for each kind of step; a list plays each one so you can learn them), and **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel. **View on GitHub**, at the foot of the sidebar, opens this repository.
 
 Tips:
 
