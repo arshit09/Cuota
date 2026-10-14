@@ -8,6 +8,7 @@ mod glance;
 mod log;
 mod mascot;
 mod overlay;
+mod scripts;
 mod settings;
 mod sound;
 mod stats;

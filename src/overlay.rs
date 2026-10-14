@@ -9,6 +9,7 @@ use crate::details;
 use crate::glance;
 use crate::log;
 use crate::mascot::Mascot;
+use crate::scripts::{self, Scripts};
 use crate::settings::{DoubleClick, Mode, SIZES, Settings, SoundMode, Style};
 use crate::sound::{self, Cues};
 use crate::stats::Transcripts;
@@ -25,7 +26,7 @@ use eframe::egui::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -234,6 +235,7 @@ pub struct Overlay {
     status: Status,
     cues: Cues,
     fonts: Fonts,
+    scripts: Scripts,
     icon: Arc<IconData>,
     keep_bottom: Arc<AtomicBool>,
     /// Whether the native window has been fixed up and handed to the Desktop-mode keeper.
@@ -326,6 +328,7 @@ impl Overlay {
             status: Status::new(),
             cues: Cues::new(),
             fonts,
+            scripts: Scripts::default(),
             icon,
             keep_bottom: Arc::new(AtomicBool::new(false)),
             window_ready: false,
@@ -1093,6 +1096,17 @@ impl eframe::App for Overlay {
         if let Some(due) = self.cues.due() {
             ctx.request_repaint_after(due.saturating_duration_since(now));
         }
+
+        // Titles, folders and the account come in whatever script they were written in.
+        let stats = self.transcripts.latest();
+        let sessions = state.sessions.iter().flat_map(|s| [s.title.as_deref(), Some(&*s.name), s.project.as_deref()]);
+        let account = [state.account.email.as_deref(), state.account.organization.as_deref(), state.error.as_deref()];
+        let projects = stats.iter().flat_map(|stats| stats.projects.iter().map(|(name, _)| Some(name.as_str())));
+        let custom = Some(self.settings.custom_target.as_str());
+        let texts = sessions.chain(account).chain(projects).chain([custom]).flatten();
+        if self.scripts.cover(ctx, &self.fonts, texts) {
+            ctx.request_repaint();
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1236,7 +1250,7 @@ fn spawn_demo_story(state: Shared, on_update: impl Fn() + Send + 'static) {
 
 /// Windows' own UI and icon fonts (egui's bundled fonts are left out of the build).
 pub(crate) fn setup_fonts(ctx: &egui::Context) -> Fonts {
-    let dir = PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
+    let dir = scripts::folder();
     let load = |names: &[&str]| names.iter().find_map(|name| std::fs::read(dir.join(name)).ok());
     let mut fonts = egui::FontDefinitions::empty();
     let regular = load(&["segoeui.ttf", "arial.ttf", "tahoma.ttf"]).expect("Windows has a UI font");
@@ -1287,6 +1301,34 @@ mod tests {
         let missing = drawn('\u{378}');
         for star in "·✢*✶✻✽…".chars() {
             assert_ne!(drawn(star), missing, "{star}");
+        }
+    }
+
+    #[test]
+    fn titles_in_any_script_are_drawn() {
+        let ctx = egui::Context::default();
+        let fonts = setup_fonts(&ctx);
+        let mut scripts = Scripts::default();
+        let font = FontId::proportional(12.5);
+        // Glyphs drawn as the replacement for a missing one. Cluster marks shaped into the glyph
+        // before them are drawn as nothing.
+        let missing = |text: &str| {
+            let _ = ctx.run_ui(Default::default(), |_| {});
+            let replacement = ctx.fonts_mut(|f| f.layout_no_wrap("\u{378}".into(), font.clone(), Color32::WHITE));
+            let galley = ctx.fonts_mut(|f| f.layout_no_wrap(text.into(), font.clone(), Color32::WHITE));
+            galley.rows[0].glyphs.iter().filter(|g| g.uv_rect == replacement.rows[0].glyphs[0].uv_rect).count()
+        };
+        let gujarati = "Gemini બ્રાઉઝર ઇમેજ જનરેશન એક્સટેન્શન";
+        assert!(missing(gujarati) > 0, "Segoe UI has no Gujarati");
+        assert!(scripts.cover(&ctx, &fonts, [gujarati]));
+        assert_eq!(missing(gujarati), 0);
+        assert!(!scripts.cover(&ctx, &fonts, [gujarati]), "read once");
+        // Shaped, not drawn letter by letter: ક્ષ is one glyph.
+        let conjunct = ctx.fonts_mut(|f| f.layout_no_wrap("ક્ષ".into(), font.clone(), Color32::WHITE));
+        assert_eq!(conjunct.rows[0].glyphs.iter().filter(|g| !g.uv_rect.is_nothing()).count(), 1);
+        for text in ["हिन्दी में", "தமிழ்", "ภาษาไทย", "ພາສາລາວ", "ខ្មែរ", "བོད་ཡིག", "မြန်မာ", "አማርኛ", "ᏣᎳᎩ", "한국어", "中文标题", "日本語のタイトル"] {
+            scripts.cover(&ctx, &fonts, [text]);
+            assert_eq!(missing(text), 0, "{text}");
         }
     }
 
