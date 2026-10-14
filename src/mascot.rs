@@ -3,8 +3,9 @@
 //! tray icons, where he dances while a session works and sleeps otherwise; the panel's Clawd
 //! is in `animations`.
 
+use crate::vector;
 use eframe::egui::{
-    Color32, ColorImage, Context, Mesh, Painter, Pos2, Shape, TextureFilter, TextureHandle, TextureOptions, Vec2,
+    Color32, ColorImage, Context, Mesh, Painter, Pos2, Shape, TextureFilter, TextureHandle, TextureOptions,
     epaint::Vertex, pos2, vec2,
 };
 
@@ -114,126 +115,8 @@ pub fn sprite(working: bool, frame: u32) -> (&'static [&'static str; 8], bool) {
 /// The spark rasterized to `size` square RGBA: `SPARK_PIXELS` for the texture and the window
 /// icon, or the tray's icon size.
 pub fn spark_rgba(size: usize) -> Vec<u8> {
-    const SAMPLES: usize = 4;
-    let scale = (size * SAMPLES) as f32 / SPARK_VIEWBOX;
-    let outline: Vec<Vec2> = spark_outline().into_iter().map(|p| p * scale).collect();
-    let edges: Vec<(Vec2, Vec2)> = outline.iter().zip(outline.iter().cycle().skip(1)).map(|(&a, &b)| (a, b)).collect();
-
-    // Scanline fill with the nonzero rule, one scanline per sample row.
-    let mut coverage = vec![0u16; size * size];
-    let mut crossings: Vec<(f32, i32)> = Vec::new();
-    for sample_row in 0..size * SAMPLES {
-        let y = sample_row as f32 + 0.5;
-        crossings.clear();
-        for &(a, b) in &edges {
-            if (a.y <= y) != (b.y <= y) {
-                let x = a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x);
-                crossings.push((x, if b.y > a.y { 1 } else { -1 }));
-            }
-        }
-        crossings.sort_by(|p, q| p.0.total_cmp(&q.0));
-        let (mut winding, mut next) = (0, 0);
-        for sample_col in 0..size * SAMPLES {
-            let x = sample_col as f32 + 0.5;
-            while next < crossings.len() && crossings[next].0 < x {
-                winding += crossings[next].1;
-                next += 1;
-            }
-            if winding != 0 {
-                coverage[sample_row / SAMPLES * size + sample_col / SAMPLES] += 1;
-            }
-        }
-    }
-
     let [r, g, b, _] = CLAUDE_ORANGE.to_array();
-    let full = (SAMPLES * SAMPLES) as u32;
-    coverage.iter().flat_map(|&c| [r, g, b, (u32::from(c) * 255 / full) as u8]).collect()
-}
-
-/// The outline of `SPARK_PATH`. It only uses straight segments and one tiny arc, which is
-/// close enough to straight at icon sizes.
-fn spark_outline() -> Vec<Vec2> {
-    let mut path = PathReader { bytes: SPARK_PATH.as_bytes(), at: 0 };
-    let (mut points, mut pen, mut command) = (Vec::new(), Vec2::ZERO, b'M');
-    while !path.done() {
-        if let Some(c) = path.command() {
-            command = c;
-        }
-        let base = if command.is_ascii_lowercase() { pen } else { Vec2::ZERO };
-        match command.to_ascii_uppercase() {
-            b'M' | b'L' => {
-                pen = base + vec2(path.number(), path.number());
-                // Further pairs after a move are lines.
-                command = if command == b'm' { b'l' } else if command == b'M' { b'L' } else { command };
-            }
-            b'H' => pen.x = base.x + path.number(),
-            b'V' => pen.y = base.y + path.number(),
-            b'A' => {
-                // Radii, rotation and the two flags only shape the curve; keep its endpoint.
-                for _ in 0..3 {
-                    path.number();
-                }
-                path.flag();
-                path.flag();
-                pen = base + vec2(path.number(), path.number());
-            }
-            _ => break,
-        }
-        points.push(pen);
-    }
-    points
-}
-
-struct PathReader<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-
-impl PathReader<'_> {
-    fn skip_separators(&mut self) {
-        while self.bytes.get(self.at).is_some_and(|b| matches!(b, b' ' | b',')) {
-            self.at += 1;
-        }
-    }
-
-    fn done(&mut self) -> bool {
-        self.skip_separators();
-        // 'z' closes the outline, which `spark_rgba` does anyway.
-        self.bytes.get(self.at).is_none_or(|b| b.eq_ignore_ascii_case(&b'z'))
-    }
-
-    fn command(&mut self) -> Option<u8> {
-        self.skip_separators();
-        let c = *self.bytes.get(self.at).filter(|b| b.is_ascii_alphabetic())?;
-        self.at += 1;
-        Some(c)
-    }
-
-    /// SVG numbers can run together: "-.23", or "1.008.656" for 1.008 then .656.
-    fn number(&mut self) -> f32 {
-        self.skip_separators();
-        let start = self.at;
-        if matches!(self.bytes.get(self.at), Some(b'-' | b'+')) {
-            self.at += 1;
-        }
-        let mut seen_dot = false;
-        while let Some(&b) = self.bytes.get(self.at) {
-            match b {
-                b'0'..=b'9' => {}
-                b'.' if !seen_dot => seen_dot = true,
-                _ => break,
-            }
-            self.at += 1;
-        }
-        std::str::from_utf8(&self.bytes[start..self.at]).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0)
-    }
-
-    /// Arc flags are single digits that may touch the next number: "01-.104".
-    fn flag(&mut self) -> bool {
-        self.skip_separators();
-        self.at += 1;
-        self.bytes.get(self.at - 1) == Some(&b'1')
-    }
+    vector::mask(SPARK_PATH, SPARK_VIEWBOX, size).into_iter().flat_map(|alpha| [r, g, b, alpha]).collect()
 }
 
 #[cfg(test)]
@@ -242,7 +125,9 @@ mod tests {
 
     #[test]
     fn reads_the_spark_outline() {
-        let outline = spark_outline();
+        let outlines = vector::outlines(SPARK_PATH);
+        assert_eq!(outlines.len(), 1);
+        let outline = &outlines[0];
         assert!(outline.len() > 150, "got {} points", outline.len());
         assert_eq!(outline[0], vec2(4.709, 15.955));
         assert!(outline.iter().all(|p| (-0.01..=24.01).contains(&p.x) && (-0.01..=24.01).contains(&p.y)));

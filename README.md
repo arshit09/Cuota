@@ -134,7 +134,7 @@ The endpoint is undocumented, so a Claude update could break it.
 
 Cuota's code is free software, licensed under the [GNU General Public License v3.0](LICENSE) or any later version. You can use it, change it, share it and even sell it. If you share Cuota or anything built from its code, changed or not, you have to share the source code too, under the same license.
 
-The license covers Cuota's own code only. It doesn't cover Clawd's animations in `assets/mascot`, Anthropic's names, logo or mascot, or the screenshots in `docs/screenshots`, which show them. See [Credits and legal notice](#credits-and-legal-notice).
+The license covers Cuota's own code only. It doesn't cover Clawd's animations in `assets/mascot`, Anthropic's names, logo or mascot, GitHub's logo, or the screenshots in `docs/screenshots`, which show them. See [Credits and legal notice](#credits-and-legal-notice).
 
 ## Credits and legal notice
 
@@ -152,6 +152,8 @@ Cuota is an unofficial project. It isn't made, endorsed or supported by Anthropi
 - The character they draw is Anthropic's.
 
 The GIFs are here, with credit, for personal, non-commercial use. Being in this repo gives you no rights to them, and Cuota's license doesn't apply to them. They're built into the exe (about 3.5 MB of it), so the same goes for any `cuota.exe` you build. Get permission from their owners before you reuse them, share them, or share a build that includes them.
+
+**GitHub's logo.** The GitHub mark on the settings' link to this repo is GitHub, Inc.'s. Its outline is `mark-github` from GitHub's [Primer Octicons](https://github.com/primer/octicons) (MIT License). See GitHub's [logo guidelines](https://github.com/logos) before you use it in your own work.
 
 **Removal.** If you own any of this and want it taken down, [open an issue](https://github.com/arshit09/Cuota/issues) and it will be removed.
 

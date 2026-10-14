@@ -10,6 +10,7 @@ mod settings;
 mod stats;
 mod status;
 mod tray;
+mod vector;
 mod view;
 mod widgets;
 mod win;

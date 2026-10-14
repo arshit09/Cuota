@@ -744,7 +744,7 @@ impl Overlay {
         let footer = Rect::from_min_max(pos2(bottom.left(), bottom.bottom() - 32.0), bottom.max);
         let link = Rect::from_min_size(pos2(bottom.left(), footer.top() - 8.0 - 36.0), vec2(bottom.width(), 36.0));
         let mut slot = ui.new_child(UiBuilder::new().max_rect(link));
-        let github = widgets::nav_link(&mut slot, &self.fonts, icon::GITHUB, "View on GitHub");
+        let github = widgets::nav_link(&mut slot, &self.fonts, widgets::github_mark(ui.ctx()), "View on GitHub");
         if github.on_hover_text(REPOSITORY).clicked() {
             win::open_page(REPOSITORY);
         }

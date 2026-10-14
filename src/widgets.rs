@@ -4,11 +4,12 @@
 //! panel's details share the section headings, cards and rules.
 
 use crate::mascot::CLAUDE_ORANGE;
+use crate::vector;
 use crate::view::DIM;
 use eframe::egui::{
-    Align, Align2, Color32, CornerRadius, CursorIcon, EventFilter, FontFamily, FontId, Frame, Galley, Key,
-    Layout, Margin, Painter, Popup, Rect, Response, Sense, Shadow, Shape, Stroke, StrokeKind, Ui, UiBuilder,
-    WidgetInfo, WidgetType, emath,
+    Align, Align2, Color32, ColorImage, Context, CornerRadius, CursorIcon, EventFilter, FontFamily, FontId, Frame,
+    Galley, Id, Key, Layout, Margin, Painter, Popup, Rect, Response, Sense, Shadow, Shape, Stroke, StrokeKind,
+    TextureHandle, TextureId, TextureOptions, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, emath,
     emath::GuiRounding, pos2,
     text::{LayoutJob, TextWrapping},
     vec2,
@@ -63,8 +64,6 @@ pub mod icon {
     pub const DOUBLE_CLICK: char = '\u{E962}';
     /// Leads out of the app, as to a web page.
     pub const EXTERNAL: char = '\u{E8A7}';
-    /// Code, as the font has no GitHub mark.
-    pub const GITHUB: char = '\u{E943}';
     pub const LIMITS: char = '\u{E9F9}';
     pub const OPACITY: char = '\u{E793}';
     pub const PANEL: char = '\u{E737}';
@@ -86,6 +85,8 @@ pub mod icon {
 const BODY: f32 = 14.0;
 const CAPTION: f32 = 12.0;
 const ICON_SIZE: f32 = 18.0;
+/// A sidebar entry's icon.
+const NAV_ICON: f32 = 16.0;
 /// From a card's icon to its title.
 const INDENT: f32 = 36.0;
 const CARD_PADDING: f32 = 16.0;
@@ -158,21 +159,43 @@ pub fn rule(ui: &mut Ui) {
     ui.painter().hline(rect.left()..=rect.right() + 13.0, rect.center().y, Stroke::new(1.0, LINE));
 }
 
+/// What a sidebar entry shows before its name.
+#[derive(Clone, Copy)]
+pub enum NavIcon {
+    /// A glyph of the icon font.
+    Glyph(char),
+    /// A white image as many pixels across as the glyphs, such as [`github_mark`], drawn in
+    /// their color.
+    Image(TextureId),
+}
+
+impl From<char> for NavIcon {
+    fn from(glyph: char) -> Self {
+        Self::Glyph(glyph)
+    }
+}
+
+impl From<TextureId> for NavIcon {
+    fn from(texture: TextureId) -> Self {
+        Self::Image(texture)
+    }
+}
+
 /// A page's entry in a sidebar, like in Windows' own Settings: its icon and name, filled in
 /// and marked with an accent bar while its page shows.
-pub fn nav_item(ui: &mut Ui, fonts: &Fonts, glyph: char, name: &str, selected: bool) -> Response {
+pub fn nav_item(ui: &mut Ui, fonts: &Fonts, icon: impl Into<NavIcon>, name: &str, selected: bool) -> Response {
     let (_, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, ui.is_enabled(), selected, name));
-    paint_nav_entry(ui, fonts, &response, glyph, name, selected);
+    paint_nav_entry(ui, fonts, &response, icon.into(), name, selected);
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
 /// A sidebar entry that opens a web page rather than a page of its own, like the links at the
 /// foot of Windows apps' sidebars, with an arrow saying it leads out of the app.
-pub fn nav_link(ui: &mut Ui, fonts: &Fonts, glyph: char, name: &str) -> Response {
+pub fn nav_link(ui: &mut Ui, fonts: &Fonts, icon: impl Into<NavIcon>, name: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Link, ui.is_enabled(), name));
-    paint_nav_entry(ui, fonts, &response, glyph, name, false);
+    paint_nav_entry(ui, fonts, &response, icon.into(), name, false);
     if let Some(font) = fonts.icon(12.0) {
         let at = pos2(rect.right() - 14.0, rect.center().y);
         ui.painter().text(at, Align2::RIGHT_CENTER, icon::EXTERNAL, font, SECONDARY);
@@ -181,7 +204,7 @@ pub fn nav_link(ui: &mut Ui, fonts: &Fonts, glyph: char, name: &str) -> Response
 }
 
 /// A sidebar entry's fill, accent bar, icon and name.
-fn paint_nav_entry(ui: &Ui, fonts: &Fonts, response: &Response, glyph: char, name: &str, selected: bool) {
+fn paint_nav_entry(ui: &Ui, fonts: &Fonts, response: &Response, icon: NavIcon, name: &str, selected: bool) {
     let rect = response.rect;
     let fill = match (selected, response.hovered(), response.is_pointer_button_down_on()) {
         (_, _, true) | (true, true, _) => SUBTLE_PRESSED,
@@ -195,12 +218,50 @@ fn paint_nav_entry(ui: &Ui, fonts: &Fonts, response: &Response, glyph: char, nam
         painter.rect_filled(bar, 1.5, ACCENT);
     }
     let left = rect.left() + 14.0;
-    if let Some(font) = fonts.icon(16.0) {
-        painter.text(pos2(left + 8.0, rect.center().y), Align2::CENTER_CENTER, glyph, font, PRIMARY);
+    // Without the icon font no entry has an icon, images included, so the names line up.
+    if let Some(font) = fonts.icon(NAV_ICON) {
+        let center = pos2(left + NAV_ICON / 2.0, rect.center().y);
+        match icon {
+            NavIcon::Glyph(glyph) => {
+                painter.text(center, Align2::CENTER_CENTER, glyph, font, PRIMARY);
+            }
+            NavIcon::Image(texture) => {
+                // On whole pixels, a texel to each, so it stays sharp.
+                let ppp = ui.pixels_per_point();
+                let side = Vec2::splat(nav_icon_pixels(ppp) as f32 / ppp);
+                let at = Rect::from_min_size((center - side / 2.0).round_to_pixels(ppp), side);
+                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                painter.image(texture, at, uv, PRIMARY);
+            }
+        }
     }
     let text_left = if fonts.icons.is_some() { left + 34.0 } else { left };
     painter.text(pos2(text_left, rect.center().y), Align2::LEFT_CENTER, name, FontId::proportional(BODY), PRIMARY);
     focus_ring(ui, response, rect, 4.0);
+}
+
+/// How many pixels across a sidebar entry's icon is.
+fn nav_icon_pixels(pixels_per_point: f32) -> usize {
+    (NAV_ICON * pixels_per_point).round().max(1.0) as usize
+}
+
+/// GitHub's mark: `mark-github` from GitHub's Primer Octicons (MIT), on a 16 x 16 viewBox.
+pub const GITHUB_MARK: &str = "M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656";
+
+/// GitHub's mark as a [`NavIcon::Image`]. It's rasterized for the window's scale, and again
+/// whenever that changes, so it's as sharp as the glyphs beside it.
+pub fn github_mark(ctx: &Context) -> TextureId {
+    let pixels = nav_icon_pixels(ctx.pixels_per_point());
+    let id = Id::new("github-mark");
+    let cached = ctx.data(|data| data.get_temp::<(usize, TextureHandle)>(id));
+    if let Some((_, texture)) = cached.filter(|(size, _)| *size == pixels) {
+        return texture.id();
+    }
+    let mask = vector::mask(GITHUB_MARK, 16.0, pixels);
+    let image = ColorImage::new([pixels; 2], mask.into_iter().map(Color32::from_white_alpha).collect());
+    let texture = ctx.load_texture("github-mark", image, TextureOptions::LINEAR);
+    ctx.data_mut(|data| data.insert_temp(id, (pixels, texture.clone())));
+    texture.id()
 }
 
 /// A note at the top of a page, like Windows' info bars.
