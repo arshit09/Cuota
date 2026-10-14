@@ -42,6 +42,8 @@ pub enum DoubleClick {
 #[serde(default)]
 pub struct View {
     pub clawd: bool,
+    /// A word under Clawd for what he's up to, like "Percolating…". The panel only.
+    pub status: bool,
     pub percent: bool,
     pub time_left: bool,
     pub style: Style,
@@ -51,7 +53,7 @@ pub struct View {
 
 impl Default for View {
     fn default() -> Self {
-        Self { clawd: true, percent: true, time_left: true, style: Style::Bars, hidden: BTreeSet::new() }
+        Self { clawd: true, status: true, percent: true, time_left: true, style: Style::Bars, hidden: BTreeSet::new() }
     }
 }
 
@@ -176,5 +178,14 @@ mod tests {
     fn loads_the_old_popup_name_as_always_on_top() {
         let settings: Settings = serde_json::from_str(r#"{"show":["Popup","Taskbar"]}"#).unwrap();
         assert_eq!(settings.show, BTreeSet::from([Mode::AlwaysOnTop, Mode::Taskbar]));
+    }
+
+    #[test]
+    fn clawds_status_shows_unless_turned_off_even_in_older_settings() {
+        let older: Settings = serde_json::from_str(r#"{"panel":{"clawd":true,"percent":false}}"#).unwrap();
+        assert!(older.panel.status && !older.panel.percent);
+        let off = Settings { panel: View { status: false, ..View::default() }, ..Settings::default() };
+        let text = serde_json::to_string(&off).unwrap();
+        assert!(!serde_json::from_str::<Settings>(&text).unwrap().panel.status);
     }
 }

@@ -6,7 +6,7 @@
 use crate::animations::{self, Clawd};
 use crate::claude::{self, Limit, Shared, State};
 use crate::details;
-use crate::mascot::Mascot;
+use crate::mascot::{CLAUDE_ORANGE, Mascot};
 use crate::settings::{DoubleClick, Mode, Settings, Style};
 use crate::stats::Transcripts;
 use crate::tray::{Tray, TrayConfig, TrayEvent};
@@ -29,6 +29,10 @@ use std::time::{Duration, Instant};
 
 const MARGIN: f32 = 12.0;
 const GAP: f32 = 10.0;
+/// Clawd's status: its text size, and how far under his feet it starts. Desk legs reach a
+/// little lower, but the line's top is blank, so they stop short of the letters.
+const STATUS_SIZE: f32 = 12.0;
+const STATUS_GAP: f32 = 5.0;
 /// Wrap width for an error message when there are no meters to line up with.
 const NOTE_WIDTH: f32 = 220.0;
 const SETTINGS_WIDTH: f32 = 340.0;
@@ -380,7 +384,17 @@ impl Overlay {
         let note = note(state).map(|(text, color)| {
             painter.layout(text, FontId::proportional(12.0), color, meters.size.x.max(NOTE_WIDTH))
         });
-        let clawd = if view.clawd { animations::SIZE } else { Vec2::ZERO };
+        // Clawd stands over his status when it shows.
+        let status = view.clawd && view.status;
+        let status_font = FontId::proportional(STATUS_SIZE);
+        let clawd = match (view.clawd, status) {
+            (false, _) => Vec2::ZERO,
+            (true, false) => animations::SIZE,
+            (true, true) => {
+                let line = painter.fonts_mut(|fonts| fonts.row_height(&status_font));
+                animations::STANDING + vec2(0.0, STATUS_GAP + line)
+            }
+        };
 
         let note_size = note.as_ref().map_or(Vec2::ZERO, |n| n.size());
         let note_gap = if note.is_some() && meters.size.y > 0.0 { 4.0 } else { 0.0 };
@@ -409,7 +423,15 @@ impl Overlay {
         let mut next_frame = None;
         if clawd.x > 0.0 {
             let at = origin + vec2(0.0, (row.y - clawd.y) / 2.0);
-            next_frame = self.clawd.paint(&painter, Rect::from_min_size(at, clawd), state, self.settings.animate);
+            let slot = Rect::from_min_size(at, if status { animations::STANDING } else { clawd });
+            next_frame = self.clawd.paint(&painter, slot, state, self.settings.animate, status);
+            if status {
+                // Orange while he's on the job, like Claude Code's spinner; dim while he rests.
+                let (text, working) = self.clawd.status();
+                let color = if working { CLAUDE_ORANGE } else { DIM };
+                let galley = single_line(&painter, text, status_font, color, slot.width());
+                painter.galley(pos2(slot.center().x - galley.size().x / 2.0, slot.bottom() + STATUS_GAP), galley, color);
+            }
         }
         let body_at = origin + vec2(clawd.x + gap, (row.y - body.y) / 2.0);
         let hints = meters.paint(&painter, body_at);
@@ -629,6 +651,16 @@ impl Overlay {
                 widgets::divider(ui, fonts);
                 widgets::row(ui, fonts, glyph, title, about, widgets::TOGGLE_WIDTH, |ui| {
                     widgets::toggle(ui, on);
+                });
+            }
+            // A word under Clawd, so the panel only, and only with him.
+            if !taskbar {
+                widgets::divider(ui, fonts);
+                ui.add_enabled_ui(view.clawd, |ui| {
+                    let about = Some("What Clawd's up to, like Percolating…");
+                    widgets::row(ui, fonts, icon::STATUS, "Status", about, widgets::TOGGLE_WIDTH, |ui| {
+                        widgets::toggle(ui, &mut view.status);
+                    });
                 });
             }
         });

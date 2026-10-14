@@ -23,6 +23,13 @@ const SCALE: f32 = 0.3;
 /// the odd flying prop, which may stray up to `SPILL` outside the slot, into the panel's margin.
 pub const SIZE: Vec2 = vec2(380.0 * SCALE, 320.0 * SCALE);
 pub const SPILL: f32 = 6.0;
+/// The row of the frame Clawd's feet rest on, in pixels.
+const GROUND: f32 = 392.0;
+/// Clawd's slot with his status under him: he stands on its bottom edge, so the word keeps its
+/// place whatever he's doing. 300 px takes a hat, with its tip in `SPILL`; only props flying
+/// off the top lose more. Below his feet, desk legs and the like show `FLOOR` further down.
+pub const STANDING: Vec2 = vec2(SIZE.x, 300.0 * SCALE);
+pub const FLOOR: f32 = 28.0 * SCALE;
 /// The GIFs are 2x nearest-neighbour enlargements, so half size loses nothing and saves memory.
 const SHRINK: usize = 2;
 /// How long one activity shows before another takes over, in seconds, while working...
@@ -82,6 +89,38 @@ const GREETING: &[Clip] = &clips!["greeting", "greeting-crown", "greeting-fluid"
 /// ...and once as it ends.
 const DONE: &[Clip] = &clips!["done", "done-fluid"];
 
+/// Clawd's status, a word under him like the one Claude Code's spinner shows. A new one comes
+/// with each clip. While a session is busy:
+const BUSY_WORDS: &[&str] = &[
+    "Accomplishing", "Actioning", "Alchemizing", "Baking", "Bedazzling", "Booping", "Brainstorming",
+    "Brewing", "Calculating", "Cerebrating", "Channeling", "Churning", "Clauding", "Coalescing",
+    "Cogitating", "Combobulating", "Computing", "Concocting", "Conjuring", "Considering",
+    "Contemplating", "Cooking", "Crafting", "Creating", "Crunching", "Deciphering", "Deliberating",
+    "Determining", "Discombobulating", "Distilling", "Divining", "Doodling", "Elucidating",
+    "Enchanting", "Envisioning", "Fermenting", "Fiddling", "Finagling", "Flibbertigibbeting",
+    "Forging", "Frolicking", "Galumphing", "Germinating", "Hatching", "Herding", "Honking",
+    "Hustling", "Ideating", "Imagining", "Incubating", "Inferring", "Jiving", "Juggling", "Kneading",
+    "Manifesting", "Marinating", "Meandering", "Mosaicing", "Moseying", "Mulling", "Musing",
+    "Mustering", "Noodling", "Percolating", "Perusing", "Philosophizing", "Pondering",
+    "Pontificating", "Processing", "Pursuing", "Puttering", "Puzzling", "Recombobulating",
+    "Reticulating", "Riffing", "Ruminating", "Rummaging", "Scheming", "Schlepping", "Sculpting",
+    "Shimmying", "Simmering", "Sleuthing", "Smooshing", "Spelunking", "Spitballing", "Stewing",
+    "Sussing", "Synthesizing", "Thinking", "Tinkering", "Transmuting", "Unfurling", "Unraveling",
+    "Untangling", "Vibing", "Weaving", "Whirring", "Whittling", "Wibbling", "Wizarding", "Wondering",
+    "Working", "Wrangling",
+];
+/// Sessions are open, but none is busy.
+const WAITING_WORDS: &[&str] = &[
+    "Waiting", "Idling", "Standing by", "Lounging", "Loafing", "Lollygagging", "Dawdling",
+    "Daydreaming", "Twiddling thumbs", "Loitering", "Chilling",
+];
+/// No session is open.
+const ASLEEP_WORDS: &[&str] = &["Sleeping", "Snoozing", "Dozing", "Napping", "Hibernating", "Slumbering", "Snoring"];
+/// Cuota can't read the usage.
+const ERROR_WORDS: &[&str] = &["Stumped", "Befuddled", "Flummoxed", "Perplexed", "Bamboozled", "Baffled"];
+/// Work just ended.
+const DONE_WORDS: &[&str] = &["Done", "All done", "Ta-da", "Nailed it", "Finished", "Shipped"];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mood {
     Working,
@@ -115,6 +154,18 @@ impl Mood {
     fn spell(self) -> Range<u64> {
         if self == Self::Working { WORK_SPELL } else { REST_SPELL }
     }
+
+    /// Words for Clawd's status, and how they end. A clip played `once` outside work is the
+    /// celebration as it ends.
+    fn words(self, once: bool) -> (&'static [&'static str], &'static str) {
+        match self {
+            _ if once && self != Self::Working => (DONE_WORDS, "!"),
+            Self::Working => (BUSY_WORDS, "…"),
+            Self::Waiting => (WAITING_WORDS, "…"),
+            Self::Asleep => (ASLEEP_WORDS, "…"),
+            Self::Error => (ERROR_WORDS, "…"),
+        }
+    }
 }
 
 pub struct Clawd {
@@ -126,6 +177,8 @@ pub struct Clawd {
     /// The sessions that were busy at the last paint, by name and start time.
     busy: Vec<(String, Option<DateTime<Utc>>)>,
     playing: Playing,
+    /// What he's up to, in a word.
+    status: String,
 }
 
 impl Clawd {
@@ -135,12 +188,21 @@ impl Clawd {
         let playing = Playing::new(pick(&mut rng, ASLEEP, ""), now, now + rng.seconds(REST_SPELL));
         let blank = ColorImage::filled(playing.frames[0].image.size, Color32::TRANSPARENT);
         let texture = ctx.load_texture("clawd", blank, OPTIONS);
-        Self { texture, rng, mood: Mood::Asleep, since: now, busy: Vec::new(), playing }
+        let status = status(&mut rng, Mood::Asleep, false, "");
+        Self { texture, rng, mood: Mood::Asleep, since: now, busy: Vec::new(), playing, status }
     }
 
-    /// Paints Clawd into `rect` (sized by [`SIZE`]) and returns when his next frame is due,
-    /// or `None` when `animate` is off and he holds still.
-    pub fn paint(&mut self, painter: &Painter, rect: Rect, state: &State, animate: bool) -> Option<Duration> {
+    /// His status, like "Percolating…", and whether it's about work rather than waiting,
+    /// sleeping or trouble. It changes as he paints.
+    pub fn status(&self) -> (&str, bool) {
+        (&self.status, self.mood == Mood::Working || self.playing.once)
+    }
+
+    /// Paints Clawd into `rect` and returns when his next frame is due, or `None` when
+    /// `animate` is off and he holds still. When `standing`, `rect` is sized by [`STANDING`]
+    /// and he stands on its bottom edge, ready for his status under him; otherwise it's sized
+    /// by [`SIZE`] and what he draws is centred in it.
+    pub fn paint(&mut self, painter: &Painter, rect: Rect, state: &State, animate: bool, standing: bool) -> Option<Duration> {
         let now = Instant::now();
         let mood = Mood::of(state);
         let busy: Vec<_> = state.sessions.iter().filter(|s| s.busy).map(|s| (s.name.clone(), s.started)).collect();
@@ -168,10 +230,17 @@ impl Clawd {
             self.texture.set(self.playing.frames[index].image.clone(), OPTIONS);
             self.playing.shown = Some(index);
         }
-        // The clip's drawing centred in the slot, with the frame around it cut off past SPILL.
+        // The clip's drawing centred in the slot, or Clawd's feet on its bottom edge, with the
+        // frame around it cut off past SPILL, or past FLOOR under his feet.
         let bounds = self.playing.bounds;
-        let frame = Rect::from_min_size(rect.center() - bounds.center().to_vec2() * SCALE, FRAME * SCALE);
-        let painter = painter.with_clip_rect(painter.clip_rect().intersect(rect.expand(SPILL)));
+        let (top, room) = if standing {
+            let room = Rect::from_min_max(rect.min - Vec2::splat(SPILL), rect.max + vec2(SPILL, FLOOR));
+            (rect.bottom() - GROUND * SCALE, room)
+        } else {
+            (rect.center().y - bounds.center().y * SCALE, rect.expand(SPILL))
+        };
+        let frame = Rect::from_min_size(pos2(rect.center().x - bounds.center().x * SCALE, top), FRAME * SCALE);
+        let painter = painter.with_clip_rect(painter.clip_rect().intersect(room));
         painter.image(self.texture.id(), frame, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         animate.then(|| lasts.min(self.playing.ends().saturating_duration_since(now)).max(Duration::from_millis(1)))
     }
@@ -182,6 +251,7 @@ impl Clawd {
         let due = if once { now } else { now + self.rng.seconds(self.mood.spell()) };
         self.playing = Playing::new(clip, now, due);
         self.playing.once = once;
+        self.status = status(&mut self.rng, self.mood, once, &self.status);
     }
 }
 
@@ -191,6 +261,17 @@ fn pick(rng: &mut Rng, pool: &'static [Clip], current: &str) -> &'static Clip {
         let clip = &pool[rng.below(pool.len())];
         if pool.len() == 1 || clip.name != current {
             return clip;
+        }
+    }
+}
+
+/// A random status for a clip in `mood`, another than `current`.
+fn status(rng: &mut Rng, mood: Mood, once: bool, current: &str) -> String {
+    let (words, end) = mood.words(once);
+    loop {
+        let status = format!("{}{end}", words[rng.below(words.len())]);
+        if words.len() == 1 || status != current {
+            return status;
         }
     }
 }
@@ -458,6 +539,37 @@ mod tests {
     fn clawd_without_props_fits_the_slot() {
         let drawn = bounds(&decode(clips!["idle"][0].gif));
         assert!(drawn.width() * SCALE <= SIZE.x && drawn.height() * SCALE <= SIZE.y, "{drawn:?}");
+    }
+
+    #[test]
+    fn standing_clawd_keeps_his_hat_and_his_desk() {
+        assert_eq!(bounds(&decode(clips!["idle"][0].gif)).max.y, GROUND, "his feet");
+        let hat = bounds(&decode(clips!["thinking-wizard-hat"][0].gif));
+        assert!((GROUND - hat.min.y) * SCALE <= STANDING.y + SPILL, "{hat:?}");
+        let desk = bounds(&decode(clips!["writing-fluid"][0].gif));
+        assert!((desk.max.y - GROUND) * SCALE <= FLOOR, "{desk:?}");
+    }
+
+    #[test]
+    fn status_words_suit_the_mood_and_change_with_each_clip() {
+        for words in [BUSY_WORDS, WAITING_WORDS, ASLEEP_WORDS, ERROR_WORDS, DONE_WORDS] {
+            let unique: BTreeSet<&str> = words.iter().copied().collect();
+            assert_eq!(unique.len(), words.len(), "a word is in twice");
+            assert!(words.iter().all(|w| !w.is_empty() && w.chars().all(|c| c.is_alphabetic() || c == ' ' || c == '-')));
+        }
+        let mut rng = Rng::new();
+        let mut last = String::new();
+        for _ in 0..200 {
+            let next = status(&mut rng, Mood::Working, false, &last);
+            assert_ne!(next, last);
+            assert!(next.ends_with('…') && BUSY_WORDS.contains(&next.trim_end_matches('…')), "{next}");
+            last = next;
+        }
+        // The greeting is work starting; a clip played once otherwise is work done.
+        assert!(BUSY_WORDS.contains(&status(&mut rng, Mood::Working, true, "").trim_end_matches('…')));
+        let done = status(&mut rng, Mood::Waiting, true, "");
+        assert!(DONE_WORDS.contains(&done.trim_end_matches('!')), "{done}");
+        assert!(ASLEEP_WORDS.contains(&status(&mut rng, Mood::Asleep, false, "").trim_end_matches('…')));
     }
 
     #[test]

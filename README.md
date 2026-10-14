@@ -2,7 +2,7 @@
 
 A tiny Windows widget that shows your Claude plan usage: session (5hr), weekly, and per-model limits. Same numbers as Claude Code's **Account & Usage** panel.
 
-Clawd, the Claude Code mascot, acts out a random activity while Claude works: a new one whenever a session starts working, and another every so often. He greets you as work starts and celebrates when it's done, waits around while sessions sit idle, and sleeps when none is open. The 62 animations come from [Mascot Studio](https://github.com/Harriszed/mascot-studio).
+Clawd, the Claude Code mascot, acts out a random activity while Claude works: a new one whenever a session starts working, and another every so often. He greets you as work starts and celebrates when it's done, waits around while sessions sit idle, and sleeps when none is open. A word under him says what he's up to, like Claude Code's spinner: *Percolating…*, *Spelunking…*, *Flibbertigibbeting…* The 62 animations come from [Mascot Studio](https://github.com/Harriszed/mascot-studio).
 
 ## Requirements
 
@@ -45,7 +45,7 @@ The exe is self-contained, so copy it anywhere. To start it when you sign in, tu
 
 Drag the panel to move it. Always on top and Desktop are the same panel, so only one can be on.
 
-**Display** sets the Panel and Taskbar separately: Bars or Pie, which limits, percentage, time left, and Clawd.
+**Display** sets the Panel and Taskbar separately: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status word under him in the panel.
 
 Tips:
 
