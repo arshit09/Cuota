@@ -18,7 +18,7 @@ use std::sync::Arc;
 const SIZE: f32 = 12.0;
 /// Between one detail and the next.
 const GAP: f32 = 5.0;
-/// Running sessions listed by title; the rest are counted.
+/// Running sessions named in the settings row's one-line example.
 const TITLES: usize = 3;
 const READING: &str = "Reading Claude Code's history...";
 
@@ -195,12 +195,12 @@ impl Builder<'_> {
         bottom
     }
 
-    /// A line for each of the first few running sessions: a dot, lit while it works, and its
-    /// title, then how many more there are. Returns where they end.
+    /// A line for each running session: a dot, lit while it works, and its title. Returns where
+    /// they end.
     fn titles(&self, glance: &mut Glance, sessions: &[Session], mut y: f32) -> f32 {
         let s = self.scale;
         let indent = 12.0 * s;
-        for session in sessions.iter().take(TITLES) {
+        for session in sessions {
             let color = if session.busy { TEXT } else { DIM };
             let name = session.display_name();
             let title = single_line(self.painter, name, self.font(), color, self.width - indent);
@@ -219,10 +219,6 @@ impl Builder<'_> {
             glance.size.x = glance.size.x.max(rect.right());
             glance.shapes.push(Shape::galley(rect.min, title, color));
             y = rect.bottom();
-        }
-        let more = sessions.len().saturating_sub(TITLES);
-        if more > 0 {
-            y = self.lines(glance, vec![Line::note(format!("And {more} more"))], y);
         }
         y
     }
