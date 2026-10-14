@@ -21,9 +21,9 @@ use eframe::egui::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -53,6 +53,45 @@ const REOPEN_GUARD: Duration = Duration::from_millis(300);
 
 const BG: Color32 = Color32::from_rgb(28, 28, 30);
 const BORDER: Color32 = Color32::from_rgb(56, 56, 60);
+
+/// The Browse button for a Custom double-click, and the name of what it opens. The Open dialog
+/// runs on a thread of its own, so what it picked arrives on a later frame.
+fn custom_target(
+    ui: &mut egui::Ui,
+    fonts: &Fonts,
+    settings: &mut Settings,
+    browsing: &mut Option<Receiver<Option<String>>>,
+) {
+    match browsing.as_ref().map(Receiver::try_recv) {
+        Some(Ok(Some(path))) => {
+            settings.custom_target = path;
+            *browsing = None;
+        }
+        Some(Ok(None) | Err(TryRecvError::Disconnected)) => *browsing = None,
+        Some(Err(TryRecvError::Empty)) | None => {}
+    }
+    ui.horizontal(|ui| {
+        let browse = ui.add_enabled_ui(browsing.is_none(), |ui| widgets::button(ui, fonts, icon::BROWSE, "Browse…")).inner;
+        if browse.clicked() {
+            let (picked, dialog) = mpsc::channel();
+            let ctx = ui.ctx().clone();
+            win::browse_file(&settings.custom_target, move |path| {
+                let _ = picked.send(path);
+                ctx.request_repaint();
+            });
+            *browsing = Some(dialog);
+        }
+        let name = Path::new(&settings.custom_target).file_name().map(|name| name.to_string_lossy().into_owned());
+        let (text, color) = match &name {
+            Some(name) => (name.as_str(), TEXT),
+            None => ("Nothing picked yet", DIM),
+        };
+        let label = ui.add(Label::new(RichText::new(text).size(12.5).color(color)).truncate());
+        if name.is_some() {
+            label.on_hover_text(&settings.custom_target);
+        }
+    });
+}
 
 /// Which view the settings' Display section edits.
 #[derive(Clone, Copy, PartialEq)]
@@ -116,6 +155,8 @@ pub struct Overlay {
     starts_with_windows: bool,
     /// Whether the Claude app is installed, as last looked up.
     claude_app_installed: bool,
+    /// The Open dialog picking what a Custom double-click opens, while it's up.
+    browsing: Option<Receiver<Option<String>>>,
     /// The panel shows usage details under its meters.
     expanded: bool,
     /// How far the expanded panel moved up and left to stay on screen, to move back when it
@@ -190,6 +231,7 @@ impl Overlay {
             settings_surface: Surface::Panel,
             starts_with_windows: false,
             claude_app_installed: false,
+            browsing: None,
             expanded: false,
             lift: Vec2::ZERO,
             details_height: 0.0,
@@ -365,6 +407,9 @@ impl Overlay {
                 DoubleClick::Details => self.set_expanded(!self.expanded),
                 DoubleClick::Website => win::open_claude(false),
                 DoubleClick::App => win::open_claude(true),
+                // Nothing picked yet: the settings are where to pick it.
+                DoubleClick::Custom if self.settings.custom_target.is_empty() => self.open_settings(&ctx),
+                DoubleClick::Custom => win::open_target(&self.settings.custom_target),
             }
         }
         if !docked && background.drag_started_by(PointerButton::Primary) {
@@ -538,7 +583,9 @@ impl Overlay {
     fn settings_ui(&mut self, ui: &mut egui::Ui, state: &State) {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         self.settings_header(ui, state);
-        let Self { settings, settings_surface: surface, fonts, starts_with_windows, claude_app_installed, .. } = self;
+        let Self {
+            settings, settings_surface: surface, fonts, starts_with_windows, claude_app_installed, browsing, ..
+        } = self;
 
         ui.add_space(16.0);
         widgets::heading(ui, fonts, "General", |_| {});
@@ -571,10 +618,22 @@ impl Overlay {
                 DoubleClick::Website => "Opens your usage page on claude.ai",
                 DoubleClick::App if *claude_app_installed => "Opens the Claude app",
                 DoubleClick::App => "The Claude app isn't installed, so this opens claude.ai",
+                DoubleClick::Custom => "Opens a file, program or script of your choice",
             };
             widgets::row_below(ui, fonts, icon::DOUBLE_CLICK, "Double-click", Some(about), |ui| {
-                let options = [(DoubleClick::Details, "Details"), (DoubleClick::Website, "Website"), (DoubleClick::App, "App")];
-                widgets::segmented(ui, &mut settings.double_click, &options, None);
+                let options = [
+                    (DoubleClick::Details, "Details"),
+                    (DoubleClick::Website, "Website"),
+                    (DoubleClick::App, "App"),
+                    (DoubleClick::Custom, "Custom"),
+                ];
+                // Four options want more than the row has, so they share it.
+                let width = widgets::segmented_width(ui, &options.map(|(_, name)| name)).min(ui.available_width());
+                widgets::segmented(ui, &mut settings.double_click, &options, Some(width));
+                if settings.double_click == DoubleClick::Custom {
+                    ui.add_space(8.0);
+                    custom_target(ui, fonts, settings, browsing);
+                }
             });
             widgets::divider(ui, fonts);
             let about = Some("Opens Cuota when you sign in");

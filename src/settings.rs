@@ -35,6 +35,8 @@ pub enum DoubleClick {
     Website,
     /// Opens the Claude desktop app.
     App,
+    /// Opens the file, program or script at [`Settings::custom_target`].
+    Custom,
 }
 
 /// What one surface (the panel, or the taskbar icons) shows.
@@ -80,6 +82,9 @@ pub struct Settings {
     pub panel: View,
     pub taskbar: View,
     pub double_click: DoubleClick,
+    /// What a Custom double-click opens: the path of a file, program, script or shortcut.
+    /// Empty until one is picked.
+    pub custom_target: String,
     /// Top-left of the panel in Always on top and Desktop modes, in points.
     pub panel_pos: Option<[f32; 2]>,
 }
@@ -93,6 +98,7 @@ impl Default for Settings {
             panel: View::default(),
             taskbar: View::default(),
             double_click: DoubleClick::default(),
+            custom_target: String::new(),
             panel_pos: None,
         }
     }
@@ -187,5 +193,19 @@ mod tests {
         let off = Settings { panel: View { status: false, ..View::default() }, ..Settings::default() };
         let text = serde_json::to_string(&off).unwrap();
         assert!(!serde_json::from_str::<Settings>(&text).unwrap().panel.status);
+    }
+
+    #[test]
+    fn a_custom_double_click_keeps_what_it_opens_and_older_settings_still_load() {
+        let settings = Settings {
+            double_click: DoubleClick::Custom,
+            custom_target: r"C:\Tools\notes.bat".to_owned(),
+            ..Settings::default()
+        };
+        let text = serde_json::to_string(&settings).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), settings);
+        let older: Settings = serde_json::from_str(r#"{"double_click":"App"}"#).unwrap();
+        assert_eq!(older.double_click, DoubleClick::App);
+        assert_eq!(older.custom_target, "");
     }
 }

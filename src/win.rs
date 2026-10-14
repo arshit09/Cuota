@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::mem::{size_of, transmute, zeroed};
+use std::path::Path;
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,8 +25,12 @@ use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
+use windows_sys::Win32::UI::Controls::Dialogs::{
+    GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_NODEREFERENCELINKS,
+    OFN_PATHMUSTEXIST, OPENFILENAMEW,
+};
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, GetAsyncKeyState, VK_LBUTTON};
 use windows_sys::Win32::UI::Shell::{
     ABM_GETTASKBARPOS, APPBARDATA, DefSubclassProc, SHAppBarMessage, SetWindowSubclass, ShellExecuteW,
 };
@@ -140,21 +145,77 @@ pub fn claude_app_installed() -> bool {
 }
 
 /// Opens the Claude app, or claude.ai's usage page in the browser when `app` is false or the
-/// app isn't installed. Starting either can take a moment, so it happens on a thread of its own.
+/// app isn't installed.
 pub fn open_claude(app: bool) {
-    let targets: Vec<String> =
-        app.then(claude_app).flatten().into_iter().chain([CLAUDE_USAGE_PAGE.to_owned()]).collect();
+    let targets = app.then(claude_app).flatten().into_iter().chain([CLAUDE_USAGE_PAGE.to_owned()]).collect();
+    shell_open(targets, None);
+}
+
+/// Opens a file, program, script or shortcut as double-clicking it in Explorer would, from its
+/// own folder so a script finds what's beside it.
+pub fn open_target(target: &str) {
+    shell_open(vec![target.to_owned()], folder_of(target));
+}
+
+/// The folder `path` is in, if it names one.
+fn folder_of(path: &str) -> Option<String> {
+    let folder = Path::new(path).parent()?.to_string_lossy();
+    (!folder.is_empty()).then(|| folder.into_owned())
+}
+
+/// Opens the first of `targets` the shell can, in `directory` if given. Starting things can
+/// take a moment, so it happens on a thread of its own.
+fn shell_open(targets: Vec<String>, directory: Option<String>) {
     std::thread::spawn(move || unsafe {
         // Some links are handled by shell extensions, which need COM.
         CoInitializeEx(null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as _);
         let verb = wide("open");
+        let directory = directory.map(|directory| wide(&directory));
+        let directory = directory.as_ref().map_or(null(), |directory| directory.as_ptr());
         for target in targets {
             let target = wide(&target);
             // Values above 32 mean it opened.
-            if ShellExecuteW(0, verb.as_ptr(), target.as_ptr(), null(), null(), SW_SHOWNORMAL as _) > 32 {
+            if ShellExecuteW(0, verb.as_ptr(), target.as_ptr(), null(), directory, SW_SHOWNORMAL as _) > 32 {
                 break;
             }
         }
+    });
+}
+
+/// Asks for a file with Windows' Open dialog, owned by the active window and starting beside
+/// `near` when that's a path. The dialog blocks the thread it runs on, so it gets one of its
+/// own and the windows keep drawing. `done` gets the path picked, or `None` when cancelled.
+pub fn browse_file(near: &str, done: impl FnOnce(Option<String>) + Send + 'static) {
+    let owner = unsafe { GetActiveWindow() };
+    let start_in = folder_of(near).map(|folder| wide(&folder));
+    std::thread::spawn(move || {
+        let picked = unsafe {
+            CoInitializeEx(null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as _);
+            let title = wide("Open on double-click");
+            // Names and patterns in turn, each ended by a NUL, with one more from `wide`.
+            let filter = wide("All files\0*.*\0Programs and scripts\0*.exe;*.bat;*.cmd;*.ps1;*.ahk;*.lnk\0");
+            let mut path = vec![0u16; 32 * 1024];
+            let mut dialog: OPENFILENAMEW = zeroed();
+            dialog.lStructSize = size_of::<OPENFILENAMEW>() as u32;
+            dialog.hwndOwner = owner;
+            dialog.lpstrFilter = filter.as_ptr();
+            dialog.lpstrFile = path.as_mut_ptr();
+            dialog.nMaxFile = path.len() as u32;
+            dialog.lpstrInitialDir = start_in.as_ref().map_or(null(), |folder| folder.as_ptr());
+            dialog.lpstrTitle = title.as_ptr();
+            // A shortcut is kept as one, so one to a Store app still opens it.
+            dialog.Flags = OFN_EXPLORER
+                | OFN_FILEMUSTEXIST
+                | OFN_PATHMUSTEXIST
+                | OFN_HIDEREADONLY
+                | OFN_NOCHANGEDIR
+                | OFN_NODEREFERENCELINKS;
+            (GetOpenFileNameW(&mut dialog) != 0).then(|| {
+                let len = path.iter().position(|&c| c == 0).unwrap_or(0);
+                String::from_utf16_lossy(&path[..len])
+            })
+        };
+        done(picked);
     });
 }
 
@@ -303,4 +364,16 @@ pub fn keep_at_bottom(window: HWND, active: Arc<AtomicBool>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_of_a_path() {
+        assert_eq!(folder_of(r"C:\Tools\notes.bat").as_deref(), Some(r"C:\Tools"));
+        assert_eq!(folder_of("notes.bat"), None);
+        assert_eq!(folder_of(""), None);
+    }
 }

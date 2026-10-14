@@ -24,6 +24,7 @@ const ACCENT: Color32 = CLAUDE_ORANGE;
 /// Glyphs of Segoe Fluent Icons (Windows 11), which keeps Segoe MDL2 Assets' (Windows 10) code points.
 pub mod icon {
     pub const ANIMATE: char = '\u{E768}';
+    pub const BROWSE: char = '\u{E8E5}';
     pub const CHECK: char = '\u{E73E}';
     pub const CLAWD: char = '\u{E76E}';
     pub const DETAILS: char = '\u{E9D2}';

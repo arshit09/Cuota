@@ -29,7 +29,7 @@ The exe is self-contained, so copy it anywhere. To start it when you sign in, tu
 
 **Right-click** Cuota for settings. It always has an icon in the tray by the clock, whose right-click menu has **Usage details**, **Settings** and **Quit**.
 
-**Double-click** the panel to expand it with usage details, and again to shrink it. In settings, **Double-click** can open your usage page on claude.ai or the Claude app instead. The details show:
+**Double-click** the panel to expand it with usage details, and again to shrink it. In settings, **Double-click** can instead open your usage page on claude.ai, the Claude app, or any file, program or script you pick. The details show:
 
 - each limit's reset time and where it's headed at your current pace
 - what your week went to: Claude Code, chats, Cowork
