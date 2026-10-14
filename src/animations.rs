@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn mood_follows_the_sessions() {
-        let session = |busy| Session { name: "x".into(), project: None, app: "VS Code".into(), busy, started: None };
+        let session = |busy| Session { name: "x".into(), title: None, project: None, app: "VS Code".into(), busy, started: None };
         let state = State { working: true, sessions: vec![session(true)], error: Some("down".into()), ..State::default() };
         assert_eq!(Mood::of(&state), Mood::Working);
         let state = State { sessions: vec![session(false)], error: Some("down".into()), ..State::default() };

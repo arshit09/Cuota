@@ -7,8 +7,6 @@ use crate::claude::{self, title_case};
 use chrono::{DateTime, Local, NaiveDate, TimeDelta, Timelike, Utc};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -180,29 +178,8 @@ impl Reader {
             }
             // Shorter than before: rewritten, so read it again. Replies seen before don't count twice.
             let from = if len < done { 0 } else { done };
-            let to = self.read_file(&path, from);
+            let to = claude::read_lines(&path, from, |line| self.read_line(line));
             self.read_to.insert(path, to);
-        }
-    }
-
-    /// Reads whole lines from `from` on, and returns where the last one ended. A line still
-    /// being written is left for next time.
-    fn read_file(&mut self, path: &Path, from: u64) -> u64 {
-        let Ok(mut file) = File::open(path) else { return from };
-        if file.seek(SeekFrom::Start(from)).is_err() {
-            return from;
-        }
-        let mut reader = BufReader::with_capacity(1 << 16, file);
-        let (mut line, mut to) = (Vec::new(), from);
-        loop {
-            line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(n) if n > 0 && line.ends_with(b"\n") => {
-                    to += n as u64;
-                    self.read_line(&line);
-                }
-                _ => return to,
-            }
         }
     }
 

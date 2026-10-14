@@ -209,7 +209,7 @@ fn sessions(ui: &mut Ui, sessions: &[Session], now: DateTime<Utc>) {
     }
 }
 
-/// A dot, lit while working, then the session's name with where it runs underneath.
+/// A dot, lit while working, then the conversation's title with where it runs underneath.
 fn session_row(ui: &mut Ui, session: &Session, now: DateTime<Utc>) {
     const INDENT: f32 = 16.0;
     const PADDING: f32 = 9.0;
@@ -222,12 +222,15 @@ fn session_row(ui: &mut Ui, session: &Session, now: DateTime<Utc>) {
     // `until` counts from the second time to the first.
     about.extend(session.started.map(|t| format!("started {} ago", claude::until(now, t))));
     let painter = ui.painter().clone();
-    let name = widgets::single_line(&painter, &session.name, FontId::proportional(BODY), TEXT, room);
+    let name = widgets::single_line(&painter, session.display_name(), FontId::proportional(BODY), TEXT, room);
     let about = widgets::single_line(&painter, &about.join(" \u{B7} "), FontId::proportional(SMALL), DIM, room);
 
     let name_height = name.size().y;
     let height = name_height + about.size().y + 2.0 * PADDING;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    if name.elided {
+        response.on_hover_text(session.display_name());
+    }
     let top = rect.top() + PADDING;
     let dot = pos2(rect.left() + 4.0, top + name_height / 2.0);
     if session.busy {

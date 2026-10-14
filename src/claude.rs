@@ -5,6 +5,8 @@ use chrono::{DateTime, Local, TimeDelta, Utc};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -138,12 +140,21 @@ pub struct Account {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Session {
     pub name: String,
+    /// What the conversation is called: Claude Code's AI title, or what it was renamed to.
+    pub title: Option<String>,
     /// The folder it works in, unless the Claude app made that folder for it.
     pub project: Option<String>,
     /// Where it runs: "VS Code", "Terminal", "Claude app"...
     pub app: String,
     pub busy: bool,
     pub started: Option<DateTime<Utc>>,
+}
+
+impl Session {
+    /// The conversation's title, or the session's name before it has one.
+    pub fn display_name(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// The poller publishes a fresh snapshot only when something changed, so the UI's
@@ -227,6 +238,27 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
 
 fn modified(path: &Path) -> Option<DateTime<Utc>> {
     Some(std::fs::metadata(path).ok()?.modified().ok()?.into())
+}
+
+/// Hands each whole line of a file from `from` on to `each`, and returns where the last one
+/// ended. A line still being written is left for next time.
+pub fn read_lines(path: &Path, from: u64, mut each: impl FnMut(&[u8])) -> u64 {
+    let Ok(mut file) = std::fs::File::open(path) else { return from };
+    if file.seek(SeekFrom::Start(from)).is_err() {
+        return from;
+    }
+    let mut reader = BufReader::with_capacity(1 << 16, file);
+    let (mut line, mut to) = (Vec::new(), from);
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(n) if n > 0 && line.ends_with(b"\n") => {
+                to += n as u64;
+                each(&line);
+            }
+            _ => return to,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -327,7 +359,7 @@ struct SessionFile {
 }
 
 impl SessionFile {
-    fn session(&self, busy: bool) -> Session {
+    fn session(&self, busy: bool, title: Option<String>) -> Session {
         let folder = Path::new(&self.cwd).file_name().map(|name| name.to_string_lossy().into_owned());
         // The Claude app runs its sessions in scratch folders under %APPDATA%.
         let app_data = std::env::var("APPDATA").unwrap_or_default().to_lowercase();
@@ -344,10 +376,68 @@ impl SessionFile {
                 .filter(|n| !n.is_empty())
                 .or_else(|| project.clone())
                 .unwrap_or_else(|| "Session".into()),
+            title,
             project,
             app,
             busy,
             started: self.started_at.and_then(DateTime::<Utc>::from_timestamp_millis),
+        }
+    }
+}
+
+/// What a transcript says its conversation is called. Claude Code appends an `ai-title` line
+/// once it has named the conversation and a `custom-title` one when it's renamed, and repeats
+/// them as the transcript grows, so the latest of each counts.
+#[derive(Default)]
+struct Titles {
+    /// How far the transcript has been read: the end of its last whole line.
+    read: u64,
+    ai: Option<String>,
+    custom: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleLine {
+    #[serde(rename = "type")]
+    kind: String,
+    ai_title: Option<String>,
+    custom_title: Option<String>,
+}
+
+impl Titles {
+    /// A rename wins over the AI's title.
+    fn title(&self) -> Option<String> {
+        self.custom.clone().or_else(|| self.ai.clone())
+    }
+
+    /// Reads what was added to the transcript since last time. Transcripts run to megabytes,
+    /// so each is read whole only once.
+    fn update(&mut self, path: &Path) {
+        let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else { return };
+        if len < self.read {
+            // Rewritten from scratch.
+            *self = Self::default();
+        }
+        if len > self.read {
+            let from = self.read;
+            self.read = read_lines(path, from, |line| self.take(line));
+        }
+    }
+
+    fn take(&mut self, line: &[u8]) {
+        let Ok(text) = std::str::from_utf8(line) else { return };
+        // Most lines aren't titles; skip them without parsing. In a message's text the quote
+        // after `-title` would be escaped.
+        if !text.contains(r#"-title""#) {
+            return;
+        }
+        let Ok(entry) = serde_json::from_str::<TitleLine>(text) else { return };
+        let title = |t: Option<String>| t.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+        match entry.kind.as_str() {
+            "ai-title" => self.ai = title(entry.ai_title),
+            "custom-title" => self.custom = title(entry.custom_title),
+            _ => {}
         }
     }
 }
@@ -361,11 +451,13 @@ struct Activity {
 }
 
 /// Claude Code keeps a `sessions/<pid>.json` per running session (CLI, VS Code, desktop)
-/// with a `busy`/`idle` status.
-fn session_activity(now: DateTime<Utc>) -> Activity {
+/// with a `busy`/`idle` status. `titles` holds what was read of each running session's
+/// transcript, by its path.
+fn session_activity(now: DateTime<Utc>, titles: &mut HashMap<PathBuf, Titles>) -> Activity {
     let dir = claude_dir();
     let mut activity = Activity { working: false, last_active: None, sessions: Vec::new() };
     let Ok(entries) = std::fs::read_dir(dir.join("sessions")) else { return activity };
+    let mut running = HashMap::new();
     for path in entries.flatten().map(|e| e.path()) {
         if path.extension().is_none_or(|ext| ext != "json") {
             continue;
@@ -390,10 +482,17 @@ fn session_activity(now: DateTime<Utc>) -> Activity {
         activity.working |= busy;
         // A session that crashed leaves its file behind.
         if session.pid.is_none_or(crate::win::process_alive) {
-            activity.sessions.push(session.session(busy));
+            let mut read = titles.remove(&transcript).unwrap_or_default();
+            read.update(&transcript);
+            activity.sessions.push(session.session(busy, read.title()));
+            running.insert(transcript, read);
         }
     }
-    activity.sessions.sort_by(|a, b| b.busy.cmp(&a.busy).then_with(|| a.name.cmp(&b.name)));
+    // Sessions that ended are forgotten.
+    *titles = running;
+    activity
+        .sessions
+        .sort_by(|a, b| b.busy.cmp(&a.busy).then_with(|| a.display_name().cmp(b.display_name())));
     activity
 }
 
@@ -608,6 +707,8 @@ struct Poller {
     claude_json_modified: Option<Option<DateTime<Utc>>>,
     retry_at: Option<DateTime<Utc>>,
     backoff: TimeDelta,
+    /// What's been read of each running session's transcript.
+    titles: HashMap<PathBuf, Titles>,
 }
 
 impl Poller {
@@ -620,13 +721,14 @@ impl Poller {
             claude_json_modified: None,
             retry_at: None,
             backoff: active_interval,
+            titles: HashMap::new(),
         }
     }
 
     /// Returns true when `state` changed.
     fn tick(&mut self, state: &Mutex<Arc<State>>, force: bool) -> bool {
         let now = Utc::now();
-        let activity = session_activity(now);
+        let activity = session_activity(now, &mut self.titles);
         self.last_activity = self.last_activity.max(activity.last_active);
         let mut changed = false;
         {
@@ -758,8 +860,9 @@ pub fn demo_state() -> State {
     let mut fable = limit("Fable", 92.0, 1_630, week);
     fable.share = Some((46.0, 50.0));
     let part = |key: &str, name: &str, percent| (key.to_owned(), name.to_owned(), percent);
-    let session = |name: &str, project: &str, app: &str, busy, mins| Session {
+    let session = |name: &str, title: &str, project: &str, app: &str, busy, mins| Session {
         name: name.into(),
+        title: Some(title.into()),
         project: Some(project.into()),
         app: app.into(),
         busy,
@@ -784,8 +887,8 @@ pub fn demo_state() -> State {
         error: None,
         working: true,
         sessions: vec![
-            session("cuota-94", "Cuota", "VS Code", true, 95),
-            session("website-12", "Website", "Terminal", false, 300),
+            session("cuota-94", "Show each session's title in the details", "Cuota", "VS Code", true, 95),
+            session("website-12", "Fix the pricing page layout", "Website", "Terminal", false, 300),
         ],
     }
 }
@@ -930,6 +1033,45 @@ mod tests {
     fn title_cases_model_keys() {
         assert_eq!(title_case("fable"), "Fable");
         assert_eq!(title_case("oauth_apps"), "Oauth Apps");
+    }
+
+    #[test]
+    fn reads_titles_as_the_transcript_grows() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("cuota-titles-{}.jsonl", std::process::id()));
+        let append = |text: &str| {
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
+            file.write_all(text.as_bytes()).unwrap();
+        };
+        let _ = std::fs::remove_file(&path);
+        let mut titles = Titles::default();
+        titles.update(&path);
+        assert_eq!(titles.title(), None, "no transcript yet");
+
+        append(concat!(
+            r#"{"type":"user","message":{"content":"grep '{\"type\":\"ai-title\",\"aiTitle\":\"Quoted\"}'"}}"#,
+            "\n",
+            r#"{"type":"ai-title","aiTitle":"First title","sessionId":"x"}"#,
+            "\n",
+        ));
+        titles.update(&path);
+        assert_eq!(titles.title().as_deref(), Some("First title"), "titles quoted in messages don't count");
+
+        append(r#"{"type":"ai-title","aiTitle":"Half"#);
+        titles.update(&path);
+        assert_eq!(titles.title().as_deref(), Some("First title"), "waits for the whole line");
+        append(concat!(r#" written"}"#, "\n"));
+        titles.update(&path);
+        assert_eq!(titles.title().as_deref(), Some("Half written"));
+
+        append(concat!(r#"{"type":"custom-title","customTitle":"Renamed"}"#, "\n", r#"{"type":"ai-title","aiTitle":"Later"}"#, "\n"));
+        titles.update(&path);
+        assert_eq!(titles.title().as_deref(), Some("Renamed"), "a rename wins");
+
+        std::fs::write(&path, concat!(r#"{"type":"ai-title","aiTitle":"Fresh"}"#, "\n")).unwrap();
+        titles.update(&path);
+        assert_eq!(titles.title().as_deref(), Some("Fresh"), "starts over when rewritten");
+        let _ = std::fs::remove_file(&path);
     }
 
     fn poller_with_data(fetched_mins_ago: i64) -> (Poller, DateTime<Utc>) {
