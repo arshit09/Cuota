@@ -21,7 +21,7 @@ use eframe::egui::{
     ViewportId, WindowLevel, pos2, vec2,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -37,10 +37,19 @@ const NOTE_WIDTH: f32 = 220.0;
 /// The settings window, a landscape one like other Windows apps' settings: this big when the
 /// screen has room, and resizable down to `SETTINGS_MIN`. A sidebar lists the pages, and the
 /// one shown runs no wider than `PAGE_WIDTH`.
-const SETTINGS_SIZE: Vec2 = vec2(800.0, 540.0);
+const SETTINGS_SIZE: Vec2 = vec2(800.0, 600.0);
 const SETTINGS_MIN: Vec2 = vec2(640.0, 420.0);
 const SIDEBAR_WIDTH: f32 = 248.0;
 const PAGE_WIDTH: f32 = 760.0;
+/// The page's title, above what scrolls, and the room either side of the page.
+const PAGE_TITLE: f32 = 68.0;
+const PAGE_GUTTER: f32 = 16.0;
+/// Between a page's cards.
+const CARD_GAP: f32 = 4.0;
+/// A slider and its value beside it.
+const SLIDER_WIDTH: f32 = 140.0;
+const VALUE_WIDTH: f32 = 40.0;
+const SLIDER_ROW: f32 = SLIDER_WIDTH + 8.0 + VALUE_WIDTH;
 /// What a window's title bar and borders add to its size, until the settings window can
 /// measure its own.
 const TITLE_BAR: Vec2 = vec2(16.0, 39.0);
@@ -62,8 +71,8 @@ const REOPEN_GUARD: Duration = Duration::from_millis(300);
 const BG: Color32 = Color32::from_rgb(28, 28, 30);
 const BORDER: Color32 = Color32::from_rgb(56, 56, 60);
 
-/// The Browse button for a Custom double-click, and the name of what it opens. The Open dialog
-/// runs on a thread of its own, so what it picked arrives on a later frame.
+/// The card under a Custom double-click: what it opens, and a Browse button to pick it. The
+/// Open dialog runs on a thread of its own, so what it picked arrives on a later frame.
 fn custom_target(
     ui: &mut egui::Ui,
     fonts: &Fonts,
@@ -78,7 +87,16 @@ fn custom_target(
         Some(Ok(None) | Err(TryRecvError::Disconnected)) => *browsing = None,
         Some(Err(TryRecvError::Empty)) | None => {}
     }
-    ui.horizontal(|ui| {
+    // Its name, and the folder it's in under that.
+    let path = Path::new(&settings.custom_target);
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned());
+    let folder = path.parent().map(|folder| folder.to_string_lossy().into_owned());
+    let (title, about) = match &name {
+        Some(name) => (name.as_str(), folder.as_deref().filter(|folder| !folder.is_empty())),
+        None => ("Nothing picked yet", Some("Pick a file, program or script to open")),
+    };
+    let width = widgets::button_width(ui, fonts, "Browse…");
+    let card = widgets::setting(ui, fonts, icon::BROWSE, title, about, width, |ui| {
         let browse = ui.add_enabled_ui(browsing.is_none(), |ui| widgets::button(ui, fonts, icon::BROWSE, "Browse…")).inner;
         if browse.clicked() {
             let (picked, dialog) = mpsc::channel();
@@ -89,20 +107,14 @@ fn custom_target(
             });
             *browsing = Some(dialog);
         }
-        let name = Path::new(&settings.custom_target).file_name().map(|name| name.to_string_lossy().into_owned());
-        let (text, color) = match &name {
-            Some(name) => (name.as_str(), TEXT),
-            None => ("Nothing picked yet", DIM),
-        };
-        let label = ui.add(Label::new(RichText::new(text).size(12.5).color(color)).truncate());
-        if name.is_some() {
-            label.on_hover_text(&settings.custom_target);
-        }
     });
+    if name.is_some() {
+        card.on_hover_text(&settings.custom_target);
+    }
 }
 
 /// A page of the settings window, picked in its sidebar.
-#[derive(Clone, Copy, Debug, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Page {
     /// Where Cuota shows, what double-clicking it does, and starting with Windows.
     General,
@@ -132,16 +144,6 @@ impl Page {
             Self::Appearance => icon::APPEARANCE,
             Self::Panel => icon::PANEL,
             Self::Taskbar => icon::TASKBAR,
-        }
-    }
-
-    /// What it's for, under its title.
-    fn about(self) -> &'static str {
-        match self {
-            Self::General => "Where Cuota shows and how it behaves",
-            Self::Appearance => "The panel's size and opacity, and Clawd's animation",
-            Self::Panel => "What the panel shows",
-            Self::Taskbar => "What the icons beside the clock show",
         }
     }
 }
@@ -241,6 +243,8 @@ pub struct Overlay {
     /// The size the settings window opens at, fitted to the panel's screen.
     settings_size: Vec2,
     settings_page: Page,
+    /// Which of the settings' expanders are open, by page and title.
+    open_expanders: HashMap<(Page, &'static str), bool>,
     /// Whether Windows starts Cuota at sign-in, as last read from the registry.
     starts_with_windows: bool,
     /// Whether the Claude app is installed, as last looked up.
@@ -321,6 +325,7 @@ impl Overlay {
             settings_shown: false,
             settings_size: SETTINGS_SIZE,
             settings_page: Page::General,
+            open_expanders: HashMap::new(),
             starts_with_windows: false,
             claude_app_installed: false,
             browsing: None,
@@ -692,32 +697,41 @@ impl Overlay {
         });
     }
 
-    /// A sidebar with the account, the pages and Quit, beside the page picked in it. Returns how
-    /// tall the page is, whether or not the window has room for all of it.
+    /// A sidebar with the account, the pages and Quit, beside the page picked in it, as in
+    /// Windows' Settings: the page's title stays put while its settings scroll under it. Returns
+    /// how tall the page is, whether or not the window has room for all of it.
     fn settings_ui(&mut self, ui: &mut egui::Ui, state: &State) -> f32 {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         let full = ui.max_rect();
         let (sidebar, page) = full.split_left_right_at_x(full.left() + SIDEBAR_WIDTH);
         let mut slot = ui.new_child(UiBuilder::new().max_rect(sidebar.shrink2(vec2(12.0, 16.0))));
         self.settings_sidebar(&mut slot, state);
-        let mut slot = ui.new_child(UiBuilder::new().max_rect(page));
-        // Scrolls once the window is made too small for the page. Each page keeps its own place.
+
+        let title = pos2(page.left() + PAGE_GUTTER, page.top() + 14.0);
+        let font = FontId::new(28.0, self.fonts.strong.clone());
+        ui.painter().text(title, Align2::LEFT_TOP, self.settings_page.name(), font, widgets::PRIMARY);
+        let body = Rect::from_min_max(pos2(page.left(), page.top() + PAGE_TITLE), page.max);
+        let mut slot = ui.new_child(UiBuilder::new().max_rect(body));
+        // Scrolls once the window is too small for the page. Each page keeps its own place.
         let scroll = egui::ScrollArea::vertical().id_salt(("settings", self.settings_page)).auto_shrink(false);
         let scroll = scroll.show(&mut slot, |ui| {
-            let margin = Margin { left: 12, right: 28, top: 16, bottom: 24 };
+            // The right margin leaves a lane for the scroll bar.
+            let margin = Margin { left: PAGE_GUTTER as i8, right: PAGE_GUTTER as i8 + 8, top: 0, bottom: 24 };
             egui::Frame::new().inner_margin(margin).show(ui, |ui| {
-                ui.set_max_width(PAGE_WIDTH);
+                // As wide as the window allows, up to an easy reading width.
+                ui.set_max_width(ui.available_width().min(PAGE_WIDTH));
+                ui.spacing_mut().item_spacing.y = CARD_GAP;
                 self.settings_page(ui, state);
             });
         });
-        scroll.content_size.y
+        PAGE_TITLE + scroll.content_size.y
     }
 
     /// The account on top, then the pages, and Quit at the bottom.
     fn settings_sidebar(&mut self, ui: &mut egui::Ui, state: &State) {
         self.settings_account(ui, state);
         ui.add_space(20.0);
-        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.spacing_mut().item_spacing.y = 4.0;
         for page in Page::ALL {
             if widgets::nav_item(ui, &self.fonts, page.glyph(), page.name(), self.settings_page == page).clicked() {
                 self.settings_page = page;
@@ -725,19 +739,20 @@ impl Overlay {
         }
 
         let bottom = ui.max_rect();
-        let footer = Rect::from_min_max(pos2(bottom.left(), bottom.bottom() - 28.0), bottom.max);
+        let footer = Rect::from_min_max(pos2(bottom.left(), bottom.bottom() - 32.0), bottom.max);
         let mut slot = ui.new_child(UiBuilder::new().max_rect(footer).layout(Layout::left_to_right(Align::Center)));
         if widgets::button(&mut slot, &self.fonts, icon::QUIT, "Quit Cuota").clicked() {
             ui.ctx().send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
         let version = concat!("Cuota v", env!("CARGO_PKG_VERSION"));
-        ui.painter().text(footer.right_center(), Align2::RIGHT_CENTER, version, FontId::proportional(11.5), DIM);
+        let font = FontId::proportional(12.0);
+        ui.painter().text(footer.right_center(), Align2::RIGHT_CENTER, version, font, widgets::SECONDARY);
     }
 
     /// The Claude spark and the account, with when usage was last fetched and a button to
     /// fetch it now.
     fn settings_account(&self, ui: &mut egui::Ui, state: &State) {
-        const LOGO: f32 = 36.0;
+        const LOGO: f32 = 40.0;
         let account = &state.account;
         let painter = ui.painter().clone();
         let width = ui.available_width();
@@ -745,9 +760,10 @@ impl Overlay {
         let text_left = LOGO + 12.0;
         let text_width = width - text_left;
         let plan = account.plan.as_deref().unwrap_or("Claude");
-        let mut lines = vec![single_line(&painter, plan, FontId::new(16.0, self.fonts.strong.clone()), TEXT, text_width)];
+        let strong = FontId::new(16.0, self.fonts.strong.clone());
+        let mut lines = vec![single_line(&painter, plan, strong, widgets::PRIMARY, text_width)];
         for detail in [&account.email, &account.organization].into_iter().flatten() {
-            lines.push(single_line(&painter, detail, FontId::proportional(12.0), DIM, text_width));
+            lines.push(single_line(&painter, detail, FontId::proportional(12.0), widgets::SECONDARY, text_width));
         }
         let text_height: f32 = lines.iter().map(|line| line.size().y).sum();
         let (rect, _) = ui.allocate_exact_size(vec2(width, text_height.max(LOGO)), Sense::hover());
@@ -756,7 +772,7 @@ impl Overlay {
         let mut y = rect.center().y - text_height / 2.0;
         for line in lines {
             let height = line.size().y;
-            painter.galley(pos2(rect.left() + text_left, y), line, TEXT);
+            painter.galley(pos2(rect.left() + text_left, y), line, widgets::PRIMARY);
             y += height;
         }
 
@@ -765,159 +781,152 @@ impl Overlay {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add_space(text_left);
-            ui.label(RichText::new(updated).size(11.5).color(DIM));
+            ui.label(RichText::new(updated).size(12.0).color(widgets::SECONDARY));
             if widgets::icon_button(ui, &self.fonts, icon::REFRESH, "Refresh").on_hover_text("Fetch usage now").clicked() {
                 let _ = self.refresh.send(());
             }
         });
     }
 
-    /// The page picked in the sidebar: its title and what it's for, then its settings.
+    /// The page picked in the sidebar: a card for each setting, as in Windows' Settings.
     fn settings_page(&mut self, ui: &mut egui::Ui, state: &State) {
-        let Self { settings, settings_page: page, fonts, starts_with_windows, claude_app_installed, browsing, .. } = self;
+        let Self { settings, settings_page: page, open_expanders, fonts, starts_with_windows, claude_app_installed, browsing, .. } =
+            self;
         let page = *page;
 
-        ui.label(RichText::new(page.name()).font(FontId::new(20.0, fonts.strong.clone())).color(TEXT));
-        ui.add_space(2.0);
-        ui.label(RichText::new(page.about()).size(12.0).color(DIM));
         let note = match page {
             Page::Panel if settings.pinned().is_none() => Some("The panel opens when you click a taskbar icon."),
-            Page::Taskbar if !settings.shows_as(Mode::Taskbar) => Some("Used when Show as, under General, includes Taskbar."),
+            Page::Taskbar if !settings.shows_as(Mode::Taskbar) => {
+                Some("These apply once Show as, under General, includes Taskbar.")
+            }
             _ => None,
         };
         if let Some(note) = note {
-            ui.add_space(6.0);
-            ui.label(RichText::new(note).size(11.5).color(DIM));
+            widgets::info_bar(ui, fonts, note);
+            ui.add_space(8.0);
         }
-        ui.add_space(16.0);
 
         match page {
-            Page::General => widgets::card(ui, |ui| {
-                let about = show_as_about(settings);
-                widgets::row_below(ui, fonts, icon::SHOW_AS, "Show as", Some(&about), |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-                        let modes = [(Mode::AlwaysOnTop, "Always on top"), (Mode::Desktop, "Desktop"), (Mode::Taskbar, "Taskbar")];
-                        for (mode, name) in modes {
-                            let mut shown = settings.shows_as(mode);
-                            // The last one stays on, so there's always something to right-click for settings.
-                            let last = shown && settings.show.len() == 1;
-                            // Added in place, not in an add_enabled_ui scope, so it can wrap to the next line.
-                            let chip = ui.add_enabled(!last, |ui: &mut egui::Ui| widgets::chip(ui, fonts, &mut shown, name));
-                            if chip.on_disabled_hover_text("At least one stays on").changed() {
-                                settings.set_shown_as(mode, shown);
-                            }
+            Page::General => {
+                let options = show_as_options(settings);
+                let shown: Vec<&str> = options.iter().filter(|o| settings.shows_as(o.0)).map(|o| o.1).collect();
+                let about = Some("Where Cuota appears on your screen");
+                let open = open_expanders.entry((page, "Show as")).or_default();
+                widgets::expander(ui, fonts, open, icon::SHOW_AS, "Show as", about, &shown.join(", "), |ui| {
+                    for (mode, name, about) in options {
+                        let mut shown = settings.shows_as(mode);
+                        // The last one stays on, so there's always something to right-click for settings.
+                        let last = shown && settings.show.len() == 1;
+                        let item = ui.add_enabled(!last, |ui: &mut egui::Ui| {
+                            widgets::check_item(ui, fonts, &mut shown, name, Some(&about))
+                        });
+                        if item.on_disabled_hover_text("At least one stays on").changed() {
+                            settings.set_shown_as(mode, shown);
                         }
-                    });
+                    }
                 });
-                widgets::divider(ui, fonts);
+
                 let about = match settings.double_click {
                     DoubleClick::Details => "Expands the panel with usage details. Double-click again to shrink it.",
                     DoubleClick::Website => "Opens your usage page on claude.ai",
                     DoubleClick::App if *claude_app_installed => "Opens the Claude app",
                     DoubleClick::App => "The Claude app isn't installed, so this opens claude.ai",
-                    DoubleClick::Custom => "Opens a file, program or script of your choice",
+                    DoubleClick::Custom => "Opens the file, program or script below",
                 };
-                widgets::row_below(ui, fonts, icon::DOUBLE_CLICK, "Double-click", Some(about), |ui| {
-                    let options = [
-                        (DoubleClick::Details, "Details"),
-                        (DoubleClick::Website, "Website"),
-                        (DoubleClick::App, "App"),
-                        (DoubleClick::Custom, "Custom"),
-                    ];
-                    // Four options want more than a narrow window has, so they share it.
-                    let width = widgets::segmented_width(ui, &options.map(|(_, name)| name)).min(ui.available_width());
-                    widgets::segmented(ui, &mut settings.double_click, &options, Some(width));
-                    if settings.double_click == DoubleClick::Custom {
-                        ui.add_space(8.0);
-                        custom_target(ui, fonts, settings, browsing);
-                    }
+                let options = [
+                    (DoubleClick::Details, "Show details"),
+                    (DoubleClick::Website, "Open usage page"),
+                    (DoubleClick::App, "Open Claude app"),
+                    (DoubleClick::Custom, "Open a file or program"),
+                ];
+                let width = widgets::dropdown_width(ui, &options.map(|(_, name)| name));
+                widgets::setting(ui, fonts, icon::DOUBLE_CLICK, "Double-click", Some(about), width, |ui| {
+                    widgets::dropdown(ui, fonts, &mut settings.double_click, &options, width);
                 });
-                widgets::divider(ui, fonts);
+                if settings.double_click == DoubleClick::Custom {
+                    custom_target(ui, fonts, settings, browsing);
+                }
+
                 let about = Some("Opens Cuota when you sign in");
-                widgets::row(ui, fonts, icon::STARTUP, "Start with Windows", about, widgets::TOGGLE_WIDTH, |ui| {
+                widgets::setting(ui, fonts, icon::STARTUP, "Start with Windows", about, widgets::TOGGLE_WIDTH, |ui| {
                     let mut on = *starts_with_windows;
                     if widgets::toggle(ui, &mut on).changed() {
                         win::set_start_with_windows(on);
                         *starts_with_windows = win::starts_with_windows();
                     }
                 });
-            }),
-            Page::Appearance => widgets::card(ui, |ui| {
+            }
+            Page::Appearance => {
                 let size = format!("{:.0}%", settings.size * 100.0);
-                widgets::row(ui, fonts, icon::SIZE, "Size", Some("Small to large"), 134.0, |ui| {
-                    ui.add_sized([34.0, 20.0], Label::new(RichText::new(size).size(12.0).color(DIM)));
+                widgets::setting(ui, fonts, icon::SIZE, "Size", Some("Small to large"), SLIDER_ROW, |ui| {
+                    value_label(ui, size);
                     let mut step = settings.size_step();
-                    widgets::stepped_slider(ui, &mut step, SIZES.len(), 92.0);
+                    widgets::stepped_slider(ui, &mut step, SIZES.len(), SLIDER_WIDTH);
                     settings.size = SIZES[step];
                 });
-                widgets::divider(ui, fonts);
                 let about = Some("Scroll up or down over the panel");
-                widgets::row(ui, fonts, icon::WHEEL, "Resize with mouse wheel", about, widgets::TOGGLE_WIDTH, |ui| {
+                widgets::setting(ui, fonts, icon::WHEEL, "Resize with mouse wheel", about, widgets::TOGGLE_WIDTH, |ui| {
                     widgets::toggle(ui, &mut settings.wheel_resize);
                 });
-                widgets::divider(ui, fonts);
                 let opacity = format!("{:.0}%", settings.opacity * 100.0);
-                widgets::row(ui, fonts, icon::OPACITY, "Opacity", Some("Panel background"), 134.0, |ui| {
-                    ui.add_sized([34.0, 20.0], Label::new(RichText::new(opacity).size(12.0).color(DIM)));
-                    widgets::slider(ui, &mut settings.opacity, 0.3..=1.0, 92.0);
+                widgets::setting(ui, fonts, icon::OPACITY, "Opacity", Some("Panel background"), SLIDER_ROW, |ui| {
+                    value_label(ui, opacity);
+                    widgets::slider(ui, &mut settings.opacity, 0.3..=1.0, SLIDER_WIDTH);
                 });
-                widgets::divider(ui, fonts);
                 let about = Some("Turn off to use almost no CPU");
-                widgets::row(ui, fonts, icon::ANIMATE, "Animate Clawd", about, widgets::TOGGLE_WIDTH, |ui| {
+                widgets::setting(ui, fonts, icon::ANIMATE, "Animate Clawd", about, widgets::TOGGLE_WIDTH, |ui| {
                     widgets::toggle(ui, &mut settings.animate);
                 });
-            }),
+            }
             Page::Panel | Page::Taskbar => {
                 let taskbar = page == Page::Taskbar;
                 let view = if taskbar { &mut settings.taskbar } else { &mut settings.panel };
-                widgets::card(ui, |ui| {
-                    let styles = [(Style::Bars, "Bars"), (Style::Pie, "Pie")];
-                    let width = widgets::segmented_width(ui, &styles.map(|(_, name)| name));
-                    widgets::row(ui, fonts, icon::STYLE, "Style", None, width, |ui| {
-                        widgets::segmented(ui, &mut view.style, &styles, None);
-                    });
-                    widgets::divider(ui, fonts);
-                    widgets::row_below(ui, fonts, icon::LIMITS, "Limits", Some("Pick the ones to show"), |ui| {
-                        if state.limits.is_empty() {
-                            ui.label(RichText::new("They appear here once usage has loaded.").size(11.5).color(DIM));
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-                            for limit in &state.limits {
-                                let mut shown = view.shows(&limit.label);
-                                if widgets::chip(ui, fonts, &mut shown, &limit.label).changed() {
-                                    view.set_shown(&limit.label, shown);
-                                }
-                            }
-                        });
-                    });
-                    let (time_left, clawd) = if taskbar {
-                        ("Shows when you hover an icon", "Shows if Claude is working")
-                    } else {
-                        ("Until each limit resets", "A random animation while Claude works")
-                    };
-                    for (glyph, title, about, on) in [
-                        (icon::PERCENT, "Percentage", None, &mut view.percent),
-                        (icon::TIME_LEFT, "Time left", Some(time_left), &mut view.time_left),
-                        (icon::CLAWD, "Clawd", Some(clawd), &mut view.clawd),
-                    ] {
-                        widgets::divider(ui, fonts);
-                        widgets::row(ui, fonts, glyph, title, about, widgets::TOGGLE_WIDTH, |ui| {
-                            widgets::toggle(ui, on);
-                        });
-                    }
-                    // Clawd's status heads the panel's meters, so the panel only, and only with him.
-                    if !taskbar {
-                        widgets::divider(ui, fonts);
-                        ui.add_enabled_ui(view.clawd, |ui| {
-                            let about = Some("What Clawd's up to, like Percolating…");
-                            widgets::row(ui, fonts, icon::STATUS, "Status", about, widgets::TOGGLE_WIDTH, |ui| {
-                                widgets::toggle(ui, &mut view.status);
-                            });
-                        });
-                    }
+                let styles = [(Style::Bars, "Bars"), (Style::Pie, "Pie")];
+                let width = widgets::dropdown_width(ui, &styles.map(|(_, name)| name));
+                widgets::setting(ui, fonts, icon::STYLE, "Style", Some("How each limit is drawn"), width, |ui| {
+                    widgets::dropdown(ui, fonts, &mut view.style, &styles, width);
                 });
+                if state.limits.is_empty() {
+                    let about = Some("They appear here once usage has loaded");
+                    widgets::setting(ui, fonts, icon::LIMITS, "Limits", about, 0.0, |_| {});
+                } else {
+                    let shown: Vec<&str> =
+                        state.limits.iter().filter(|limit| view.shows(&limit.label)).map(|limit| limit.label.as_str()).collect();
+                    let summary = if shown.is_empty() { "None".to_owned() } else { shown.join(", ") };
+                    let open = open_expanders.entry((page, "Limits")).or_default();
+                    let about = Some("Pick the ones to show");
+                    widgets::expander(ui, fonts, open, icon::LIMITS, "Limits", about, &summary, |ui| {
+                        for limit in &state.limits {
+                            let mut shown = view.shows(&limit.label);
+                            if widgets::check_item(ui, fonts, &mut shown, &limit.label, None).changed() {
+                                view.set_shown(&limit.label, shown);
+                            }
+                        }
+                    });
+                }
+                let (time_left, clawd) = if taskbar {
+                    ("Shows when you hover an icon", "Shows if Claude is working")
+                } else {
+                    ("Until each limit resets", "A random animation while Claude works")
+                };
+                for (glyph, title, about, on) in [
+                    (icon::PERCENT, "Percentage", None, &mut view.percent),
+                    (icon::TIME_LEFT, "Time left", Some(time_left), &mut view.time_left),
+                    (icon::CLAWD, "Clawd", Some(clawd), &mut view.clawd),
+                ] {
+                    widgets::setting(ui, fonts, glyph, title, about, widgets::TOGGLE_WIDTH, |ui| {
+                        widgets::toggle(ui, on);
+                    });
+                }
+                // Clawd's status heads the panel's meters, so the panel only, and only with him.
+                if !taskbar {
+                    ui.add_enabled_ui(view.clawd, |ui| {
+                        let about = Some("What Clawd's up to, like Percolating…");
+                        widgets::setting(ui, fonts, icon::STATUS, "Status", about, widgets::TOGGLE_WIDTH, |ui| {
+                            widgets::toggle(ui, &mut view.status);
+                        });
+                    });
+                }
             }
         }
     }
@@ -1019,21 +1028,26 @@ fn settings_viewport() -> ViewportId {
     ViewportId::from_hash_of("settings")
 }
 
-/// What the chosen Show as options do.
-fn show_as_about(settings: &Settings) -> String {
-    let mut about = match settings.pinned() {
-        Some(Mode::AlwaysOnTop) => "Floats above all windows. Drag to move.".to_owned(),
-        Some(Mode::Desktop) => "Sits behind your windows, like a desktop widget. Drag to move.".to_owned(),
-        _ => String::new(),
-    };
-    if settings.shows_as(Mode::Taskbar) {
-        let click = if settings.pinned().is_some() { "to hide or show this panel" } else { "for this panel" };
-        about += &format!(
-            " Icons beside the clock; click one {click}. New icons start in the ^ overflow, so drag \
-             them onto the taskbar once."
-        );
-    }
-    about.trim_start().to_owned()
+/// The Show as options: each one's mode, name and what it does.
+fn show_as_options(settings: &Settings) -> [(Mode, &'static str, String); 3] {
+    let click = if settings.pinned().is_some() { "to hide or show the panel" } else { "to open the panel" };
+    [
+        (Mode::AlwaysOnTop, "Always on top", "Floats above all windows. Drag it to move it.".to_owned()),
+        (Mode::Desktop, "Desktop", "Sits behind your windows, like a desktop widget. Drag it to move it.".to_owned()),
+        (
+            Mode::Taskbar,
+            "Taskbar",
+            format!(
+                "Icons beside the clock; click one {click}. New icons start in the ^ overflow, so drag them \
+                 onto the taskbar once."
+            ),
+        ),
+    ]
+}
+
+/// A slider's value, beside it.
+fn value_label(ui: &mut egui::Ui, value: String) {
+    ui.add_sized([VALUE_WIDTH, 20.0], Label::new(RichText::new(value).size(14.0).color(widgets::SECONDARY)));
 }
 
 /// A status line under the meters: the last error, or "Loading..." before any data.
@@ -1172,33 +1186,78 @@ mod tests {
         assert_eq!(settings.size, SIZES[9]);
     }
 
-    #[test]
-    fn every_settings_page_fits_the_window_without_scrolling() {
+    /// An overlay showing the demo's usage, the context it draws in, and that usage.
+    fn settings_overlay() -> (egui::Context, Overlay, Arc<State>) {
         let ctx = egui::Context::default();
         let spark = crate::mascot::spark_rgba(crate::mascot::SPARK_PIXELS);
         let side = crate::mascot::SPARK_PIXELS as u32;
         let icon = Arc::new(IconData { rgba: spark.clone(), width: side, height: side });
         let cc = eframe::CreationContext::_new_kittest(ctx.clone());
-        let mut overlay = Overlay::new(&cc, Settings::default(), TimeDelta::minutes(5), true, &spark, icon);
+        let overlay = Overlay::new(&cc, Settings::default(), TimeDelta::minutes(5), true, &spark, icon);
         let state = overlay.state.lock().unwrap().clone();
-        assert!(!state.limits.is_empty(), "the demo's limits fill the Limits row");
-        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SETTINGS_SIZE)), ..Default::default() };
+        assert!(!state.limits.is_empty(), "the demo's limits fill the Limits expander");
         // The first pass loads the fonts.
-        let _ = ctx.run_ui(input.clone(), |_| {});
-        // Every page at its tallest: Show as's longest about, a Custom double-click's Browse row,
-        // and the Panel and Taskbar pages' notes.
-        let tallest = [
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        (ctx, overlay, state)
+    }
+
+    fn window(size: Vec2) -> egui::RawInput {
+        egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)), ..Default::default() }
+    }
+
+    /// Settings at their tallest: Show as's longest descriptions, a Custom double-click's card,
+    /// and the Panel and Taskbar pages' notes.
+    fn tallest_settings() -> impl Iterator<Item = Settings> {
+        let shows = [
             BTreeSet::from([Mode::Desktop, Mode::Taskbar]),
             BTreeSet::from([Mode::Taskbar]),
             BTreeSet::from([Mode::AlwaysOnTop]),
         ];
-        for show in tallest {
-            overlay.settings = Settings { show: show.clone(), double_click: DoubleClick::Custom, ..Settings::default() };
+        shows.into_iter().map(|show| Settings {
+            show,
+            double_click: DoubleClick::Custom,
+            custom_target: r"C:\Users\Someone\Documents\A folder with a long name\open-the-usage-dashboard.ahk".into(),
+            ..Settings::default()
+        })
+    }
+
+    #[test]
+    fn every_settings_page_fits_the_window_without_scrolling() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        for settings in tallest_settings() {
+            let show = settings.show.clone();
+            overlay.settings = settings;
             for page in Page::ALL {
                 overlay.settings_page = page;
                 let mut height = 0.0;
-                let _ = ctx.run_ui(input.clone(), |ui| height = overlay.settings_ui(ui, &state));
+                let _ = ctx.run_ui(window(SETTINGS_SIZE), |ui| height = overlay.settings_ui(ui, &state));
                 assert!(height <= SETTINGS_SIZE.y, "{page:?} with {show:?} is {height} tall");
+            }
+        }
+    }
+
+    /// The pages once ran wider than the window, cutting off their cards' right ends and controls.
+    #[test]
+    fn nothing_in_settings_runs_past_the_windows_right_edge() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        for size in [SETTINGS_SIZE, SETTINGS_MIN, vec2(1400.0, 800.0)] {
+            for settings in tallest_settings() {
+                overlay.settings = settings;
+                for page in Page::ALL {
+                    overlay.settings_page = page;
+                    for title in ["Show as", "Limits"] {
+                        overlay.open_expanders.insert((page, title), true);
+                    }
+                    let output = ctx.run_ui(window(size), |ui| {
+                        overlay.settings_ui(ui, &state);
+                    });
+                    // Leaving out what debug builds of egui draw over everything, such as a red
+                    // box where a widget's id changed since the last page.
+                    for clipped in output.shapes.iter().filter(|clipped| clipped.clip_rect != Rect::EVERYTHING) {
+                        let right = clipped.shape.visual_bounding_rect().right();
+                        assert!(right <= size.x + 0.5, "{page:?} at {size:?} draws out to x = {right}: {clipped:?}");
+                    }
+                }
             }
         }
     }

@@ -1,12 +1,14 @@
-//! The settings window's building blocks: sidebar entries for its pages, section headings, cards
-//! of setting rows (an icon, a title, an optional description and a control), and the controls
-//! themselves.
+//! Building blocks for the settings window, made to look and work like Windows 11's own Settings:
+//! sidebar entries for its pages, setting cards (an icon, a title, an optional description and a
+//! control), expanders that open onto more settings, and the controls themselves. The expanded
+//! panel's details share the section headings, cards and rules.
 
 use crate::mascot::CLAUDE_ORANGE;
-use crate::view::{DIM, TEXT};
+use crate::view::DIM;
 use eframe::egui::{
-    Align, Align2, Color32, CursorIcon, EventFilter, FontFamily, FontId, Frame, Galley, Key, Layout,
-    Margin, Painter, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder, WidgetInfo, WidgetType, emath,
+    Align, Align2, Color32, CornerRadius, CursorIcon, EventFilter, FontFamily, FontId, Frame, Galley, Key,
+    Layout, Margin, Painter, Popup, Rect, Response, Sense, Shadow, Shape, Stroke, StrokeKind, Ui, UiBuilder,
+    WidgetInfo, WidgetType, emath,
     emath::GuiRounding, pos2,
     text::{LayoutJob, TextWrapping},
     vec2,
@@ -14,13 +16,39 @@ use eframe::egui::{
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-pub const WINDOW: Color32 = Color32::from_rgb(28, 28, 30);
+/// The details' cards and the lines in and around them.
 pub const CARD: Color32 = Color32::from_rgb(37, 37, 41);
 const LINE: Color32 = Color32::from_rgb(49, 49, 54);
-const TRACK: Color32 = Color32::from_rgb(56, 56, 62);
-const HOVER: Color32 = Color32::from_rgb(68, 68, 75);
-const SELECTED: Color32 = Color32::from_rgb(86, 86, 94);
+
+// Windows 11's dark theme, which the settings window follows.
+pub const WINDOW: Color32 = Color32::from_rgb(32, 32, 32);
+pub const PRIMARY: Color32 = Color32::WHITE;
+pub const SECONDARY: Color32 = Color32::from_rgb(208, 208, 208);
+/// A setting's card, and its edge.
+const SETTING: Color32 = Color32::from_rgb(43, 43, 43);
+const SETTING_HOVER: Color32 = Color32::from_rgb(50, 50, 50);
+const SETTING_EDGE: Color32 = Color32::from_rgb(29, 29, 29);
+/// Under an open expander, where its settings go.
+const INSET: Color32 = Color32::from_rgb(39, 39, 39);
+/// A sidebar entry that's picked or under the pointer.
+const SUBTLE: Color32 = Color32::from_rgb(45, 45, 45);
+const SUBTLE_PRESSED: Color32 = Color32::from_rgb(41, 41, 41);
+/// Buttons and dropdowns.
+const CONTROL: Color32 = Color32::from_rgb(56, 56, 56);
+const CONTROL_HOVER: Color32 = Color32::from_rgb(61, 61, 61);
+const CONTROL_PRESSED: Color32 = Color32::from_rgb(50, 50, 50);
+const CONTROL_EDGE: Color32 = Color32::from_rgb(64, 64, 64);
+/// Switches and check boxes while off.
+const OFF: Color32 = Color32::from_rgb(39, 39, 39);
+const OFF_HOVER: Color32 = Color32::from_rgb(52, 52, 52);
+/// Their outlines, and a slider's empty track.
+const STRONG: Color32 = Color32::from_rgb(158, 158, 158);
+const THUMB: Color32 = Color32::from_rgb(69, 69, 69);
+const POPUP: Color32 = Color32::from_rgb(44, 44, 44);
+const POPUP_EDGE: Color32 = Color32::from_rgb(64, 64, 64);
 const ACCENT: Color32 = CLAUDE_ORANGE;
+/// Windows' dark theme draws black on its accent color.
+const ON_ACCENT: Color32 = Color32::BLACK;
 
 /// Glyphs of Segoe Fluent Icons (Windows 11), which keeps Segoe MDL2 Assets' (Windows 10) code points.
 pub mod icon {
@@ -28,6 +56,8 @@ pub mod icon {
     pub const APPEARANCE: char = '\u{E771}';
     pub const BROWSE: char = '\u{E8E5}';
     pub const CHECK: char = '\u{E73E}';
+    pub const CHEVRON_DOWN: char = '\u{E70D}';
+    pub const CHEVRON_UP: char = '\u{E70E}';
     pub const CLAWD: char = '\u{E76E}';
     pub const DETAILS: char = '\u{E9D2}';
     pub const DOUBLE_CLICK: char = '\u{E962}';
@@ -48,29 +78,36 @@ pub mod icon {
     pub const WHEEL: char = '\u{ECE7}';
 }
 
-const TITLE_SIZE: f32 = 13.0;
-const DESCRIPTION_SIZE: f32 = 11.5;
-const CONTROL_SIZE: f32 = 12.5;
-const ICON_SIZE: f32 = 16.0;
-/// Where titles start, past the icon.
-const INDENT: f32 = 30.0;
-const CARD_PADDING: f32 = 14.0;
-/// Rows, switches and option bars get this much room, so they read clearly.
-const ROW_PADDING: f32 = 10.0;
-const CONTROL_HEIGHT: f32 = 28.0;
-pub const TOGGLE_WIDTH: f32 = 40.0;
-const TOGGLE_HEIGHT: f32 = 22.0;
-/// Inside an option bar, the selected pill sits this far in from the track.
-const SEGMENT_INSET: f32 = 3.0;
-/// Room either side of an option bar's or a chip's label.
-const LABEL_PADDING: f32 = 16.0;
+/// Windows' type ramp: body text and controls, and captions under them.
+const BODY: f32 = 14.0;
+const CAPTION: f32 = 12.0;
+const ICON_SIZE: f32 = 18.0;
+/// From a card's icon to its title.
+const INDENT: f32 = 36.0;
+const CARD_PADDING: f32 = 16.0;
+const CARD_PADDING_Y: f32 = 12.0;
+const CARD_HEIGHT: f32 = 62.0;
+/// Between a card's text and its control.
+const CONTROL_GAP: f32 = 16.0;
+/// Narrower text than this and a card puts its control under the text, as Windows does.
+const NARROWEST_TEXT: f32 = 140.0;
+const CONTROL_HEIGHT: f32 = 32.0;
+const SWITCH: [f32; 2] = [40.0, 20.0];
+/// Room for a switch and the On or Off beside it.
+pub const TOGGLE_WIDTH: f32 = SWITCH[0] + 10.0 + 24.0;
+const CHECK_BOX: f32 = 20.0;
+/// A dropdown is at least this wide, and keeps this much room for its chevron.
+const DROPDOWN_WIDTH: f32 = 120.0;
+const CHEVRON_ROOM: f32 = 34.0;
+/// An expander's chevron.
+const CHEVRON: f32 = 20.0;
 
 /// The font families the UI draws with.
 #[derive(Clone)]
 pub struct Fonts {
     /// Semibold, for emphasis.
     pub strong: FontFamily,
-    /// Windows' icon font. Without it, rows go without icons.
+    /// Windows' icon font. Without it, cards go without icons.
     pub icons: Option<FontFamily>,
 }
 
@@ -86,7 +123,7 @@ impl Fonts {
 
 /// A small caps section title, with an optional control on the right.
 pub fn heading(ui: &mut Ui, fonts: &Fonts, text: &str, add_control: impl FnOnce(&mut Ui)) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
     let mut job = LayoutJob::simple_singleline(text.to_uppercase(), FontId::new(11.0, fonts.strong.clone()), DIM);
     job.sections[0].format.extra_letter_spacing = 0.6;
     let galley = ui.painter().layout_job(job);
@@ -96,40 +133,13 @@ pub fn heading(ui: &mut Ui, fonts: &Fonts, text: &str, add_control: impl FnOnce(
     add_control(&mut slot);
 }
 
-/// A page's entry in a sidebar, like in Windows' own Settings: its icon and name, filled in
-/// and marked with an accent bar while its page shows.
-pub fn nav_item(ui: &mut Ui, fonts: &Fonts, glyph: char, name: &str, selected: bool) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
-    response.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, ui.is_enabled(), selected, name));
-    let fill = match (selected, response.hovered()) {
-        (true, true) => TRACK,
-        (true, false) => LINE,
-        (false, true) => CARD,
-        (false, false) => Color32::TRANSPARENT,
-    };
-    let painter = ui.painter();
-    painter.rect_filled(rect, 6, fill);
-    if selected {
-        let bar = Rect::from_center_size(pos2(rect.left() + 1.5, rect.center().y), vec2(3.0, 16.0));
-        painter.rect_filled(bar, 1.5, ACCENT);
-    }
-    let left = rect.left() + 12.0;
-    if let Some(font) = fonts.icon(ICON_SIZE) {
-        painter.text(pos2(left + ICON_SIZE / 2.0, rect.center().y), Align2::CENTER_CENTER, glyph, font, TEXT);
-    }
-    let text = painter.layout_no_wrap(name.to_owned(), FontId::proportional(TITLE_SIZE), TEXT);
-    painter.galley(pos2(left + fonts.indent(), rect.center().y - text.size().y / 2.0), text, TEXT);
-    focus_ring(ui, &response, rect, 6.0);
-    response.on_hover_cursor(CursorIcon::PointingHand)
-}
-
-/// A rounded group of rows. Put a [`divider`] between rows.
+/// A rounded group of rows, with a [`rule`] between them.
 pub fn card<R>(ui: &mut Ui, add_rows: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
         .fill(CARD)
         .stroke(Stroke::new(1.0, LINE))
         .corner_radius(8)
-        .inner_margin(Margin::symmetric(CARD_PADDING as i8, 0))
+        .inner_margin(Margin::symmetric(14, 0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -138,93 +148,264 @@ pub fn card<R>(ui: &mut Ui, add_rows: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
-/// A hairline between rows, starting under the titles and running to the card's edge.
-pub fn divider(ui: &mut Ui, fonts: &Fonts) {
-    hairline(ui, fonts.indent());
-}
-
-/// A hairline between rows that have no icons.
+/// A hairline between a [`card`]'s rows, running to its edges.
 pub fn rule(ui: &mut Ui) {
-    hairline(ui, 0.0);
-}
-
-fn hairline(ui: &mut Ui, indent: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-    let right = rect.right() + CARD_PADDING - 1.0;
-    ui.painter().hline(rect.left() + indent..=right, rect.center().y, Stroke::new(1.0, LINE));
+    ui.painter().hline(rect.left()..=rect.right() + 13.0, rect.center().y, Stroke::new(1.0, LINE));
 }
 
-/// A setting with its control on the right. `control_width` is the room `add_control` needs.
-pub fn row(
-    ui: &mut Ui,
-    fonts: &Fonts,
-    glyph: char,
-    title: &str,
-    description: Option<&str>,
-    control_width: f32,
-    add_control: impl FnOnce(&mut Ui),
-) {
-    let slot = label(ui, fonts, glyph, title, description, control_width, ROW_PADDING);
-    let mut slot = ui.new_child(UiBuilder::new().max_rect(slot).layout(Layout::right_to_left(Align::Center)));
-    add_control(&mut slot);
-}
-
-/// A setting with its control underneath, lined up with the title.
-pub fn row_below(
-    ui: &mut Ui,
-    fonts: &Fonts,
-    glyph: char,
-    title: &str,
-    description: Option<&str>,
-    add_control: impl FnOnce(&mut Ui),
-) {
-    label(ui, fonts, glyph, title, description, 0.0, 8.0);
-    ui.horizontal(|ui| {
-        ui.add_space(fonts.indent());
-        ui.vertical(add_control);
-    });
-    ui.add_space(ROW_PADDING);
-}
-
-/// Draws a row's icon, title and description, leaving `control_width` free on the right.
-/// Returns the space for the control, as tall as the text.
-fn label(
-    ui: &mut Ui,
-    fonts: &Fonts,
-    glyph: char,
-    title: &str,
-    description: Option<&str>,
-    control_width: f32,
-    padding_bottom: f32,
-) -> Rect {
-    let width = ui.available_width();
-    let indent = fonts.indent();
-    let gap = if control_width > 0.0 { 12.0 } else { 0.0 };
-    let wrap = (width - indent - control_width - gap).max(60.0);
-    let painter = ui.painter().clone();
-    let title = painter.layout(title.to_owned(), FontId::proportional(TITLE_SIZE), TEXT, wrap);
-    let description = description.map(|d| painter.layout(d.to_owned(), FontId::proportional(DESCRIPTION_SIZE), DIM, wrap));
-    let text_height = title.size().y + description.as_ref().map_or(0.0, |d| 1.0 + d.size().y);
-    let height = text_height.max(CONTROL_HEIGHT);
-
-    let (rect, _) = ui.allocate_exact_size(vec2(width, ROW_PADDING + height + padding_bottom), Sense::hover());
-    let body = Rect::from_min_size(rect.min + vec2(0.0, ROW_PADDING), vec2(width, height));
-    if let Some(font) = fonts.icon(ICON_SIZE) {
-        painter.text(pos2(body.left() + ICON_SIZE / 2.0, body.center().y), Align2::CENTER_CENTER, glyph, font, TEXT);
+/// A page's entry in a sidebar, like in Windows' own Settings: its icon and name, filled in
+/// and marked with an accent bar while its page shows.
+pub fn nav_item(ui: &mut Ui, fonts: &Fonts, glyph: char, name: &str, selected: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    response.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, ui.is_enabled(), selected, name));
+    let fill = match (selected, response.hovered(), response.is_pointer_button_down_on()) {
+        (_, _, true) | (true, true, _) => SUBTLE_PRESSED,
+        (true, false, _) | (false, true, _) => SUBTLE,
+        (false, false, _) => Color32::TRANSPARENT,
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 4, fill);
+    if selected {
+        let bar = Rect::from_center_size(pos2(rect.left() + 1.5, rect.center().y), vec2(3.0, 16.0));
+        painter.rect_filled(bar, 1.5, ACCENT);
     }
-    let mut at = pos2(body.left() + indent, body.center().y - text_height / 2.0);
-    let title_height = title.size().y;
-    painter.galley(at, title, TEXT);
+    let left = rect.left() + 14.0;
+    if let Some(font) = fonts.icon(16.0) {
+        painter.text(pos2(left + 8.0, rect.center().y), Align2::CENTER_CENTER, glyph, font, PRIMARY);
+    }
+    let text_left = if fonts.icons.is_some() { left + 34.0 } else { left };
+    painter.text(pos2(text_left, rect.center().y), Align2::LEFT_CENTER, name, FontId::proportional(BODY), PRIMARY);
+    focus_ring(ui, &response, rect, 4.0);
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// A note at the top of a page, like Windows' info bars.
+pub fn info_bar(ui: &mut Ui, fonts: &Fonts, text: &str) {
+    const MARK: f32 = 16.0;
+    let width = ui.available_width();
+    let wrap = (width - 2.0 * CARD_PADDING - MARK - 12.0).max(60.0);
+    let galley = ui.painter().layout(text.to_owned(), FontId::proportional(BODY), PRIMARY, wrap);
+    let height = (galley.size().y + 2.0 * CARD_PADDING_Y).max(48.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let painter = ui.painter();
+    painter.rect(rect, 4, INSET, Stroke::new(1.0, SETTING_EDGE), StrokeKind::Inside);
+    let first_line = rect.center().y - galley.size().y / 2.0 + galley.rows[0].height() / 2.0;
+    let mark = pos2(rect.left() + CARD_PADDING + MARK / 2.0, first_line);
+    painter.circle_filled(mark, MARK / 2.0, ACCENT);
+    painter.text(mark + vec2(0.0, 0.5), Align2::CENTER_CENTER, "i", FontId::new(11.0, fonts.strong.clone()), ON_ACCENT);
+    painter.galley(pos2(mark.x + MARK / 2.0 + 12.0, rect.center().y - galley.size().y / 2.0), galley, PRIMARY);
+}
+
+/// A setting on a card of its own, with its control on the right. `control_width` is the room
+/// `add_control` takes. On a card too narrow for both, the control goes under the text.
+pub fn setting(
+    ui: &mut Ui,
+    fonts: &Fonts,
+    glyph: char,
+    title: &str,
+    description: Option<&str>,
+    control_width: f32,
+    add_control: impl FnOnce(&mut Ui),
+) -> Response {
+    let header = header(ui, fonts, glyph, title, description, control_width, Sense::hover());
+    ui.painter().rect(header.rect, 4, SETTING, Stroke::new(1.0, SETTING_EDGE), StrokeKind::Inside);
+    header.paint(ui.painter());
+    let layout = Layout::right_to_left(Align::Center);
+    let mut slot = ui.new_child(UiBuilder::new().max_rect(header.control).layout(layout));
+    add_control(&mut slot);
+    header.response
+}
+
+/// A setting that opens onto more settings, like Windows' expanders: a card showing `summary`
+/// and a chevron, which a click opens to show what `add_items` adds, such as [`check_item`]s.
+pub fn expander(
+    ui: &mut Ui,
+    fonts: &Fonts,
+    open: &mut bool,
+    glyph: char,
+    title: &str,
+    description: Option<&str>,
+    summary: &str,
+    add_items: impl FnOnce(&mut Ui),
+) {
+    let id = ui.make_persistent_id(("expander", title));
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let width = ui.available_width();
+        // The summary gets up to a third of the card, but never crowds the title under the
+        // chevron, and is cut short past that. Too short to read, it's left out.
+        let painter = ui.painter().clone();
+        let text_room = width - CARD_PADDING - fonts.indent() - CARD_PADDING - CONTROL_GAP - NARROWEST_TEXT;
+        let summary_room = (text_room - CHEVRON - 12.0).min(width / 3.0);
+        let summary = (!summary.is_empty() && summary_room >= 40.0)
+            .then(|| single_line(&painter, summary, FontId::proportional(BODY), SECONDARY, summary_room));
+        let control_width = summary.as_ref().map_or(0.0, |s| s.size().x + 12.0) + CHEVRON;
+        let background = painter.add(Shape::Noop);
+        let mut header = header(ui, fonts, glyph, title, description, control_width, Sense::hover());
+        header.response = ui.interact(header.rect, id, Sense::click());
+        if header.response.clicked() {
+            *open = !*open;
+        }
+        let open = *open;
+        let response = &header.response;
+        response.widget_info(|| WidgetInfo::selected(WidgetType::CollapsingHeader, ui.is_enabled(), open, title));
+        let fill = if response.hovered() && !response.is_pointer_button_down_on() { SETTING_HOVER } else { SETTING };
+        let corners = if open { CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 } } else { CornerRadius::same(4) };
+        let card = Shape::Rect(epaint_rect(header.rect, corners, fill, SETTING_EDGE));
+        painter.set(background, card);
+        header.paint(&painter);
+
+        let control = header.control;
+        let chevron = pos2(control.right() - 8.0, control.center().y);
+        let glyph = if open { icon::CHEVRON_UP } else { icon::CHEVRON_DOWN };
+        chevron_mark(&painter, fonts, chevron, glyph);
+        if let Some(summary) = summary {
+            let at = pos2(control.right() - CHEVRON - 12.0 - summary.size().x, control.center().y - summary.size().y / 2.0);
+            painter.galley(at, summary, SECONDARY);
+        }
+        focus_ring(ui, response, header.rect, 4.0);
+        let response = header.response.on_hover_cursor(CursorIcon::PointingHand);
+
+        if open {
+            let background = painter.add(Shape::Noop);
+            let top = response.rect.bottom();
+            let items = ui.vertical(|ui| add_items(ui)).response.rect;
+            // Up a pixel, so its edge and the header's are one line.
+            let rect = Rect::from_min_max(pos2(response.rect.left(), top - 1.0), pos2(response.rect.right(), items.bottom()));
+            let corners = CornerRadius { nw: 0, ne: 0, sw: 4, se: 4 };
+            painter.set(background, Shape::Rect(epaint_rect(rect, corners, INSET, SETTING_EDGE)));
+        }
+    });
+}
+
+/// One of an [`expander`]'s settings: a check box beside a title and an optional description,
+/// all of it clickable.
+pub fn check_item(ui: &mut Ui, fonts: &Fonts, on: &mut bool, title: &str, description: Option<&str>) -> Response {
+    let width = ui.available_width();
+    let left = CARD_PADDING + fonts.indent();
+    let text_left = left + CHECK_BOX + 12.0;
+    let wrap = (width - text_left - CARD_PADDING).max(60.0);
+    let painter = ui.painter().clone();
+    let title_galley = painter.layout(title.to_owned(), FontId::proportional(BODY), PRIMARY, wrap);
+    let description = description.map(|d| painter.layout(d.to_owned(), FontId::proportional(CAPTION), SECONDARY, wrap));
+    let text_height = title_galley.size().y + description.as_ref().map_or(0.0, |d| 1.0 + d.size().y);
+    let height = (text_height + 2.0 * CARD_PADDING_Y).max(48.0);
+
+    let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), *on, title));
+    // A line along the top, over the last pixel row of what's above: the first one lies on the
+    // header's edge, and the others part them.
+    painter.hline(rect.x_range(), rect.top() - 0.5, Stroke::new(1.0, SETTING_EDGE));
+    let mut at = pos2(rect.left() + text_left, rect.center().y - text_height / 2.0);
+    let first_line = at.y + title_galley.rows[0].height() / 2.0;
+    let check = Rect::from_center_size(pos2(rect.left() + left + CHECK_BOX / 2.0, first_line), vec2(CHECK_BOX, CHECK_BOX));
+    paint_check_box(ui, fonts, check, *on, &response);
+    let title_height = title_galley.size().y;
+    painter.galley(at, title_galley, PRIMARY);
     if let Some(description) = description {
         at.y += title_height + 1.0;
-        painter.galley(at, description, DIM);
+        painter.galley(at, description, SECONDARY);
     }
-    Rect::from_min_max(pos2(body.right() - control_width, body.top()), body.max)
+    focus_ring(ui, &response, check, 4.0);
+    response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// An on/off switch.
+/// A card's icon, title and description, laid out but not yet painted.
+struct Header {
+    rect: Rect,
+    response: Response,
+    /// Where the control goes.
+    control: Rect,
+    icon: Option<(Arc<Galley>, emath::Pos2)>,
+    text: Vec<(Arc<Galley>, emath::Pos2, Color32)>,
+}
+
+impl Header {
+    fn paint(&self, painter: &Painter) {
+        if let Some((icon, at)) = &self.icon {
+            painter.galley(*at, icon.clone(), PRIMARY);
+        }
+        for (galley, at, color) in &self.text {
+            painter.galley(*at, galley.clone(), *color);
+        }
+    }
+}
+
+/// Allocates a card for a setting, with its text beside `control_width` or, when the card is
+/// too narrow for that, above it.
+fn header(
+    ui: &mut Ui,
+    fonts: &Fonts,
+    glyph: char,
+    title: &str,
+    description: Option<&str>,
+    control_width: f32,
+    sense: Sense,
+) -> Header {
+    let width = ui.available_width();
+    let text_left = CARD_PADDING + fonts.indent();
+    let beside = width - text_left - CARD_PADDING - CONTROL_GAP - control_width;
+    let stacked = control_width > 0.0 && beside < NARROWEST_TEXT;
+    let wrap = if stacked || control_width <= 0.0 { width - text_left - CARD_PADDING } else { beside }.max(60.0);
+    let painter = ui.painter().clone();
+    let title = painter.layout(title.to_owned(), FontId::proportional(BODY), PRIMARY, wrap);
+    let description = description.map(|d| painter.layout(d.to_owned(), FontId::proportional(CAPTION), SECONDARY, wrap));
+    let text_height = title.size().y + description.as_ref().map_or(0.0, |d| 1.0 + d.size().y);
+    let height = if stacked {
+        CARD_PADDING_Y + text_height + 8.0 + CONTROL_HEIGHT + CARD_PADDING_Y
+    } else {
+        (text_height + 2.0 * CARD_PADDING_Y).max(CARD_HEIGHT)
+    };
+
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), sense);
+    let text_top = if stacked { rect.top() + CARD_PADDING_Y } else { rect.center().y - text_height / 2.0 };
+    let control = if stacked {
+        let top = text_top + text_height + 8.0;
+        let width = control_width.min(width - text_left - CARD_PADDING);
+        Rect::from_min_size(pos2(rect.left() + text_left, top), vec2(width, CONTROL_HEIGHT))
+    } else {
+        Rect::from_min_max(pos2(rect.right() - CARD_PADDING - control_width, rect.top()), pos2(rect.right() - CARD_PADDING, rect.bottom()))
+    };
+    let icon = fonts.icon(ICON_SIZE).map(|font| {
+        let galley = painter.layout_no_wrap(glyph.to_string(), font, PRIMARY);
+        let center_y = if stacked { text_top + title.size().y / 2.0 } else { rect.center().y };
+        let at = pos2(rect.left() + CARD_PADDING + ICON_SIZE / 2.0, center_y) - galley.size() / 2.0;
+        (galley, at)
+    });
+    let mut at = pos2(rect.left() + text_left, text_top);
+    let mut text = vec![];
+    let title_height = title.size().y;
+    text.push((title, at, PRIMARY));
+    if let Some(description) = description {
+        at.y += title_height + 1.0;
+        text.push((description, at, SECONDARY));
+    }
+    Header { rect, response, control, icon, text }
+}
+
+fn epaint_rect(rect: Rect, corners: CornerRadius, fill: Color32, edge: Color32) -> eframe::egui::epaint::RectShape {
+    eframe::egui::epaint::RectShape::new(rect, corners, fill, Stroke::new(1.0, edge), StrokeKind::Inside)
+}
+
+/// A chevron centered on `at`, from the icon font or drawn.
+fn chevron_mark(painter: &Painter, fonts: &Fonts, at: emath::Pos2, glyph: char) {
+    if let Some(font) = fonts.icon(11.0) {
+        painter.text(at, Align2::CENTER_CENTER, glyph, font, SECONDARY);
+    } else {
+        let flip = if glyph == icon::CHEVRON_UP { -1.0 } else { 1.0 };
+        let points = vec![at + vec2(-4.0, -2.0 * flip), at + vec2(0.0, 2.0 * flip), at + vec2(4.0, -2.0 * flip)];
+        painter.add(Shape::line(points, Stroke::new(1.2, SECONDARY)));
+    }
+}
+
+/// An on/off switch with On or Off beside it, as in Windows' Settings.
 pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
-    let (rect, mut response) = ui.allocate_exact_size(vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT), Sense::click());
+    let (rect, mut response) = ui.allocate_exact_size(vec2(TOGGLE_WIDTH, CONTROL_HEIGHT), Sense::click());
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
@@ -232,102 +413,121 @@ pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), *on, ""));
 
     let t = ui.ctx().animate_bool_responsive(response.id, *on);
-    let hovered = response.hovered();
-    let off = if hovered { HOVER } else { TRACK };
-    let on_color = if hovered { ACCENT.lerp_to_gamma(Color32::WHITE, 0.12) } else { ACCENT };
+    let (hovered, pressed) = (response.hovered(), response.is_pointer_button_down_on());
     // The track gets snapped to whole pixels when painted but the knob doesn't, so snap the
     // track here and center the knob in it. Otherwise the knob can sit half a pixel high.
-    let rect = rect.round_to_pixels(ui.pixels_per_point());
-    let radius = rect.height() / 2.0;
+    let switch = Rect::from_min_size(pos2(rect.right() - SWITCH[0], rect.center().y - SWITCH[1] / 2.0), SWITCH.into())
+        .round_to_pixels(ui.pixels_per_point());
+    let radius = switch.height() / 2.0;
     let painter = ui.painter();
-    painter.rect_filled(rect, radius, off.lerp_to_gamma(on_color, t));
-    let x = emath::lerp(rect.left() + radius..=rect.right() - radius, t);
-    painter.circle_filled(pos2(x, rect.center().y), radius - 3.0, DIM.lerp_to_gamma(Color32::WHITE, t));
-    focus_ring(ui, &response, rect, radius);
+    let off = if hovered { OFF_HOVER } else { OFF };
+    let accent = if hovered { ACCENT.lerp_to_gamma(SETTING, 0.12) } else { ACCENT };
+    painter.rect_filled(switch, radius, off.lerp_to_gamma(accent, t));
+    if t < 1.0 {
+        let edge = STRONG.gamma_multiply(1.0 - t);
+        painter.rect_stroke(switch, radius, Stroke::new(1.0, edge), StrokeKind::Inside);
+    }
+    let knob = if pressed { 7.5 } else if hovered { 7.0 } else { 6.0 };
+    let x = emath::lerp(switch.left() + radius..=switch.right() - radius, t);
+    painter.circle_filled(pos2(x, switch.center().y), knob, SECONDARY.lerp_to_gamma(ON_ACCENT, t));
+    let state = if *on { "On" } else { "Off" };
+    let label = pos2(switch.left() - 10.0, rect.center().y);
+    painter.text(label, Align2::RIGHT_CENTER, state, FontId::proportional(BODY), PRIMARY);
+    focus_ring(ui, &response, switch, radius);
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// The width [`segmented`] takes for these labels.
-pub fn segmented_width(ui: &Ui, labels: &[&str]) -> f32 {
-    let widest = labels.iter().map(|l| control_text(ui, l).size().x).fold(0.0, f32::max);
-    (widest + 2.0 * LABEL_PADDING) * labels.len() as f32 + 2.0 * SEGMENT_INSET
+/// A check box, filled with the accent color and checked while on.
+fn paint_check_box(ui: &Ui, fonts: &Fonts, rect: Rect, on: bool, response: &Response) {
+    let rect = rect.round_to_pixels(ui.pixels_per_point());
+    let hovered = response.hovered();
+    let painter = ui.painter();
+    if on {
+        let fill = if hovered { ACCENT.lerp_to_gamma(SETTING, 0.12) } else { ACCENT };
+        painter.rect_filled(rect, 4, fill);
+        if let Some(font) = fonts.icon(12.0) {
+            painter.text(rect.center(), Align2::CENTER_CENTER, icon::CHECK, font, ON_ACCENT);
+        } else {
+            let c = rect.center();
+            let points = vec![c + vec2(-5.0, 0.0), c + vec2(-1.5, 3.5), c + vec2(5.0, -3.5)];
+            painter.add(Shape::line(points, Stroke::new(1.5, ON_ACCENT)));
+        }
+    } else {
+        painter.rect(rect, 4, if hovered { OFF_HOVER } else { OFF }, Stroke::new(1.0, STRONG), StrokeKind::Inside);
+    }
 }
 
-/// Mutually exclusive options side by side. Hugs its labels unless given a `width`.
-pub fn segmented<T: Copy + PartialEq>(
+/// The width [`dropdown`] wants for these labels.
+pub fn dropdown_width(ui: &Ui, labels: &[&str]) -> f32 {
+    let widest = labels.iter().map(|l| control_text(ui, l).size().x).fold(0.0, f32::max);
+    (12.0 + widest + CHEVRON_ROOM).max(DROPDOWN_WIDTH)
+}
+
+/// Picks one of `options` from a list that drops down when clicked, like Windows' combo boxes.
+/// `width` is the most it takes.
+pub fn dropdown<T: Copy + PartialEq>(
     ui: &mut Ui,
+    fonts: &Fonts,
     value: &mut T,
     options: &[(T, &str)],
-    width: Option<f32>,
+    width: f32,
 ) -> Response {
-    let labels: Vec<&str> = options.iter().map(|(_, label)| *label).collect();
-    let width = width.unwrap_or_else(|| segmented_width(ui, &labels));
-    let (rect, mut response) = ui.allocate_exact_size(vec2(width, CONTROL_HEIGHT), Sense::hover());
-    let inner = rect.shrink(SEGMENT_INSET);
-    let segment_width = inner.width() / options.len() as f32;
-    let segment_rect =
-        |i: usize| Rect::from_min_size(inner.min + vec2(i as f32 * segment_width, 0.0), vec2(segment_width, inner.height()));
+    let width = width.min(ui.available_width());
+    let (rect, mut response) = ui.allocate_exact_size(vec2(width, CONTROL_HEIGHT), Sense::click());
+    let popup = response.id.with("popup");
+    let open = Popup::is_id_open(ui.ctx(), popup);
+    let selected = options.iter().find(|(option, _)| *option == *value).map_or("", |(_, label)| *label);
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::ComboBox, ui.is_enabled(), selected));
 
-    let segments: Vec<Response> = options
-        .iter()
-        .enumerate()
-        .map(|(i, (option, label))| {
-            let segment = ui.interact(segment_rect(i), response.id.with(i), Sense::click());
-            segment.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, *value == *option, *label));
-            if segment.clicked() && *value != *option {
-                *value = *option;
-                response.mark_changed();
-            }
-            segment.on_hover_cursor(CursorIcon::PointingHand)
-        })
-        .collect();
-
-    let selected = options.iter().position(|(option, _)| option == value).unwrap_or(0);
-    let slide = ui.ctx().animate_value_with_time(response.id, selected as f32, 0.12);
+    let fill = match (response.hovered(), response.is_pointer_button_down_on() || open) {
+        (_, true) => CONTROL_PRESSED,
+        (true, false) => CONTROL_HOVER,
+        _ => CONTROL,
+    };
     let painter = ui.painter();
-    painter.rect_filled(rect, 8, TRACK);
-    let pill = Rect::from_min_size(inner.min + vec2(slide * segment_width, 0.0), vec2(segment_width, inner.height()));
-    painter.rect_filled(pill, 5, SELECTED);
-    for (i, (label, segment)) in labels.iter().zip(&segments).enumerate() {
-        let galley = control_text(ui, label);
-        let color = if i == selected || segment.hovered() { TEXT } else { DIM };
-        ui.painter().galley(segment_rect(i).center() - galley.size() / 2.0, galley, color);
-        focus_ring(ui, segment, segment_rect(i), 5.0);
-    }
-    response
-}
+    painter.rect(rect, 4, fill, Stroke::new(1.0, CONTROL_EDGE), StrokeKind::Inside);
+    let text = single_line(painter, selected, FontId::proportional(BODY), PRIMARY, width - 12.0 - CHEVRON_ROOM);
+    painter.galley(pos2(rect.left() + 12.0, rect.center().y - text.size().y / 2.0), text, PRIMARY);
+    chevron_mark(painter, fonts, pos2(rect.right() - 17.0, rect.center().y), icon::CHEVRON_DOWN);
+    focus_ring(ui, &response, rect, 4.0);
 
-/// An on/off pill, for picking items out of a few.
-pub fn chip(ui: &mut Ui, fonts: &Fonts, on: &mut bool, label: &str) -> Response {
-    let text = control_text(ui, label);
-    let check = fonts.icon(10.0).map(|font| ui.painter().layout_no_wrap(icon::CHECK.into(), font, ACCENT));
-    let check_width = check.as_ref().map_or(0.0, |c| c.size().x + 6.0);
-    let size = vec2(LABEL_PADDING + check_width + text.size().x + LABEL_PADDING, CONTROL_HEIGHT);
-    let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
-    if response.clicked() {
-        *on = !*on;
+    let frame = Frame::new()
+        .fill(POPUP)
+        .stroke(Stroke::new(1.0, POPUP_EDGE))
+        .corner_radius(8)
+        .inner_margin(Margin::same(4))
+        .shadow(Shadow { offset: [0, 8], blur: 16, spread: 0, color: Color32::from_black_alpha(100) });
+    let mut changed = false;
+    Popup::menu(&response).id(popup).width(width).gap(4.0).frame(frame).show(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.set_min_width(ui.available_width());
+        for (option, label) in options {
+            let (item, clicked) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT), Sense::click());
+            let picked = *option == *value;
+            clicked.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, true, picked, *label));
+            let fill = match (clicked.hovered(), clicked.is_pointer_button_down_on()) {
+                (_, true) => SUBTLE_PRESSED,
+                (true, false) => CONTROL_HOVER,
+                _ if picked => CONTROL,
+                _ => Color32::TRANSPARENT,
+            };
+            let painter = ui.painter();
+            painter.rect_filled(item, 4, fill);
+            if picked {
+                let bar = Rect::from_center_size(pos2(item.left() + 1.5, item.center().y), vec2(3.0, 16.0));
+                painter.rect_filled(bar, 1.5, ACCENT);
+            }
+            let text = single_line(painter, label, FontId::proportional(BODY), PRIMARY, item.width() - 24.0);
+            painter.galley(pos2(item.left() + 12.0, item.center().y - text.size().y / 2.0), text, PRIMARY);
+            if clicked.clicked() && !picked {
+                *value = *option;
+                changed = true;
+            }
+        }
+    });
+    if changed {
         response.mark_changed();
     }
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), *on, label));
-
-    let radius = rect.height() / 2.0;
-    let painter = ui.painter();
-    if *on {
-        let fill = ACCENT.gamma_multiply(if response.hovered() { 0.28 } else { 0.18 });
-        painter.rect(rect, radius, fill, Stroke::new(1.0, ACCENT.gamma_multiply(0.6)), StrokeKind::Inside);
-        let mut x = rect.left() + LABEL_PADDING;
-        if let Some(check) = check {
-            let y = rect.center().y - check.size().y / 2.0;
-            x += check_width;
-            painter.galley(pos2(rect.left() + LABEL_PADDING, y), check, ACCENT);
-        }
-        painter.galley(pos2(x, rect.center().y - text.size().y / 2.0), text, TEXT);
-    } else {
-        let fill = if response.hovered() { TRACK } else { Color32::TRANSPARENT };
-        painter.rect(rect, radius, fill, Stroke::new(1.0, TRACK), StrokeKind::Inside);
-        painter.galley(rect.center() - text.size() / 2.0, text, DIM);
-    }
-    focus_ring(ui, &response, rect, radius);
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -342,8 +542,8 @@ pub fn slider(ui: &mut Ui, value: &mut f32, range: RangeInclusive<f32>, width: f
     response
 }
 
-/// A slider that stops only at `count` steps, each marked on its track. `step` is the one it's
-/// on, counting from 0. Arrow keys move it a step when focused.
+/// A slider that stops only at `count` steps, each ticked under its track. `step` is the one
+/// it's on, counting from 0. Arrow keys move it a step when focused.
 pub fn stepped_slider(ui: &mut Ui, step: &mut usize, count: usize, width: f32) -> Response {
     let last = count.max(2) - 1;
     let mut t = (*step).min(last) as f32 / last as f32;
@@ -354,11 +554,12 @@ pub fn stepped_slider(ui: &mut Ui, step: &mut usize, count: usize, width: f32) -
 }
 
 /// What both sliders share, at `t` from 0 to 1. With `steps`, `t` stops only at that many even
-/// divisions of the track, each marked, and an arrow key moves it one; otherwise a twentieth.
+/// divisions of the track, each ticked, and an arrow key moves it one; otherwise a twentieth.
+/// Drawn like Windows' sliders: a thin track, filled up to a round thumb with an accent center.
 fn slide(ui: &mut Ui, t: &mut f32, steps: Option<usize>, width: f32) -> Response {
-    const KNOB: f32 = 7.0;
-    let (rect, mut response) = ui.allocate_exact_size(vec2(width, 20.0), Sense::click_and_drag());
-    let track = rect.shrink2(vec2(KNOB, 0.0));
+    const THUMB_RADIUS: f32 = 10.0;
+    let (rect, mut response) = ui.allocate_exact_size(vec2(width, CONTROL_HEIGHT), Sense::click_and_drag());
+    let track = rect.shrink2(vec2(THUMB_RADIUS, 0.0));
     let nudge = steps.map_or(0.05, |steps| 1.0 / steps as f32);
     let snap = |t: f32| steps.map_or(t, |steps| (t * steps as f32).round() / steps as f32);
     let before = *t;
@@ -379,18 +580,25 @@ fn slide(ui: &mut Ui, t: &mut f32, steps: Option<usize>, width: f32) -> Response
     let y = rect.center().y;
     let bar = |from: f32, to: f32| Rect::from_min_max(pos2(from, y - 2.0), pos2(to, y + 2.0));
     let painter = ui.painter();
-    painter.rect_filled(bar(track.left(), track.right()), 2, TRACK);
-    painter.rect_filled(bar(track.left(), x), 2, ACCENT);
     if let Some(steps) = steps {
-        // Dark dots on the filled part, light ones past it.
         for i in 0..=steps {
-            let at = emath::lerp(track.x_range(), i as f32 / steps as f32);
-            painter.circle_filled(pos2(at, y), 1.25, if at <= x { WINDOW } else { DIM });
+            let at = emath::lerp(track.x_range(), i as f32 / steps as f32).round() + 0.5;
+            painter.vline(at, y + 6.0..=y + 10.0, Stroke::new(1.0, STRONG));
         }
     }
-    let active = response.hovered() || response.dragged();
-    painter.circle_filled(pos2(x, y), if active { KNOB + 0.5 } else { KNOB }, Color32::WHITE);
-    focus_ring(ui, &response, Rect::from_center_size(pos2(x, y), vec2(2.0 * KNOB, 2.0 * KNOB)), KNOB);
+    painter.rect_filled(bar(track.left(), track.right()), 2, STRONG);
+    painter.rect_filled(bar(track.left(), x), 2, ACCENT);
+    let thumb = pos2(x, y);
+    painter.circle(thumb, THUMB_RADIUS, THUMB, Stroke::new(1.0, CONTROL_EDGE));
+    let center = if response.dragged() || response.is_pointer_button_down_on() {
+        5.0
+    } else if response.hovered() {
+        7.0
+    } else {
+        6.0
+    };
+    painter.circle_filled(thumb, center, ACCENT);
+    focus_ring(ui, &response, Rect::from_center_size(thumb, vec2(2.0 * THUMB_RADIUS, 2.0 * THUMB_RADIUS)), THUMB_RADIUS);
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -403,34 +611,43 @@ pub fn icon_button(ui: &mut Ui, fonts: &Fonts, glyph: char, label: &str) -> Resp
     let hovered = response.hovered();
     let painter = ui.painter();
     if hovered {
-        painter.rect_filled(rect, 6, if response.is_pointer_button_down_on() { SELECTED } else { HOVER });
+        painter.rect_filled(rect, 4, if response.is_pointer_button_down_on() { SUBTLE_PRESSED } else { SUBTLE });
     }
-    painter.text(rect.center(), Align2::CENTER_CENTER, glyph, font, if hovered { TEXT } else { DIM });
-    focus_ring(ui, &response, rect, 6.0);
+    painter.text(rect.center(), Align2::CENTER_CENTER, glyph, font, if hovered { PRIMARY } else { SECONDARY });
+    focus_ring(ui, &response, rect, 4.0);
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// A filled button with an icon before its label.
+/// The width [`button`] takes for this label.
+pub fn button_width(ui: &Ui, fonts: &Fonts, label: &str) -> f32 {
+    let icon_width = if fonts.icons.is_some() { 14.0 + 8.0 } else { 0.0 };
+    12.0 + icon_width + control_text(ui, label).size().x + 12.0
+}
+
+/// A button like Windows' standard ones, with an icon before its label.
 pub fn button(ui: &mut Ui, fonts: &Fonts, glyph: char, label: &str) -> Response {
     let text = control_text(ui, label);
-    let icon = fonts.icon(12.0).map(|font| ui.painter().layout_no_wrap(glyph.into(), font, TEXT));
-    let icon_width = icon.as_ref().map_or(0.0, |i| i.size().x + 8.0);
-    let (rect, response) = ui.allocate_exact_size(vec2(12.0 + icon_width + text.size().x + 12.0, 28.0), Sense::click());
+    let icon = fonts.icon(14.0).map(|font| ui.painter().layout_no_wrap(glyph.into(), font, PRIMARY));
+    let icon_width = icon.as_ref().map_or(0.0, |_| 14.0 + 8.0);
+    let size = vec2(12.0 + icon_width + text.size().x + 12.0, CONTROL_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
-    let fill = match (response.hovered(), response.is_pointer_button_down_on()) {
-        (_, true) => SELECTED,
-        (true, false) => HOVER,
-        _ => TRACK,
+    let pressed = response.is_pointer_button_down_on();
+    let fill = match (response.hovered(), pressed) {
+        (_, true) => CONTROL_PRESSED,
+        (true, false) => CONTROL_HOVER,
+        _ => CONTROL,
     };
+    let color = if pressed { SECONDARY } else { PRIMARY };
     let painter = ui.painter();
-    painter.rect_filled(rect, 6, fill);
+    painter.rect(rect, 4, fill, Stroke::new(1.0, CONTROL_EDGE), StrokeKind::Inside);
     let mut x = rect.left() + 12.0;
     if let Some(icon) = icon {
-        painter.galley(pos2(x, rect.center().y - icon.size().y / 2.0), icon, TEXT);
+        painter.galley(pos2(x, rect.center().y - icon.size().y / 2.0), icon, color);
         x += icon_width;
     }
-    painter.galley(pos2(x, rect.center().y - text.size().y / 2.0), text, TEXT);
-    focus_ring(ui, &response, rect, 6.0);
+    painter.galley(pos2(x, rect.center().y - text.size().y / 2.0), text, color);
+    focus_ring(ui, &response, rect, 4.0);
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -443,13 +660,14 @@ pub fn single_line(painter: &Painter, text: &str, font: FontId, color: Color32, 
 
 /// Text for a control, colored when painted.
 fn control_text(ui: &Ui, text: &str) -> Arc<Galley> {
-    ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(CONTROL_SIZE), Color32::PLACEHOLDER)
+    ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(BODY), Color32::PLACEHOLDER)
 }
 
-/// Shows which control has keyboard focus.
+/// Shows which control has keyboard focus, with Windows' white and black rings.
 fn focus_ring(ui: &Ui, response: &Response, rect: Rect, radius: f32) {
     if response.has_focus() {
-        let stroke = Stroke::new(1.5, ACCENT.lerp_to_gamma(Color32::WHITE, 0.3));
-        ui.painter().rect_stroke(rect.expand(2.0), radius + 2.0, stroke, StrokeKind::Outside);
+        let painter = ui.painter();
+        painter.rect_stroke(rect.expand(1.0), radius + 1.0, Stroke::new(1.0, Color32::BLACK), StrokeKind::Outside);
+        painter.rect_stroke(rect.expand(2.0), radius + 2.0, Stroke::new(2.0, Color32::WHITE), StrokeKind::Outside);
     }
 }
