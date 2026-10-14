@@ -1,5 +1,6 @@
-//! The settings window's building blocks: section headings, cards of setting rows (an icon, a
-//! title, an optional description and a control), and the controls themselves.
+//! The settings window's building blocks: sidebar entries for its pages, section headings, cards
+//! of setting rows (an icon, a title, an optional description and a control), and the controls
+//! themselves.
 
 use crate::mascot::CLAUDE_ORANGE;
 use crate::view::{DIM, TEXT};
@@ -24,6 +25,7 @@ const ACCENT: Color32 = CLAUDE_ORANGE;
 /// Glyphs of Segoe Fluent Icons (Windows 11), which keeps Segoe MDL2 Assets' (Windows 10) code points.
 pub mod icon {
     pub const ANIMATE: char = '\u{E768}';
+    pub const APPEARANCE: char = '\u{E771}';
     pub const BROWSE: char = '\u{E8E5}';
     pub const CHECK: char = '\u{E73E}';
     pub const CLAWD: char = '\u{E76E}';
@@ -31,6 +33,7 @@ pub mod icon {
     pub const DOUBLE_CLICK: char = '\u{E962}';
     pub const LIMITS: char = '\u{E9F9}';
     pub const OPACITY: char = '\u{E793}';
+    pub const PANEL: char = '\u{E737}';
     pub const PERCENT: char = '\u{E94C}';
     pub const QUIT: char = '\u{E7E8}';
     pub const REFRESH: char = '\u{E72C}';
@@ -40,6 +43,7 @@ pub mod icon {
     pub const STARTUP: char = '\u{EC4A}';
     pub const STATUS: char = '\u{E8BD}';
     pub const STYLE: char = '\u{EB05}';
+    pub const TASKBAR: char = '\u{E75B}';
     pub const TIME_LEFT: char = '\u{E916}';
     pub const WHEEL: char = '\u{ECE7}';
 }
@@ -90,6 +94,33 @@ pub fn heading(ui: &mut Ui, fonts: &Fonts, text: &str, add_control: impl FnOnce(
     ui.painter().galley(at, galley, DIM);
     let mut slot = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::right_to_left(Align::Center)));
     add_control(&mut slot);
+}
+
+/// A page's entry in a sidebar, like in Windows' own Settings: its icon and name, filled in
+/// and marked with an accent bar while its page shows.
+pub fn nav_item(ui: &mut Ui, fonts: &Fonts, glyph: char, name: &str, selected: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    response.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, ui.is_enabled(), selected, name));
+    let fill = match (selected, response.hovered()) {
+        (true, true) => TRACK,
+        (true, false) => LINE,
+        (false, true) => CARD,
+        (false, false) => Color32::TRANSPARENT,
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 6, fill);
+    if selected {
+        let bar = Rect::from_center_size(pos2(rect.left() + 1.5, rect.center().y), vec2(3.0, 16.0));
+        painter.rect_filled(bar, 1.5, ACCENT);
+    }
+    let left = rect.left() + 12.0;
+    if let Some(font) = fonts.icon(ICON_SIZE) {
+        painter.text(pos2(left + ICON_SIZE / 2.0, rect.center().y), Align2::CENTER_CENTER, glyph, font, TEXT);
+    }
+    let text = painter.layout_no_wrap(name.to_owned(), FontId::proportional(TITLE_SIZE), TEXT);
+    painter.galley(pos2(left + fonts.indent(), rect.center().y - text.size().y / 2.0), text, TEXT);
+    focus_ring(ui, &response, rect, 6.0);
+    response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
 /// A rounded group of rows. Put a [`divider`] between rows.

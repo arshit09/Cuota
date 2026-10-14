@@ -82,7 +82,7 @@ The exe is self-contained, so copy it anywhere. To start it when you sign in, tu
 
 Drag the panel to move it. Always on top and Desktop are the same panel, so only one can be on.
 
-**Display** sets the Panel and Taskbar separately: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel.
+Settings has a page for each part, picked in its sidebar: **General** (Show as, Double-click, Start with Windows), **Appearance** (the panel's size and opacity, and Clawd's animation), and **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel.
 
 Tips:
 
