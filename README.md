@@ -4,6 +4,10 @@
   <img src="docs/screenshots/clawd-at-work.png" width="383" alt="Cuota's panel: Clawd acts out one activity after another, with a word under him like Percolating…, beside bars for the Session, Weekly and Fable limits">
 </p>
 
+<p align="center">
+  <a href="https://github.com/arshit09/Cuota/releases/latest"><img src="https://img.shields.io/badge/Download%20for%20Windows-2ea44f?style=for-the-badge&logo=windows&logoColor=white" alt="Download Cuota for Windows"></a>
+</p>
+
 A tiny Windows widget that shows your Claude plan usage: session (5hr), weekly, and per-model limits. Same numbers as Claude Code's **Account & Usage** panel.
 
 Clawd, the Claude Code mascot, acts out a random activity while Claude works: a new one whenever a session starts working, and another every so often. He greets you as work starts and celebrates when it's done, waits around for a minute after, then falls asleep until there's work again. Above the meters, a line says what he's up to, like Claude Code's spinner: a turning star, then *Percolating…*, *Spelunking…*, *Flibbertigibbeting…*, each new word typing itself over the last. The 62 animations come from [Mascot Studio](https://github.com/Harriszed/mascot-studio).
@@ -45,9 +49,13 @@ The screenshots use `--demo`'s made-up account and usage.
 
 - Windows 10/11
 - [Claude Code](https://claude.com/claude-code), logged in with Pro or Max (Cuota reuses that login)
-- Rust, to build
+- Rust, only to build it yourself
 
-## Build & run
+## Download, or build & run
+
+Download **Cuota.exe** from the [latest release](https://github.com/arshit09/Cuota/releases/latest) and run it. It's unsigned, so if Windows says it protected your PC, click **More info**, then **Run anyway**. To update, quit Cuota from its tray menu and replace the file.
+
+Or build it yourself:
 
 ```powershell
 cargo build --release
