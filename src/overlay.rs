@@ -6,9 +6,10 @@
 use crate::animations::{self, Clawd};
 use crate::claude::{self, Limit, Shared, State};
 use crate::details;
-use crate::mascot::{CLAUDE_ORANGE, Mascot};
+use crate::mascot::Mascot;
 use crate::settings::{DoubleClick, Mode, SIZES, Settings, Style};
 use crate::stats::Transcripts;
+use crate::status::Status;
 use crate::tray::{Tray, TrayConfig, TrayEvent};
 use crate::view::{self, AMBER, DIM, TEXT};
 use crate::widgets::{self, Fonts, icon, single_line};
@@ -29,10 +30,8 @@ use std::time::{Duration, Instant};
 
 const MARGIN: f32 = 12.0;
 const GAP: f32 = 10.0;
-/// Clawd's status: its text size, and how far under his feet it starts. Desk legs reach a
-/// little lower, but the line's top is blank, so they stop short of the letters.
-const STATUS_SIZE: f32 = 12.0;
-const STATUS_GAP: f32 = 5.0;
+/// Between Clawd's status and the meters under it.
+const STATUS_GAP: f32 = 4.0;
 /// Wrap width for an error message when there are no meters to line up with.
 const NOTE_WIDTH: f32 = 220.0;
 const SETTINGS_WIDTH: f32 = 340.0;
@@ -129,6 +128,7 @@ pub struct Overlay {
     save_at: Option<Instant>,
     mascot: Mascot,
     clawd: Clawd,
+    status: Status,
     fonts: Fonts,
     icon: Arc<IconData>,
     keep_bottom: Arc<AtomicBool>,
@@ -215,6 +215,7 @@ impl Overlay {
             save_at: None,
             mascot: Mascot::new(ctx, spark),
             clawd: Clawd::new(ctx),
+            status: Status::new(),
             fonts,
             icon,
             keep_bottom: Arc::new(AtomicBool::new(false)),
@@ -432,21 +433,27 @@ impl Overlay {
         let note = note(state).map(|(text, color)| {
             painter.layout(text, FontId::proportional(12.0 * scale), color, meters.size.x.max(NOTE_WIDTH * scale))
         });
-        // Clawd stands over his status when it shows.
+        // Clawd's status, when it shows, heads the meters.
+        let animate = self.settings.animate;
         let status = view.clawd && view.status;
-        let status_font = FontId::proportional(STATUS_SIZE * scale);
-        let clawd = match (view.clawd, status) {
-            (false, _) => Vec2::ZERO,
-            (true, false) => animations::SIZE * scale,
-            (true, true) => {
-                let line = painter.fonts_mut(|fonts| fonts.row_height(&status_font));
-                animations::STANDING * scale + vec2(0.0, STATUS_GAP * scale + line)
-            }
+        let clawd = if view.clawd {
+            self.clawd.update(state, animate);
+            animations::SIZE * scale
+        } else {
+            Vec2::ZERO
         };
+        if status {
+            self.status.set(self.clawd.status().0, animate);
+        }
+        let status_size = if status { self.status.size(&painter, scale) } else { Vec2::ZERO };
 
         let note_size = note.as_ref().map_or(Vec2::ZERO, |n| n.size());
         let note_gap = if note.is_some() && meters.size.y > 0.0 { 4.0 * scale } else { 0.0 };
-        let body = vec2(meters.size.x.max(note_size.x), meters.size.y + note_gap + note_size.y);
+        let status_gap = if status && meters.size.y + note_size.y > 0.0 { STATUS_GAP * scale } else { 0.0 };
+        let body = vec2(
+            meters.size.x.max(note_size.x).max(status_size.x),
+            status_size.y + status_gap + meters.size.y + note_gap + note_size.y,
+        );
         let gap = if clawd.x > 0.0 && body.x > 0.0 { GAP * scale } else { 0.0 };
         let row = vec2(clawd.x + gap + body.x, clawd.y.max(body.y));
         // Details scroll once they'd run past DETAILS_HEIGHT or off the screen.
@@ -470,19 +477,16 @@ impl Overlay {
         let origin = full.min + Vec2::splat(margin);
         let mut next_frame = None;
         if clawd.x > 0.0 {
-            let at = origin + vec2(0.0, (row.y - clawd.y) / 2.0);
-            let slot = Rect::from_min_size(at, if status { animations::STANDING * scale } else { clawd });
-            next_frame = self.clawd.paint(&painter, slot, state, self.settings.animate, status, scale);
-            if status {
-                // Orange while he's on the job, like Claude Code's spinner; dim while he rests.
-                let (text, working) = self.clawd.status();
-                let color = if working { CLAUDE_ORANGE } else { DIM };
-                let galley = single_line(&painter, text, status_font, color, slot.width());
-                painter.galley(pos2(slot.center().x - galley.size().x / 2.0, slot.bottom() + STATUS_GAP * scale), galley, color);
-            }
+            let slot = Rect::from_min_size(origin + vec2(0.0, (row.y - clawd.y) / 2.0), clawd);
+            next_frame = self.clawd.paint(&painter, slot, animate, scale);
         }
         let body_at = origin + vec2(clawd.x + gap, (row.y - body.y) / 2.0);
-        let hints = meters.paint(&painter, body_at);
+        if status {
+            let working = self.clawd.status().1;
+            let next = self.status.paint(&painter, body_at, working, animate, scale);
+            next_frame = next_frame.into_iter().chain(next).min();
+        }
+        let hints = meters.paint(&painter, body_at + vec2(0.0, status_size.y + status_gap));
         if let Some(note) = note {
             painter.galley(body_at + vec2(0.0, body.y - note_size.y), note, TEXT);
         }
@@ -548,6 +552,8 @@ impl Overlay {
     }
 
     fn settings_window(&mut self, ctx: &egui::Context, state: &State) {
+        // The panel's screen, in pixels: where the window opens.
+        let panel_screen = self.work_area(ctx).map(|work| work * ctx.pixels_per_point());
         let builder = ViewportBuilder::default()
             .with_title("Cuota settings")
             .with_inner_size([SETTINGS_WIDTH, self.settings_height.max(300.0)])
@@ -561,22 +567,48 @@ impl Overlay {
                 self.settings_open = false;
             }
             ui.painter().rect_filled(ui.max_rect(), 0, widgets::WINDOW);
-            // Scrolls rather than running off a short screen, leaving room for the title bar and taskbar.
-            let fits = ui.ctx().input(|i| i.viewport().monitor_size).map_or(f32::INFINITY, |size| size.y - 100.0);
+            let ctx = ui.ctx().clone();
+            // The screen it opens on, then the one it's on, less the taskbar. Windows' own spot
+            // for a new window can leave the bottom rows under the taskbar.
+            let screen = if self.settings_shown {
+                self.work_area(&ctx)
+            } else {
+                panel_screen.map(|work| work / ctx.pixels_per_point())
+            };
+            let title_bar = ctx
+                .input(|i| Some(i.viewport().outer_rect?.size() - i.viewport().inner_rect?.size()))
+                .unwrap_or(vec2(16.0, 39.0));
+            // Scrolls rather than running off a short screen.
+            let fits = screen.map_or(f32::INFINITY, |screen| screen.height() - title_bar.y - 2.0 * SCREEN_GAP);
             let scroll = egui::ScrollArea::vertical().max_height(fits).show(ui, |ui| {
                 egui::Frame::new().inner_margin(16).show(ui, |ui| self.settings_ui(ui, state));
             });
             let height = scroll.content_size.y.min(fits).ceil();
+            let outer = vec2(SETTINGS_WIDTH, height) + title_bar;
             if (height - self.settings_height).abs() >= 1.0 {
                 self.settings_height = height;
-                ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(vec2(SETTINGS_WIDTH, height)));
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(vec2(SETTINGS_WIDTH, height)));
+                // Grown taller, it moves up rather than run under the taskbar.
+                if self.settings_shown
+                    && let (Some(screen), Some(window)) = (screen, ctx.input(|i| i.viewport().outer_rect))
+                {
+                    let top = window.top().min(screen.bottom() - SCREEN_GAP - outer.y).max(screen.top() + SCREEN_GAP);
+                    if top != window.top() {
+                        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos2(window.left(), top).round()));
+                    }
+                }
                 // Drawn at the old height, so a hidden window waits for the next frame.
-                ui.ctx().request_repaint();
+                ctx.request_repaint();
             } else if !self.settings_shown {
-                // These run once this frame is on the window, so it appears already drawn.
                 self.settings_shown = true;
-                ui.ctx().send_viewport_cmd(ViewportCommand::Visible(true));
-                ui.ctx().send_viewport_cmd(ViewportCommand::Focus);
+                // Centred on the panel's screen, so every row shows.
+                if let Some(screen) = screen {
+                    let at = (screen.center() - outer / 2.0).max(screen.min + Vec2::splat(SCREEN_GAP));
+                    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at.round()));
+                }
+                // These run once this frame is on the window, so it appears already drawn.
+                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
         });
     }
@@ -724,7 +756,7 @@ impl Overlay {
                     widgets::toggle(ui, on);
                 });
             }
-            // A word under Clawd, so the panel only, and only with him.
+            // Clawd's status heads the panel's meters, so the panel only, and only with him.
             if !taskbar {
                 widgets::divider(ui, fonts);
                 ui.add_enabled_ui(view.clawd, |ui| {
@@ -940,8 +972,14 @@ fn setup_fonts(ctx: &egui::Context) -> Fonts {
         fonts.font_data.insert("semibold".into(), Arc::new(FontData::from_owned(bytes)));
         strong_fonts.insert(0, "semibold".into());
     }
+    let mut proportional = vec!["regular".to_owned()];
+    // For the stars in Clawd's status, which Segoe UI lacks.
+    if let Some(bytes) = load(&["seguisym.ttf"]) {
+        fonts.font_data.insert("symbols".into(), Arc::new(FontData::from_owned(bytes)));
+        proportional.push("symbols".into());
+    }
     let strong = FontFamily::Name("strong".into());
-    fonts.families.insert(FontFamily::Proportional, vec!["regular".into()]);
+    fonts.families.insert(FontFamily::Proportional, proportional);
     fonts.families.insert(FontFamily::Monospace, vec!["regular".into()]);
     fonts.families.insert(strong.clone(), strong_fonts);
     // Segoe Fluent Icons on Windows 11, Segoe MDL2 Assets on Windows 10.
@@ -953,4 +991,27 @@ fn setup_fonts(ctx: &egui::Context) -> Fonts {
     });
     ctx.set_fonts(fonts);
     Fonts { strong, icons }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_fonts_have_the_stars_of_clawds_status() {
+        let ctx = egui::Context::default();
+        setup_fonts(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        // egui's has_glyph says no to everything in the font its replacement glyph comes from,
+        // Segoe UI Symbol here, so check instead that no star is drawn as that replacement.
+        let drawn = |c: char| {
+            let font = FontId::proportional(12.5);
+            let galley = ctx.fonts_mut(|fonts| fonts.layout_no_wrap(c.to_string(), font, Color32::WHITE));
+            galley.rows[0].glyphs[0].uv_rect
+        };
+        let missing = drawn('\u{378}');
+        for star in "·✢*✶✻✽…".chars() {
+            assert_ne!(drawn(star), missing, "{star}");
+        }
+    }
 }

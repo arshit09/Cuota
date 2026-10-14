@@ -8,6 +8,7 @@ mod mascot;
 mod overlay;
 mod settings;
 mod stats;
+mod status;
 mod tray;
 mod view;
 mod widgets;

@@ -23,13 +23,6 @@ const SCALE: f32 = 0.3;
 /// the odd flying prop, which may stray up to `SPILL` outside the slot, into the panel's margin.
 pub const SIZE: Vec2 = vec2(380.0 * SCALE, 320.0 * SCALE);
 pub const SPILL: f32 = 6.0;
-/// The row of the frame Clawd's feet rest on, in pixels.
-const GROUND: f32 = 392.0;
-/// Clawd's slot with his status under him: he stands on its bottom edge, so the word keeps its
-/// place whatever he's doing. 300 px takes a hat, with its tip in `SPILL`; only props flying
-/// off the top lose more. Below his feet, desk legs and the like show `FLOOR` further down.
-pub const STANDING: Vec2 = vec2(SIZE.x, 300.0 * SCALE);
-pub const FLOOR: f32 = 28.0 * SCALE;
 /// The GIFs are 2x nearest-neighbour enlargements, so half size loses nothing and saves memory.
 const SHRINK: usize = 2;
 /// How long one activity shows before another takes over, in seconds, while working...
@@ -89,7 +82,7 @@ const GREETING: &[Clip] = &clips!["greeting", "greeting-crown", "greeting-fluid"
 /// ...and once as it ends.
 const DONE: &[Clip] = &clips!["done", "done-fluid"];
 
-/// Clawd's status, a word under him like the one Claude Code's spinner shows. A new one comes
+/// Clawd's status, a word like the one Claude Code's spinner shows. A new one comes
 /// with each clip. While a session is busy:
 const BUSY_WORDS: &[&str] = &[
     "Accomplishing", "Actioning", "Alchemizing", "Baking", "Bedazzling", "Booping", "Brainstorming",
@@ -193,24 +186,14 @@ impl Clawd {
     }
 
     /// His status, like "Percolating…", and whether it's about work rather than waiting,
-    /// sleeping or trouble. It changes as he paints.
+    /// sleeping or trouble. It changes with each clip.
     pub fn status(&self) -> (&str, bool) {
         (&self.status, self.mood == Mood::Working || self.playing.once)
     }
 
-    /// Paints Clawd into `rect` and returns when his next frame is due, or `None` when
-    /// `animate` is off and he holds still. When `standing`, `rect` is sized by [`STANDING`]
-    /// and he stands on its bottom edge, ready for his status under him; otherwise it's sized
-    /// by [`SIZE`] and what he draws is centred in it. Either way, times `scale`.
-    pub fn paint(
-        &mut self,
-        painter: &Painter,
-        rect: Rect,
-        state: &State,
-        animate: bool,
-        standing: bool,
-        scale: f32,
-    ) -> Option<Duration> {
+    /// Moves on to another clip, and status, when `state` calls for one. Call before laying
+    /// out, so the panel makes room for the status he paints with.
+    pub fn update(&mut self, state: &State, animate: bool) {
         let now = Instant::now();
         let mood = Mood::of(state);
         let busy: Vec<_> = state.sessions.iter().filter(|s| s.busy).map(|s| (s.name.clone(), s.started)).collect();
@@ -232,24 +215,23 @@ impl Clawd {
         } else if now >= self.playing.ends() {
             self.play(mood.clips(), false, now);
         }
+    }
 
+    /// Paints Clawd into `rect`, sized by [`SIZE`] times `scale`, and returns when his next
+    /// frame is due, or `None` when `animate` is off and he holds still.
+    pub fn paint(&mut self, painter: &Painter, rect: Rect, animate: bool, scale: f32) -> Option<Duration> {
+        let now = Instant::now();
         let (index, lasts) = self.playing.frame(if animate { now } else { self.playing.started });
         if self.playing.shown != Some(index) {
             self.texture.set(self.playing.frames[index].image.clone(), OPTIONS);
             self.playing.shown = Some(index);
         }
-        // The clip's drawing centred in the slot, or Clawd's feet on its bottom edge, with the
-        // frame around it cut off past SPILL, or past FLOOR under his feet.
+        // The clip's drawing centred in the slot, with the frame around it cut off past SPILL.
         let bounds = self.playing.bounds;
         let (zoom, spill) = (SCALE * scale, SPILL * scale);
-        let (top, room) = if standing {
-            let room = Rect::from_min_max(rect.min - Vec2::splat(spill), rect.max + vec2(spill, FLOOR * scale));
-            (rect.bottom() - GROUND * zoom, room)
-        } else {
-            (rect.center().y - bounds.center().y * zoom, rect.expand(spill))
-        };
+        let top = rect.center().y - bounds.center().y * zoom;
         let frame = Rect::from_min_size(pos2(rect.center().x - bounds.center().x * zoom, top), FRAME * zoom);
-        let painter = painter.with_clip_rect(painter.clip_rect().intersect(room));
+        let painter = painter.with_clip_rect(painter.clip_rect().intersect(rect.expand(spill)));
         painter.image(self.texture.id(), frame, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         animate.then(|| lasts.min(self.playing.ends().saturating_duration_since(now)).max(Duration::from_millis(1)))
     }
@@ -548,15 +530,6 @@ mod tests {
     fn clawd_without_props_fits_the_slot() {
         let drawn = bounds(&decode(clips!["idle"][0].gif));
         assert!(drawn.width() * SCALE <= SIZE.x && drawn.height() * SCALE <= SIZE.y, "{drawn:?}");
-    }
-
-    #[test]
-    fn standing_clawd_keeps_his_hat_and_his_desk() {
-        assert_eq!(bounds(&decode(clips!["idle"][0].gif)).max.y, GROUND, "his feet");
-        let hat = bounds(&decode(clips!["thinking-wizard-hat"][0].gif));
-        assert!((GROUND - hat.min.y) * SCALE <= STANDING.y + SPILL, "{hat:?}");
-        let desk = bounds(&decode(clips!["writing-fluid"][0].gif));
-        assert!((desk.max.y - GROUND) * SCALE <= FLOOR, "{desk:?}");
     }
 
     #[test]

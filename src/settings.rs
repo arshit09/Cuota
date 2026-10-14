@@ -44,7 +44,7 @@ pub enum DoubleClick {
 #[serde(default)]
 pub struct View {
     pub clawd: bool,
-    /// A word under Clawd for what he's up to, like "Percolating…". The panel only.
+    /// A line above the meters saying what Clawd's up to, like "Percolating…". The panel only.
     pub status: bool,
     pub percent: bool,
     pub time_left: bool,
