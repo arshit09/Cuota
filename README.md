@@ -1,7 +1,7 @@
 # Cuota
 
 <p align="center">
-  <img src="docs/screenshots/clawd-at-work.png" width="383" alt="Cuota's panel: Clawd acts out one activity after another, with a word under him like Percolating…, beside bars for the Session, Weekly and Fable limits">
+  <img src="docs/screenshots/clawd-at-work.png" width="383" alt="Cuota's panel: Clawd acts out one activity after another, while the line above the Session, Weekly and Fable bars types out what he's up to, like ✻ Percolating…">
 </p>
 
 <p align="center">
@@ -16,22 +16,34 @@ Clawd, the Claude Code mascot, acts out a random activity while Claude works: a 
 
 **Clawd's moods**: working, waiting for a minute after a session goes idle, asleep once nothing is happening, and celebrating when work is done.
 
-<img src="docs/screenshots/moods.png" width="776" alt="Four panels: Clawd running commands in sunglasses (Wrangling…), drinking coffee while he waits (Lollygagging…), asleep in a nightcap (Snoozing…), and celebrating under confetti (Nailed it!)">
+<img src="docs/screenshots/moods.png" width="776" alt="Four panels, each with its word above the bars: Clawd running commands in sunglasses (Wrangling…), drinking coffee while he waits (Lollygagging…), asleep in a nightcap (Snoozing…), and celebrating under confetti (Nailed it!)">
 
-**Make it yours**: rings instead of bars, Clawd without his status word, or just the meters.
+**Make it yours**: rings instead of bars, Clawd without his status line, or just the meters.
 
 <p>
   <img src="docs/screenshots/panel-pie.png" width="286" alt="The panel with a ring per limit, showing its percentage inside and the time left underneath">
-  <img src="docs/screenshots/panel-no-status.png" width="383" alt="The panel with Clawd searching the web and no status word under him">
+  <img src="docs/screenshots/panel-no-status.png" width="383" alt="The panel with Clawd searching the web and no status line above the bars">
   <img src="docs/screenshots/panel-no-clawd.png" width="259" alt="The panel with only the limit bars, percentages and time left">
 </p>
 
-**Usage details and settings**: double-click the panel for details, right-click it for settings.
+**Any size**: ten steps from 70% to 160%. Pick one in settings, or turn the mouse wheel over the panel.
+
+<img src="docs/screenshots/sizes.png" width="880" alt="The panel at 70%, 100% and 130% of its normal size">
+
+**Usage details**: double-click the panel to expand it with each limit's reset time and pace, and what your week went to.
+
+<img src="docs/screenshots/panel-details.png" width="383" alt="The expanded panel: each limit's reset time and pace, and what the week's usage went to by app">
+
+**Settings**: right-click the panel. Like Windows 11's Settings, it has a page for each part.
 
 <table>
   <tr>
-    <td valign="top"><img src="docs/screenshots/panel-details.png" width="383" alt="The expanded panel: each limit's reset time and pace, and what the week's usage went to by app"></td>
-    <td valign="top"><img src="docs/screenshots/settings.png" width="340" alt="Cuota's settings: the account, Show as, Double-click, Start with Windows, Opacity and Animate Clawd, then what the panel displays"></td>
+    <td><img src="docs/screenshots/settings-general.png" width="400" alt="Settings, General page: Show as open, with Always on top and Taskbar checked and Desktop not, Double-click set to Show details, and Start with Windows on"></td>
+    <td><img src="docs/screenshots/settings-appearance.png" width="400" alt="Settings, Appearance page: Size at 100%, Resize with mouse wheel on, Opacity at 96%, and Animate Clawd on"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/settings-panel.png" width="400" alt="Settings, Panel page: Style set to Bars, Limits showing Session, Weekly and Fable, and Percentage, Time left, Clawd and Status all on"></td>
+    <td><img src="docs/screenshots/settings-taskbar.png" width="400" alt="Settings, Taskbar page: Style set to Bars, Limits open with Session, Weekly and Fable checked, and Percentage, Time left and Clawd on"></td>
   </tr>
 </table>
 
