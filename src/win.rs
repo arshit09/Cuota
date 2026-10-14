@@ -55,14 +55,25 @@ pub fn taskbar_rect() -> Option<RECT> {
 
 /// Windows draws a light taskbar (Settings > Colors > default Windows mode).
 pub fn light_taskbar() -> bool {
+    theme_setting("SystemUsesLightTheme") == Some(1)
+}
+
+/// This process's popup menus are dark: `dark_menus` follows Windows' default app mode, which
+/// is dark (Settings > Colors > default app mode).
+pub fn menus_are_dark() -> bool {
+    dark_menus_supported() && theme_setting("AppsUseLightTheme") == Some(0)
+}
+
+/// One of Windows' light and dark mode settings.
+fn theme_setting(name: &str) -> Option<u32> {
     let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-    let name = wide("SystemUsesLightTheme");
+    let name = wide(name);
     let (mut value, mut size) = (0u32, size_of::<u32>() as u32);
     let data = (&mut value as *mut u32).cast();
     let status = unsafe {
         RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), RRF_RT_REG_DWORD, null_mut(), data, &mut size)
     };
-    status == 0 && value == 1
+    (status == 0).then_some(value)
 }
 
 /// A string value from the registry.
@@ -176,8 +187,7 @@ pub fn first_instance() -> bool {
 /// takes uxtheme's unnamed SetPreferredAppMode (ordinal 135) and FlushMenuThemes (136), which
 /// are stable from Windows 10 1903 on; older Windows keeps light menus.
 pub fn dark_menus() {
-    let build = registry_string(HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuildNumber");
-    if build.and_then(|b| b.parse::<u32>().ok()).is_none_or(|build| build < 18362) {
+    if !dark_menus_supported() {
         return;
     }
     const ALLOW_DARK: i32 = 1;
@@ -194,6 +204,12 @@ pub fn dark_menus() {
             transmute::<Proc, unsafe extern "system" fn()>(flush_menu_themes)();
         }
     }
+}
+
+/// Windows 10 1903 or later, where `dark_menus` works.
+fn dark_menus_supported() -> bool {
+    let build = registry_string(HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuildNumber");
+    build.and_then(|b| b.parse::<u32>().ok()).is_some_and(|build| build >= 18362)
 }
 
 pub fn cursor() -> POINT {

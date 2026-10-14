@@ -26,12 +26,14 @@ pub mod icon {
     pub const ANIMATE: char = '\u{E768}';
     pub const CHECK: char = '\u{E73E}';
     pub const CLAWD: char = '\u{E76E}';
+    pub const DETAILS: char = '\u{E9D2}';
     pub const DOUBLE_CLICK: char = '\u{E962}';
     pub const LIMITS: char = '\u{E9F9}';
     pub const OPACITY: char = '\u{E793}';
     pub const PERCENT: char = '\u{E94C}';
     pub const QUIT: char = '\u{E7E8}';
     pub const REFRESH: char = '\u{E72C}';
+    pub const SETTINGS: char = '\u{E713}';
     pub const SHOW_AS: char = '\u{E7F4}';
     pub const STARTUP: char = '\u{EC4A}';
     pub const STYLE: char = '\u{EB05}';

@@ -8,6 +8,7 @@
 use crate::claude::{self, Limit, Shared, State};
 use crate::mascot::{self, CLAUDE_ORANGE, EYE, SNORE};
 use crate::settings::{Style, View};
+use crate::widgets::icon;
 use crate::win::{self, wide};
 use chrono::{Local, Utc};
 use eframe::egui::{self, Color32};
@@ -17,9 +18,12 @@ use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, TRUE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, CreateDIBSection, DIB_RGB_COLORS, DeleteObject,
+    ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, COLOR_MENUTEXT, CreateBitmap,
+    CreateCompatibleDC, CreateDIBSection, CreateFontW, DEFAULT_CHARSET, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CENTER,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, FW_NORMAL, GdiFlush, GetSysColor,
+    GetTextFaceW, HBITMAP, HDC, HFONT, OUT_DEFAULT_PRECIS, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
@@ -27,12 +31,13 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     ASFW_ANY, AllowSetForegroundWindow, AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
-    DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowExW, GetMessageW,
-    GetSystemMetrics, HICON, ICONINFO, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW,
-    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_MENUDROPALIGNMENT,
-    SendMessageW, SetForegroundWindow, SetTimer, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_NONOTIFY,
-    TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_CLOSE, WM_DESTROY,
-    WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowExW, GetMenuItemCount,
+    GetMessageW, GetSystemMetrics, HICON, HMENU, ICONINFO, MENUINFO, MENUITEMINFOW, MF_SEPARATOR, MF_STRING,
+    MIIM_BITMAP, MIM_STYLE, MNS_CHECKORBMP, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
+    RegisterWindowMessageW, SM_CXSMICON, SM_MENUDROPALIGNMENT, SendMessageW, SetForegroundWindow, SetMenuDefaultItem,
+    SetMenuInfo, SetMenuItemInfoW, SetTimer, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
+    TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONUP, WM_NULL,
+    WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 const CLASS: &str = "CuotaTray";
@@ -57,7 +62,7 @@ pub struct TrayConfig {
 }
 
 pub enum TrayEvent {
-    /// An icon was clicked: open the panel, or hide or show it.
+    /// An icon was clicked, or Cuota's name in its menu: open the panel, or hide or show it.
     Click,
     /// Settings, picked from an icon's menu or asked for by launching Cuota again.
     Settings,
@@ -247,20 +252,34 @@ unsafe extern "system" fn window_proc(window: HWND, message: u32, wparam: WPARAM
     if handled { 0 } else { unsafe { DefWindowProcW(window, message, wparam, lparam) } }
 }
 
-/// The icons' menu, at the cursor: Cuota's name and version, Usage details, Settings and Quit.
+/// The icons' menu, at the cursor: Clawd by Cuota's name and version, then Usage details,
+/// Settings and Quit, each by its icon.
 fn pick_from_menu(window: HWND) -> Option<TrayEvent> {
     const SETTINGS: usize = 1;
     const QUIT: usize = 2;
     const DETAILS: usize = 3;
+    const OPEN: usize = 4;
     let title = wide(concat!("Cuota v", env!("CARGO_PKG_VERSION")));
     let (details, settings, quit) = (wide("Usage details"), wide("Settings"), wide("Quit"));
+    // Drawn on each opening, so the icons follow the menu into dark mode and back.
+    let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16) as usize;
+    let ink = menu_ink();
+    let glyph = |glyph| draw_glyph(glyph, size, ink).map_or(0, |rgba| bitmap(&rgba, size, true));
+    let icons = [bitmap(&draw_app(size), size, true), glyph(icon::DETAILS), glyph(icon::SETTINGS), glyph(icon::QUIT)];
     let picked = unsafe {
         let menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.as_ptr());
+        // With no check marks to show, the icons take their place, as in Explorer's menus.
+        let style =
+            MENUINFO { cbSize: size_of::<MENUINFO>() as u32, fMask: MIM_STYLE, dwStyle: MNS_CHECKORBMP, ..zeroed() };
+        SetMenuInfo(menu, &style);
+        // The title does what clicking the icon does, so it's the menu's default, in bold. A
+        // grayed-out title would gray out Clawd with it.
+        append(menu, MF_STRING, OPEN, &title, icons[0]);
+        SetMenuDefaultItem(menu, OPEN as u32, 0);
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
-        AppendMenuW(menu, MF_STRING, DETAILS, details.as_ptr());
-        AppendMenuW(menu, MF_STRING, SETTINGS, settings.as_ptr());
-        AppendMenuW(menu, MF_STRING, QUIT, quit.as_ptr());
+        append(menu, MF_STRING, DETAILS, &details, icons[1]);
+        append(menu, MF_STRING, SETTINGS, &settings, icons[2]);
+        append(menu, MF_STRING, QUIT, &quit, icons[3]);
         // Without this, clicking elsewhere wouldn't close the menu.
         SetForegroundWindow(window);
         let side = if GetSystemMetrics(SM_MENUDROPALIGNMENT) != 0 { TPM_RIGHTALIGN } else { TPM_LEFTALIGN };
@@ -271,12 +290,43 @@ fn pick_from_menu(window: HWND) -> Option<TrayEvent> {
         DestroyMenu(menu);
         picked as usize
     };
+    // The menu leaves its items' bitmaps to their owner.
+    for bitmap in icons.into_iter().filter(|&b| b != 0) {
+        unsafe { DeleteObject(bitmap) };
+    }
     match picked {
+        OPEN => Some(TrayEvent::Click),
         SETTINGS => Some(TrayEvent::Settings),
         DETAILS => Some(TrayEvent::Details),
         QUIT => Some(TrayEvent::Quit),
         _ => None,
     }
+}
+
+/// Appends an item to `menu`, with `bitmap` (if any) as its icon.
+unsafe fn append(menu: HMENU, flags: u32, id: usize, text: &[u16], bitmap: HBITMAP) {
+    unsafe {
+        AppendMenuW(menu, flags, id, text.as_ptr());
+        if bitmap != 0 {
+            let info = MENUITEMINFOW {
+                cbSize: size_of::<MENUITEMINFOW>() as u32,
+                fMask: MIIM_BITMAP,
+                hbmpItem: bitmap,
+                ..zeroed()
+            };
+            SetMenuItemInfoW(menu, (GetMenuItemCount(menu) - 1) as u32, TRUE, &info);
+        }
+    }
+}
+
+/// The menu's text color, for its icons. Dark menus are drawn by the theme, which the system
+/// colors don't follow.
+fn menu_ink() -> Color32 {
+    if win::menus_are_dark() {
+        return Color32::WHITE;
+    }
+    let [r, g, b, _] = unsafe { GetSysColor(COLOR_MENUTEXT) }.to_le_bytes();
+    Color32::from_rgb(r, g, b)
 }
 
 /// Asks the Cuota that's already running to open its settings.
@@ -337,33 +387,129 @@ fn notify(window: HWND, message: u32, id: u32, icon: Option<(&[u8], usize, &str)
 
 /// An icon from straight-alpha RGBA pixels.
 fn hicon(rgba: &[u8], size: usize) -> HICON {
+    let color = bitmap(rgba, size, false);
+    if color == 0 {
+        return 0;
+    }
     let side = size as i32;
     unsafe {
-        let mut info: BITMAPINFO = zeroed();
-        info.bmiHeader = BITMAPINFOHEADER {
-            biSize: size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: side,
-            biHeight: -side,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB,
-            ..zeroed()
-        };
-        let mut bits = null_mut();
-        let color = CreateDIBSection(0, &info, DIB_RGB_COLORS, &mut bits, 0, 0);
-        if color == 0 || bits.is_null() {
-            return 0;
-        }
-        let out = std::slice::from_raw_parts_mut(bits.cast::<u8>(), size * size * 4);
-        for (dst, src) in out.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
-            dst.copy_from_slice(&[src[2], src[1], src[0], src[3]]);
-        }
         let mask = CreateBitmap(side, side, 1, 1, null());
         let icon = CreateIconIndirect(&ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color });
         DeleteObject(color);
         DeleteObject(mask);
         icon
     }
+}
+
+/// A 32-bit bitmap from straight-alpha RGBA pixels: kept straight for icons, `premultiply`d
+/// for menus, which blend bitmaps that way.
+fn bitmap(rgba: &[u8], size: usize, premultiply: bool) -> HBITMAP {
+    let (bitmap, bits) = dib(0, size);
+    if bitmap != 0 {
+        let out = unsafe { std::slice::from_raw_parts_mut(bits, size * size * 4) };
+        for (dst, src) in out.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
+            let alpha = if premultiply { u16::from(src[3]) } else { 255 };
+            let [r, g, b] = [src[0], src[1], src[2]].map(|c| (u16::from(c) * alpha / 255) as u8);
+            dst.copy_from_slice(&[b, g, r, src[3]]);
+        }
+    }
+    bitmap
+}
+
+/// A blank top-down 32-bit `size` square for `dc`, and its BGRA pixels; 0 if it couldn't be made.
+fn dib(dc: HDC, size: usize) -> (HBITMAP, *mut u8) {
+    let side = size as i32;
+    let mut info: BITMAPINFO = unsafe { zeroed() };
+    info.bmiHeader = BITMAPINFOHEADER {
+        biSize: size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: side,
+        biHeight: -side,
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB,
+        ..unsafe { zeroed() }
+    };
+    let mut bits = null_mut();
+    let bitmap = unsafe { CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, 0, 0) };
+    if bitmap != 0 && bits.is_null() {
+        unsafe { DeleteObject(bitmap) };
+        return (0, null_mut());
+    }
+    (bitmap, bits.cast())
+}
+
+/// `glyph` from Windows' icon font (see `widgets::icon`) in `color`, as `size`-pixel RGBA;
+/// None without the font.
+fn draw_glyph(glyph: char, size: usize, color: Color32) -> Option<Vec<u8>> {
+    let mut text = [0u16; 2];
+    let text = glyph.encode_utf16(&mut text);
+    unsafe {
+        let dc = CreateCompatibleDC(0);
+        let (target, bits) = dib(dc, size);
+        let font = icon_font(dc, size as i32);
+        let drawn = match font {
+            Some(font) if target != 0 => {
+                let previous_target = SelectObject(dc, target);
+                let previous_font = SelectObject(dc, font);
+                // White on the blank (black) bitmap, so each pixel's green is the glyph's coverage.
+                SetTextColor(dc, 0x00FF_FFFF);
+                SetBkMode(dc, TRANSPARENT as i32);
+                let mut rect = RECT { left: 0, top: 0, right: size as i32, bottom: size as i32 };
+                let format = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+                DrawTextW(dc, text.as_ptr(), text.len() as i32, &mut rect, format);
+                GdiFlush();
+                SelectObject(dc, previous_font);
+                SelectObject(dc, previous_target);
+                let [r, g, b, _] = color.to_srgba_unmultiplied();
+                let pixels = std::slice::from_raw_parts(bits, size * size * 4);
+                Some(pixels.chunks_exact(4).flat_map(|p| [r, g, b, p[1]]).collect())
+            }
+            _ => None,
+        };
+        if let Some(font) = font {
+            DeleteObject(font);
+        }
+        if target != 0 {
+            DeleteObject(target);
+        }
+        DeleteDC(dc);
+        drawn
+    }
+}
+
+/// Windows' icon font at `size` pixels: Segoe Fluent Icons on Windows 11, Segoe MDL2 Assets on
+/// Windows 10. Checked by name, since GDI quietly stands in some other font for a missing one.
+fn icon_font(dc: HDC, size: i32) -> Option<HFONT> {
+    for face in ["Segoe Fluent Icons", "Segoe MDL2 Assets"] {
+        let name = wide(face);
+        let mut chosen = [0u16; 32];
+        unsafe {
+            let font = CreateFontW(
+                -size,
+                0,
+                0,
+                0,
+                FW_NORMAL as i32,
+                0,
+                0,
+                0,
+                u32::from(DEFAULT_CHARSET),
+                u32::from(OUT_DEFAULT_PRECIS),
+                u32::from(CLIP_DEFAULT_PRECIS),
+                u32::from(ANTIALIASED_QUALITY),
+                u32::from(DEFAULT_PITCH),
+                name.as_ptr(),
+            );
+            let previous = SelectObject(dc, font);
+            GetTextFaceW(dc, chosen.len() as i32, chosen.as_mut_ptr());
+            SelectObject(dc, previous);
+            if String::from_utf16_lossy(&chosen).trim_end_matches('\0') == face {
+                return Some(font);
+            }
+            DeleteObject(font);
+        }
+    }
+    None
 }
 
 /// Text and track colors that read on the current taskbar.
@@ -618,6 +764,11 @@ mod tests {
             }
             assert!(opaque(&draw_clawd(size, true, 1)) > 40);
             assert!(opaque(&draw_app(size)) > 40);
+            for glyph in [icon::DETAILS, icon::SETTINGS, icon::QUIT] {
+                let rgba = draw_glyph(glyph, size, Color32::WHITE).expect("Windows' icon font");
+                assert_eq!(rgba.len(), size * size * 4);
+                assert!(opaque(&rgba) > 20, "{glyph:?} at {size}px is nearly empty");
+            }
         }
     }
 
