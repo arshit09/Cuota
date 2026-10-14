@@ -13,8 +13,16 @@ use gif::{ColorOutput, DecodeOptions, DisposalMethod};
 use std::ops::Range;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Clawd's slot in the panel, in points: a GIF frame (480 x 440) scaled to this height.
-pub const SIZE: Vec2 = vec2(96.0 * 480.0 / 440.0, 96.0);
+/// A GIF frame, in pixels. Clawd stands in its lower middle, with room above him for a hat or
+/// a thought bubble and beside him for whatever he's working with.
+const FRAME: Vec2 = vec2(480.0, 440.0);
+/// Points per GIF pixel: Clawd himself, 172 px tall, comes out about 52 pt.
+const SCALE: f32 = 0.3;
+/// Clawd's slot in the panel, in points. What a clip draws is centred in it, so the text beside
+/// him lines up with him whether he has a hat on or not. 380 x 320 px takes everything but
+/// the odd flying prop, which may stray up to `SPILL` outside the slot, into the panel's margin.
+pub const SIZE: Vec2 = vec2(380.0 * SCALE, 320.0 * SCALE);
+pub const SPILL: f32 = 6.0;
 /// The GIFs are 2x nearest-neighbour enlargements, so half size loses nothing and saves memory.
 const SHRINK: usize = 2;
 /// How long one activity shows before another takes over, in seconds, while working...
@@ -160,7 +168,11 @@ impl Clawd {
             self.texture.set(self.playing.frames[index].image.clone(), OPTIONS);
             self.playing.shown = Some(index);
         }
-        painter.image(self.texture.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        // The clip's drawing centred in the slot, with the frame around it cut off past SPILL.
+        let bounds = self.playing.bounds;
+        let frame = Rect::from_min_size(rect.center() - bounds.center().to_vec2() * SCALE, FRAME * SCALE);
+        let painter = painter.with_clip_rect(painter.clip_rect().intersect(rect.expand(SPILL)));
+        painter.image(self.texture.id(), frame, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         animate.then(|| lasts.min(self.playing.ends().saturating_duration_since(now)).max(Duration::from_millis(1)))
     }
 
@@ -193,6 +205,8 @@ struct Playing {
     clip: &'static Clip,
     frames: Vec<Frame>,
     length: Duration,
+    /// The smallest rectangle, in GIF pixels, holding everything the frames draw.
+    bounds: Rect,
     started: Instant,
     /// When another clip is due. It takes over at the end of the loop running then, so `started`
     /// means after one play.
@@ -213,7 +227,8 @@ impl Playing {
             frames.push(Frame { image, end: Duration::from_secs(1) });
         }
         let length = frames.last().map_or(Duration::ZERO, |f| f.end);
-        Self { clip, frames, length, started, due, once: false, shown: None }
+        let bounds = bounds(&frames);
+        Self { clip, frames, length, bounds, started, due, once: false, shown: None }
     }
 
     /// When the clip gives way: the end of the loop running when another is due.
@@ -284,6 +299,23 @@ fn decode(gif: &[u8]) -> Vec<Frame> {
         frames.push(Frame { image: ColorImage::new(size, small.clone()), end });
     }
     frames
+}
+
+/// The smallest rectangle holding every opaque pixel of `frames`, in GIF pixels: the whole frame
+/// when they draw nothing.
+fn bounds(frames: &[Frame]) -> Rect {
+    let mut drawn = Rect::NOTHING;
+    for frame in frames {
+        let [width, _] = frame.image.size;
+        for (y, row) in frame.image.pixels.chunks_exact(width).enumerate() {
+            let mut opaque = row.iter().enumerate().filter(|(_, p)| p.a() > 0).map(|(x, _)| x as f32);
+            if let Some(first) = opaque.next() {
+                let last = opaque.next_back().unwrap_or(first);
+                drawn = drawn.union(Rect::from_min_max(pos2(first, y as f32), pos2(last + 1.0, y as f32 + 1.0)));
+            }
+        }
+    }
+    if drawn.is_positive() { drawn * SHRINK as f32 } else { Rect::from_min_size(pos2(0.0, 0.0), FRAME) }
 }
 
 /// Part of the canvas, in pixels; `right` and `bottom` are just outside it.
@@ -396,9 +428,36 @@ mod tests {
                     assert!(frames.iter().all(|f| f.end > Duration::ZERO));
                     let drawn = frames.iter().any(|f| f.image.pixels.iter().any(|p| p.a() > 0));
                     assert!(drawn, "{} is blank", clip.name);
+                    // Clawd himself is 172 px tall; the rest is props, which the slot has room for.
+                    let drawn = bounds(&frames);
+                    assert!(Rect::from_min_size(pos2(0.0, 0.0), FRAME).contains_rect(drawn), "{} {drawn:?}", clip.name);
+                    assert!(drawn.height() >= 170.0, "{} draws only {drawn:?}", clip.name);
+                    // What shows at once: the slot plus the spill either side. Only things on
+                    // their way off the frame's own edge, like confetti, lose a little more.
+                    let room = SIZE / SCALE + Vec2::splat(2.0 * SPILL / SCALE);
+                    let lost = (drawn.size() - room).max(Vec2::ZERO) / 2.0 * SCALE;
+                    assert!(lost.x <= 10.0 && lost.y <= 10.0, "{} loses {lost:?} pt a side", clip.name);
                 });
             }
         });
+    }
+
+    #[test]
+    fn bounds_hold_every_frames_opaque_pixels_at_gif_size() {
+        let frame = |x: usize, y: usize| {
+            let mut image = ColorImage::filled([4, 4], Color32::TRANSPARENT);
+            image[(x, y)] = Color32::RED;
+            Frame { image, end: Duration::from_secs(1) }
+        };
+        assert_eq!(bounds(&[frame(1, 1), frame(3, 2)]), Rect::from_min_max(pos2(2.0, 2.0), pos2(8.0, 6.0)));
+        let blank = Frame { image: ColorImage::filled([4, 4], Color32::TRANSPARENT), end: Duration::from_secs(1) };
+        assert_eq!(bounds(&[blank]), Rect::from_min_size(pos2(0.0, 0.0), FRAME));
+    }
+
+    #[test]
+    fn clawd_without_props_fits_the_slot() {
+        let drawn = bounds(&decode(clips!["idle"][0].gif));
+        assert!(drawn.width() * SCALE <= SIZE.x && drawn.height() * SCALE <= SIZE.y, "{drawn:?}");
     }
 
     #[test]

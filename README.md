@@ -39,11 +39,11 @@ The exe is self-contained, so copy it anywhere. To start it when you sign in, tu
 
 **Show as** (pick one or more):
 
-- **Popup**: floats above all windows
+- **Always on top**: floats above all windows
 - **Desktop**: sits behind windows, like a desktop widget
 - **Taskbar**: Clawd and each limit as tray icons. Click one for the panel.
 
-Drag the panel to move it. Popup and Desktop are the same panel, so only one can be on.
+Drag the panel to move it. Always on top and Desktop are the same panel, so only one can be on.
 
 **Display** sets the Panel and Taskbar separately: Bars or Pie, which limits, percentage, time left, and Clawd.
 

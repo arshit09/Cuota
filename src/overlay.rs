@@ -1,4 +1,4 @@
-//! The window: a floating panel (Popup), a panel behind other windows (Desktop), or a flyout
+//! The window: a floating panel (Always on top), a panel behind other windows (Desktop), or a flyout
 //! opened from the tray icons (Taskbar alone). Double-clicking it expands it with usage
 //! details. It also hosts the settings window, and keeps itself sized, placed and layered for
 //! the chosen modes.
@@ -95,7 +95,7 @@ pub struct Overlay {
     applied: Option<(BTreeSet<Mode>, Instant)>,
     size: Vec2,
     flyout: Flyout,
-    /// The Popup or Desktop panel was hidden with a click on a tray icon.
+    /// The Always on top or Desktop panel was hidden with a click on a tray icon.
     hidden: bool,
     /// The frame in which the flyout or a hidden panel was last shown.
     shown_frame: u64,
@@ -226,7 +226,7 @@ impl Overlay {
         }
     }
 
-    /// A tray click when Popup or Desktop keeps the panel on screen: hides it, or shows it again.
+    /// A tray click when Always on top or Desktop keeps the panel on screen: hides it, or shows it again.
     fn set_hidden(&mut self, ctx: &egui::Context, hidden: bool) {
         if hidden != self.hidden {
             self.hidden = hidden;
@@ -308,7 +308,7 @@ impl Overlay {
         Some(work / ppp)
     }
 
-    /// Moves the Popup or Desktop panel up or left as little as it takes for the expanded panel
+    /// Moves the Always on top or Desktop panel up or left as little as it takes for the expanded panel
     /// to stay on screen, and back again when it shrinks.
     fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2) {
         let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else { return };
@@ -525,8 +525,8 @@ impl Overlay {
             let about = show_as_about(settings);
             widgets::row_below(ui, fonts, icon::SHOW_AS, "Show as", Some(&about), |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                    for (mode, name) in [(Mode::Popup, "Popup"), (Mode::Desktop, "Desktop"), (Mode::Taskbar, "Taskbar")] {
+                    ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+                    for (mode, name) in [(Mode::AlwaysOnTop, "Always on top"), (Mode::Desktop, "Desktop"), (Mode::Taskbar, "Taskbar")] {
                         let mut shown = settings.shows_as(mode);
                         // The last one stays on, so there's always something to right-click for settings.
                         let last = shown && settings.show.len() == 1;
@@ -607,7 +607,7 @@ impl Overlay {
                     ui.label(RichText::new("They appear here once usage has loaded.").size(11.5).color(DIM));
                 }
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
                     for limit in &state.limits {
                         let mut shown = view.shows(&limit.label);
                         if widgets::chip(ui, fonts, &mut shown, &limit.label).changed() {
@@ -780,7 +780,7 @@ fn settings_viewport() -> ViewportId {
 /// What the chosen Show as options do.
 fn show_as_about(settings: &Settings) -> String {
     let mut about = match settings.pinned() {
-        Some(Mode::Popup) => "Floats above all windows. Drag to move.".to_owned(),
+        Some(Mode::AlwaysOnTop) => "Floats above all windows. Drag to move.".to_owned(),
         Some(Mode::Desktop) => "Sits behind your windows, like a desktop widget. Drag to move.".to_owned(),
         _ => String::new(),
     };

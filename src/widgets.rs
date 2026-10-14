@@ -47,9 +47,15 @@ const ICON_SIZE: f32 = 16.0;
 /// Where titles start, past the icon.
 const INDENT: f32 = 30.0;
 const CARD_PADDING: f32 = 14.0;
-const ROW_PADDING: f32 = 8.0;
-const CONTROL_HEIGHT: f32 = 24.0;
-pub const TOGGLE_WIDTH: f32 = 34.0;
+/// Rows, switches and option bars get this much room, so they read clearly.
+const ROW_PADDING: f32 = 10.0;
+const CONTROL_HEIGHT: f32 = 28.0;
+pub const TOGGLE_WIDTH: f32 = 40.0;
+const TOGGLE_HEIGHT: f32 = 22.0;
+/// Inside an option bar, the selected pill sits this far in from the track.
+const SEGMENT_INSET: f32 = 3.0;
+/// Room either side of an option bar's or a chip's label.
+const LABEL_PADDING: f32 = 16.0;
 
 /// The font families the UI draws with.
 #[derive(Clone)]
@@ -183,7 +189,7 @@ fn label(
 
 /// An on/off switch.
 pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
-    let (rect, mut response) = ui.allocate_exact_size(vec2(TOGGLE_WIDTH, 18.0), Sense::click());
+    let (rect, mut response) = ui.allocate_exact_size(vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT), Sense::click());
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
@@ -201,7 +207,7 @@ pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
     let painter = ui.painter();
     painter.rect_filled(rect, radius, off.lerp_to_gamma(on_color, t));
     let x = emath::lerp(rect.left() + radius..=rect.right() - radius, t);
-    painter.circle_filled(pos2(x, rect.center().y), radius - 3.5, DIM.lerp_to_gamma(Color32::WHITE, t));
+    painter.circle_filled(pos2(x, rect.center().y), radius - 3.0, DIM.lerp_to_gamma(Color32::WHITE, t));
     focus_ring(ui, &response, rect, radius);
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
@@ -209,7 +215,7 @@ pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
 /// The width [`segmented`] takes for these labels.
 pub fn segmented_width(ui: &Ui, labels: &[&str]) -> f32 {
     let widest = labels.iter().map(|l| control_text(ui, l).size().x).fold(0.0, f32::max);
-    (widest + 24.0) * labels.len() as f32 + 4.0
+    (widest + 2.0 * LABEL_PADDING) * labels.len() as f32 + 2.0 * SEGMENT_INSET
 }
 
 /// Mutually exclusive options side by side. Hugs its labels unless given a `width`.
@@ -222,7 +228,7 @@ pub fn segmented<T: Copy + PartialEq>(
     let labels: Vec<&str> = options.iter().map(|(_, label)| *label).collect();
     let width = width.unwrap_or_else(|| segmented_width(ui, &labels));
     let (rect, mut response) = ui.allocate_exact_size(vec2(width, CONTROL_HEIGHT), Sense::hover());
-    let inner = rect.shrink(2.0);
+    let inner = rect.shrink(SEGMENT_INSET);
     let segment_width = inner.width() / options.len() as f32;
     let segment_rect =
         |i: usize| Rect::from_min_size(inner.min + vec2(i as f32 * segment_width, 0.0), vec2(segment_width, inner.height()));
@@ -244,7 +250,7 @@ pub fn segmented<T: Copy + PartialEq>(
     let selected = options.iter().position(|(option, _)| option == value).unwrap_or(0);
     let slide = ui.ctx().animate_value_with_time(response.id, selected as f32, 0.12);
     let painter = ui.painter();
-    painter.rect_filled(rect, 6, TRACK);
+    painter.rect_filled(rect, 8, TRACK);
     let pill = Rect::from_min_size(inner.min + vec2(slide * segment_width, 0.0), vec2(segment_width, inner.height()));
     painter.rect_filled(pill, 5, SELECTED);
     for (i, (label, segment)) in labels.iter().zip(&segments).enumerate() {
@@ -261,7 +267,7 @@ pub fn chip(ui: &mut Ui, fonts: &Fonts, on: &mut bool, label: &str) -> Response 
     let text = control_text(ui, label);
     let check = fonts.icon(10.0).map(|font| ui.painter().layout_no_wrap(icon::CHECK.into(), font, ACCENT));
     let check_width = check.as_ref().map_or(0.0, |c| c.size().x + 6.0);
-    let size = vec2(12.0 + check_width + text.size().x + 12.0, 26.0);
+    let size = vec2(LABEL_PADDING + check_width + text.size().x + LABEL_PADDING, CONTROL_HEIGHT);
     let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
     if response.clicked() {
         *on = !*on;
@@ -274,11 +280,11 @@ pub fn chip(ui: &mut Ui, fonts: &Fonts, on: &mut bool, label: &str) -> Response 
     if *on {
         let fill = ACCENT.gamma_multiply(if response.hovered() { 0.28 } else { 0.18 });
         painter.rect(rect, radius, fill, Stroke::new(1.0, ACCENT.gamma_multiply(0.6)), StrokeKind::Inside);
-        let mut x = rect.left() + 12.0;
+        let mut x = rect.left() + LABEL_PADDING;
         if let Some(check) = check {
             let y = rect.center().y - check.size().y / 2.0;
             x += check_width;
-            painter.galley(pos2(rect.left() + 12.0, y), check, ACCENT);
+            painter.galley(pos2(rect.left() + LABEL_PADDING, y), check, ACCENT);
         }
         painter.galley(pos2(x, rect.center().y - text.size().y / 2.0), text, TEXT);
     } else {

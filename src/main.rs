@@ -66,7 +66,7 @@ fn main() -> eframe::Result {
             .with_resizable(false)
             .with_taskbar(false)
             .with_window_level(level)
-            // Without Popup or Desktop it starts as tray icons only; the panel opens from them.
+            // Without Always on top or Desktop it starts as tray icons only; the panel opens from them.
             .with_visible(settings.pinned().is_some())
             .with_icon(icon.clone()),
         ..Default::default()
