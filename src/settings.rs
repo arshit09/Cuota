@@ -85,6 +85,8 @@ pub struct Settings {
     pub opacity: f32,
     /// How big the panel is: one of [`SIZES`].
     pub size: f32,
+    /// Scrolling the mouse wheel over the panel steps its size up and down.
+    pub wheel_resize: bool,
     pub panel: View,
     pub taskbar: View,
     pub double_click: DoubleClick,
@@ -102,6 +104,7 @@ impl Default for Settings {
             animate: true,
             opacity: 0.96,
             size: 1.0,
+            wheel_resize: true,
             panel: View::default(),
             taskbar: View::default(),
             double_click: DoubleClick::default(),
@@ -134,6 +137,12 @@ impl Settings {
     pub fn size_step(&self) -> usize {
         let off = |step: &usize| (SIZES[*step] - self.size).abs();
         (0..SIZES.len()).min_by(|a, b| off(a).total_cmp(&off(b))).unwrap_or_default()
+    }
+
+    /// Moves the size `steps` steps up (or down, when negative), stopping at either end.
+    pub fn step_size(&mut self, steps: i32) {
+        let step = self.size_step() as i32 + steps;
+        self.size = SIZES[step.clamp(0, SIZES.len() as i32 - 1) as usize];
     }
 
     pub fn shows_as(&self, mode: Mode) -> bool {
@@ -241,5 +250,27 @@ mod tests {
         assert_eq!(step(1.16), 1.2);
         assert_eq!(step(0.1), SIZES[0]);
         assert_eq!(step(5.0), SIZES[9]);
+    }
+
+    #[test]
+    fn the_wheel_steps_the_size_and_stops_at_either_end() {
+        let mut settings = Settings::default();
+        settings.step_size(1);
+        assert_eq!(settings.size, 1.1);
+        settings.step_size(-3);
+        assert_eq!(settings.size, 0.8);
+        settings.step_size(-5);
+        assert_eq!(settings.size, SIZES[0]);
+        settings.step_size(20);
+        assert_eq!(settings.size, SIZES[9]);
+    }
+
+    #[test]
+    fn wheel_resizing_is_on_unless_turned_off_even_in_older_settings() {
+        let older: Settings = serde_json::from_str(r#"{"size":1.2}"#).unwrap();
+        assert!(older.wheel_resize);
+        let off = Settings { wheel_resize: false, ..Settings::default() };
+        let text = serde_json::to_string(&off).unwrap();
+        assert!(!serde_json::from_str::<Settings>(&text).unwrap().wheel_resize);
     }
 }

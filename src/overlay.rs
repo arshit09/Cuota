@@ -16,9 +16,9 @@ use crate::widgets::{self, Fonts, icon, single_line};
 use crate::win;
 use chrono::{TimeDelta, Utc};
 use eframe::egui::{
-    self, Align, Align2, Color32, FontData, FontFamily, FontId, IconData, Label, Layout, Margin, PointerButton,
-    Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2, ViewportBuilder, ViewportCommand, ViewportId,
-    WindowLevel, pos2, vec2,
+    self, Align, Align2, Color32, FontData, FontFamily, FontId, IconData, Label, Layout, Margin, MouseWheelUnit,
+    PointerButton, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2, ViewportBuilder, ViewportCommand,
+    ViewportId, WindowLevel, pos2, vec2,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::BTreeSet;
@@ -116,6 +116,54 @@ enum Flyout {
     Open(Rect, Pos2),
 }
 
+/// Resizing the panel by turning the mouse wheel over it.
+#[derive(Default)]
+struct Wheel {
+    /// Turned over the panel but not yet a whole size step, in lines.
+    lines: f32,
+    /// How far the last resize moves the panel, so what's under the pointer stays put. Taken by
+    /// the frame that resizes it.
+    shift: Option<Vec2>,
+}
+
+impl Wheel {
+    /// Steps the size up or down a step a notch, unless the pointer is off the panel or over its
+    /// `details`, which the wheel scrolls instead. The next frame draws the new size.
+    fn resize(&mut self, ui: &egui::Ui, details: Option<Rect>, settings: &mut Settings) {
+        let full = ui.max_rect();
+        let pointer = ui.ctx().input(|i| i.pointer.hover_pos());
+        let Some(pointer) = pointer.filter(|&at| full.contains(at) && !details.is_some_and(|area| area.contains(at)))
+        else {
+            self.lines = 0.0;
+            return;
+        };
+        // A notch is a line on most mice; touchpads turn a fraction of one at a time.
+        let line = ui.ctx().options(|options| options.input_options.line_scroll_speed);
+        self.lines += ui.ctx().input(|i| {
+            let lines = |event: &egui::Event| match event {
+                egui::Event::MouseWheel { unit: MouseWheelUnit::Point, delta, .. } => delta.y / line,
+                egui::Event::MouseWheel { delta, .. } => delta.y,
+                _ => 0.0,
+            };
+            i.events.iter().map(lines).sum::<f32>()
+        });
+        let steps = self.lines.trunc();
+        if steps == 0.0 {
+            return;
+        }
+        self.lines -= steps;
+        let before = settings.size;
+        // Up makes it bigger.
+        settings.step_size(steps as i32);
+        if settings.size != before {
+            // It all scales from the top-left corner, so the corner moves by what the point under
+            // the pointer would have.
+            self.shift = Some((pointer - full.min) * (1.0 - settings.size / before));
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
 pub struct Overlay {
     state: Shared,
     refresh: Sender<()>,
@@ -137,6 +185,7 @@ pub struct Overlay {
     /// The Show as choice the window was last set up for, and when.
     applied: Option<(BTreeSet<Mode>, Instant)>,
     size: Vec2,
+    wheel: Wheel,
     flyout: Flyout,
     /// The Always on top or Desktop panel was hidden with a click on a tray icon.
     hidden: bool,
@@ -222,6 +271,7 @@ impl Overlay {
             window_ready: false,
             applied: None,
             size: Vec2::ZERO,
+            wheel: Wheel::default(),
             flyout: Flyout::Closed { at: None },
             hidden: false,
             shown_frame: 0,
@@ -356,18 +406,22 @@ impl Overlay {
     }
 
     /// Moves the Always on top or Desktop panel up or left as little as it takes for the expanded panel
-    /// to stay on screen, and back again when it shrinks.
-    fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2) {
+    /// to stay on screen, and back again when it shrinks. A resize by mouse wheel moves it by
+    /// `wheel_shift` first, and keeps it on screen too.
+    fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2, wheel_shift: Option<Vec2>) {
         let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else { return };
         // Where the panel sits when it isn't expanded.
-        let mut at = rect.min + self.lift;
+        let mut at = rect.min + self.lift + wheel_shift.unwrap_or_default();
         self.lift = Vec2::ZERO;
-        if self.expanded
+        if (self.expanded || wheel_shift.is_some())
             && let Some(work) = self.work_area(ctx)
         {
             let gap = Vec2::splat(SCREEN_GAP);
             let fitted = at.min(work.max - size - gap).max(work.min + gap);
-            self.lift = at - fitted;
+            // Only the details move it back when they close; a resize stays where it landed.
+            if self.expanded {
+                self.lift = at - fitted;
+            }
             at = fitted;
         }
         if at != rect.min {
@@ -465,16 +519,18 @@ impl Overlay {
         });
         let inner = details.map_or(row, |details| vec2(row.x.max(details.x), row.y + details.y));
         let size = (inner + Vec2::splat(2.0 * margin)).round();
+        let wheel_shift = self.wheel.shift.take();
         if size != self.size {
             self.size = size;
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
             self.place_flyout(&ctx);
             if !docked {
-                self.fit_on_screen(&ctx, size);
+                self.fit_on_screen(&ctx, size, wheel_shift);
             }
         }
 
         let origin = full.min + Vec2::splat(margin);
+        let details = details.map(|details| Rect::from_min_size(origin + vec2(0.0, row.y), vec2(inner.x, details.y)));
         let mut next_frame = None;
         if clawd.x > 0.0 {
             let slot = Rect::from_min_size(origin + vec2(0.0, (row.y - clawd.y) / 2.0), clawd);
@@ -494,8 +550,7 @@ impl Overlay {
             ui.interact(rect, ui.id().with(("hint", i)), Sense::hover()).on_hover_text(hint);
         }
 
-        if let Some(details) = details {
-            let area = Rect::from_min_size(origin + vec2(0.0, row.y), vec2(inner.x, details.y));
+        if let Some(area) = details {
             painter.hline(full.left() + margin..=full.right() - margin, area.top() + 6.0, Stroke::new(1.0, BORDER));
             let stats = self.transcripts.latest();
             let mut slot = ui.new_child(UiBuilder::new().max_rect(area));
@@ -515,6 +570,9 @@ impl Overlay {
                 self.details_height = height;
                 ctx.request_repaint();
             }
+        }
+        if self.settings.wheel_resize {
+            self.wheel.resize(ui, details, &mut self.settings);
         }
         next_frame
     }
@@ -687,6 +745,11 @@ impl Overlay {
                 let mut step = settings.size_step();
                 widgets::stepped_slider(ui, &mut step, SIZES.len(), 92.0);
                 settings.size = SIZES[step];
+            });
+            widgets::divider(ui, fonts);
+            let about = Some("Scroll up or down over the panel");
+            widgets::row(ui, fonts, icon::WHEEL, "Resize with mouse wheel", about, widgets::TOGGLE_WIDTH, |ui| {
+                widgets::toggle(ui, &mut settings.wheel_resize);
             });
             widgets::divider(ui, fonts);
             let opacity = format!("{:.0}%", settings.opacity * 100.0);
@@ -1013,5 +1076,55 @@ mod tests {
         for star in "·✢*✶✻✽…".chars() {
             assert_ne!(drawn(star), missing, "{star}");
         }
+    }
+
+    /// A frame of a 300×200 panel, details in its bottom half, with the pointer at `at` and the
+    /// wheel turned `lines` (up when positive). Returns how far the panel moves.
+    fn turn(ctx: &egui::Context, wheel: &mut Wheel, settings: &mut Settings, at: Pos2, lines: f32) -> Option<Vec2> {
+        let details = Rect::from_min_max(pos2(0.0, 100.0), pos2(300.0, 200.0));
+        let turned = egui::Event::MouseWheel {
+            unit: MouseWheelUnit::Line,
+            delta: vec2(0.0, lines),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(300.0, 200.0))),
+            events: vec![egui::Event::PointerMoved(at), turned],
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| wheel.resize(ui, Some(details), settings));
+        wheel.shift.take()
+    }
+
+    #[test]
+    fn the_wheel_over_the_panel_steps_its_size_around_the_pointer_but_scrolls_the_details() {
+        let (ctx, mut wheel, mut settings) = (egui::Context::default(), Wheel::default(), Settings::default());
+        let meters = pos2(150.0, 40.0);
+        // Up a notch: a step bigger, and the corner moves up and left so the meters stay under the pointer.
+        let shift = turn(&ctx, &mut wheel, &mut settings, meters, 1.0).unwrap();
+        assert_eq!(settings.size, 1.1);
+        assert!((shift - vec2(-15.0, -4.0)).length() < 0.01, "{shift:?}");
+        // Over the details, or off the panel, nothing changes.
+        assert_eq!(turn(&ctx, &mut wheel, &mut settings, pos2(150.0, 150.0), 1.0), None);
+        assert_eq!(turn(&ctx, &mut wheel, &mut settings, pos2(350.0, 40.0), 1.0), None);
+        assert_eq!(settings.size, 1.1);
+        // Down two notches: two steps smaller, and the corner moves the other way.
+        let shift = turn(&ctx, &mut wheel, &mut settings, meters, -2.0).unwrap();
+        assert_eq!(settings.size, 0.9);
+        assert!(shift.x > 0.0 && shift.y > 0.0, "{shift:?}");
+    }
+
+    #[test]
+    fn a_touchpad_steps_once_its_turned_a_whole_notch_and_the_size_stops_at_either_end() {
+        let (ctx, mut wheel, mut settings) = (egui::Context::default(), Wheel::default(), Settings::default());
+        let meters = pos2(150.0, 40.0);
+        assert_eq!(turn(&ctx, &mut wheel, &mut settings, meters, 0.4), None);
+        assert_eq!(turn(&ctx, &mut wheel, &mut settings, meters, 0.4), None);
+        assert!(turn(&ctx, &mut wheel, &mut settings, meters, 0.4).is_some());
+        assert_eq!(settings.size, 1.1);
+        settings.size = SIZES[9];
+        assert_eq!(turn(&ctx, &mut wheel, &mut settings, meters, 1.0), None);
+        assert_eq!(settings.size, SIZES[9]);
     }
 }

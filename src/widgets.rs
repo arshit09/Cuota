@@ -41,6 +41,7 @@ pub mod icon {
     pub const STATUS: char = '\u{E8BD}';
     pub const STYLE: char = '\u{EB05}';
     pub const TIME_LEFT: char = '\u{E916}';
+    pub const WHEEL: char = '\u{ECE7}';
 }
 
 const TITLE_SIZE: f32 = 13.0;
