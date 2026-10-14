@@ -5,14 +5,16 @@ use crate::mascot::CLAUDE_ORANGE;
 use crate::view::{DIM, TEXT};
 use eframe::egui::{
     Align, Align2, Color32, CursorIcon, EventFilter, FontFamily, FontId, Frame, Galley, Key, Layout,
-    Margin, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder, WidgetInfo, WidgetType, emath,
-    pos2, text::LayoutJob, vec2,
+    Margin, Painter, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder, WidgetInfo, WidgetType, emath,
+    pos2,
+    text::{LayoutJob, TextWrapping},
+    vec2,
 };
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 pub const WINDOW: Color32 = Color32::from_rgb(28, 28, 30);
-const CARD: Color32 = Color32::from_rgb(37, 37, 41);
+pub const CARD: Color32 = Color32::from_rgb(37, 37, 41);
 const LINE: Color32 = Color32::from_rgb(49, 49, 54);
 const TRACK: Color32 = Color32::from_rgb(56, 56, 62);
 const HOVER: Color32 = Color32::from_rgb(68, 68, 75);
@@ -24,6 +26,7 @@ pub mod icon {
     pub const ANIMATE: char = '\u{E768}';
     pub const CHECK: char = '\u{E73E}';
     pub const CLAWD: char = '\u{E76E}';
+    pub const DOUBLE_CLICK: char = '\u{E962}';
     pub const LIMITS: char = '\u{E9F9}';
     pub const OPACITY: char = '\u{E793}';
     pub const PERCENT: char = '\u{E94C}';
@@ -94,9 +97,18 @@ pub fn card<R>(ui: &mut Ui, add_rows: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// A hairline between rows, starting under the titles and running to the card's edge.
 pub fn divider(ui: &mut Ui, fonts: &Fonts) {
+    hairline(ui, fonts.indent());
+}
+
+/// A hairline between rows that have no icons.
+pub fn rule(ui: &mut Ui) {
+    hairline(ui, 0.0);
+}
+
+fn hairline(ui: &mut Ui, indent: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
     let right = rect.right() + CARD_PADDING - 1.0;
-    ui.painter().hline(rect.left() + fonts.indent()..=right, rect.center().y, Stroke::new(1.0, LINE));
+    ui.painter().hline(rect.left() + indent..=right, rect.center().y, Stroke::new(1.0, LINE));
 }
 
 /// A setting with its control on the right. `control_width` is the room `add_control` needs.
@@ -345,6 +357,13 @@ pub fn button(ui: &mut Ui, fonts: &Fonts, glyph: char, label: &str) -> Response 
     painter.galley(pos2(x, rect.center().y - text.size().y / 2.0), text, TEXT);
     focus_ring(ui, &response, rect, 6.0);
     response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// `text` on one line, cut short with an ellipsis past `width`.
+pub fn single_line(painter: &Painter, text: &str, font: FontId, color: Color32, width: f32) -> Arc<Galley> {
+    let mut job = LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = TextWrapping::truncate_at_width(width);
+    painter.layout_job(job)
 }
 
 /// Text for a control, colored when painted.

@@ -35,6 +35,90 @@ pub struct Limit {
     pub label: String,
     pub percent: f32,
     pub resets_at: Option<DateTime<Utc>>,
+    /// How long the window runs (5 hours, 7 days), to tell how much of it has passed.
+    pub window: Option<TimeDelta>,
+    /// For a model's own weekly limit: how much of the overall weekly limit it has used, and
+    /// how much of that limit it may use, in percent.
+    pub share: Option<(f32, f32)>,
+}
+
+/// Where a limit is headed if usage keeps up the pace it has had since the window opened.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pace {
+    Reached,
+    /// Ends the window at about this percentage.
+    Finish(f32),
+    /// Reaches 100% at this time, before the window resets.
+    RunsOut(DateTime<Utc>),
+}
+
+/// Before this much of a window has passed, the pace so far says little about where it ends.
+const PACE_AFTER: f32 = 0.1;
+
+impl Limit {
+    /// How much of the window has passed, from 0 to 1.
+    pub fn elapsed(&self, now: DateTime<Utc>) -> Option<f32> {
+        let (resets_at, window) = (self.resets_at?, self.window?);
+        let left = (resets_at - now).num_seconds() as f32 / window.num_seconds() as f32;
+        Some((1.0 - left).clamp(0.0, 1.0))
+    }
+
+    pub fn pace(&self, now: DateTime<Utc>) -> Option<Pace> {
+        if self.percent >= 100.0 {
+            return Some(Pace::Reached);
+        }
+        let elapsed = self.elapsed(now).filter(|&e| e >= PACE_AFTER)?;
+        let projected = self.percent / elapsed;
+        if projected <= 100.0 {
+            return Some(Pace::Finish(projected));
+        }
+        let window = self.window?;
+        let to_full = window.num_seconds() as f32 * elapsed * 100.0 / self.percent;
+        Some(Pace::RunsOut(self.resets_at? - window + TimeDelta::seconds(to_full as i64)))
+    }
+}
+
+/// What the week's usage went to (Claude Code, chats, Cowork...), in percent.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Breakdown {
+    pub since: Option<DateTime<Utc>>,
+    /// Key, name and percent, in the order the API lists them.
+    pub parts: Vec<(String, String, f32)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Money {
+    pub amount: f64,
+    pub currency: String,
+}
+
+impl std::fmt::Display for Money {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.currency.as_str() {
+            "USD" => write!(f, "${:.2}", self.amount),
+            "EUR" => write!(f, "\u{20AC}{:.2}", self.amount),
+            "GBP" => write!(f, "\u{A3}{:.2}", self.amount),
+            code => write!(f, "{:.2} {code}", self.amount),
+        }
+    }
+}
+
+/// Extra usage: paid credits that keep Claude going past the plan's limits.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Extra {
+    pub enabled: bool,
+    pub used: Option<Money>,
+    pub limit: Option<Money>,
+    /// The monthly spend limit has been reached.
+    pub capped: bool,
+}
+
+/// Everything the usage endpoint reports.
+#[derive(Clone, Debug, Default)]
+pub struct Usage {
+    pub limits: Vec<Limit>,
+    pub breakdown: Option<Breakdown>,
+    pub extra: Option<Extra>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -42,6 +126,24 @@ pub struct Account {
     pub email: Option<String>,
     pub organization: Option<String>,
     pub plan: Option<String>,
+    /// When the subscription started.
+    pub since: Option<DateTime<Utc>>,
+    /// Who bills it, e.g. "Stripe" or "Apple".
+    pub billing: Option<String>,
+    /// The role in the organization, e.g. "Admin".
+    pub role: Option<String>,
+}
+
+/// A Claude Code session running on this PC.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Session {
+    pub name: String,
+    /// The folder it works in, unless the Claude app made that folder for it.
+    pub project: Option<String>,
+    /// Where it runs: "VS Code", "Terminal", "Claude app"...
+    pub app: String,
+    pub busy: bool,
+    pub started: Option<DateTime<Utc>>,
 }
 
 /// The poller publishes a fresh snapshot only when something changed, so the UI's
@@ -51,11 +153,29 @@ pub type Shared = Arc<Mutex<Arc<State>>>;
 #[derive(Clone, Debug, Default)]
 pub struct State {
     pub limits: Vec<Limit>,
+    pub breakdown: Option<Breakdown>,
+    pub extra: Option<Extra>,
     pub account: Account,
     pub updated: Option<DateTime<Local>>,
     pub error: Option<String>,
     /// Some Claude Code session on this machine is busy.
     pub working: bool,
+    /// Busy ones first.
+    pub sessions: Vec<Session>,
+}
+
+impl State {
+    /// When the current weekly window opened, or six days before today before usage has loaded.
+    pub fn week_start(&self) -> DateTime<Utc> {
+        let weekly = self.limits.iter().find(|l| l.window == Some(TimeDelta::days(7)) && l.share.is_none());
+        let from_weekly = weekly.and_then(|l| Some(l.resets_at? - l.window?));
+        self.breakdown.as_ref().and_then(|b| b.since).or(from_weekly).unwrap_or_else(|| {
+            // From midnight, so the start holds still through the day.
+            let today = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap_or_default();
+            let today = today.and_local_timezone(Local).earliest().map_or_else(Utc::now, |t| t.to_utc());
+            today - TimeDelta::days(6)
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -93,7 +213,7 @@ fn config_dir() -> Option<PathBuf> {
     std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from)
 }
 
-fn claude_dir() -> PathBuf {
+pub fn claude_dir() -> PathBuf {
     config_dir().unwrap_or_else(|| home_dir().join(".claude"))
 }
 
@@ -150,7 +270,7 @@ fn login() -> Result<OAuth, Error> {
 /// panel or `/usage` loads, a copy of the usage response.
 struct ClaudeJson {
     account: Account,
-    cached_usage: Option<(Vec<Limit>, DateTime<Utc>)>,
+    cached_usage: Option<(Usage, DateTime<Utc>)>,
 }
 
 fn read_claude_json() -> ClaudeJson {
@@ -163,15 +283,27 @@ fn read_claude_json() -> ClaudeJson {
         .and_then(DateTime::<Utc>::from_timestamp_millis)
         .filter(|_| cache["accountUuid"] == account["accountUuid"])
         .map(|fetched_at| (parse_usage(&cache["utilization"]), fetched_at))
-        .filter(|(limits, _)| !limits.is_empty());
+        .filter(|(usage, _)| !usage.limits.is_empty());
+    // Max comes as 5x or 20x, which ends the rate limit tier: "default_claude_max_20x".
+    let multiplier = account["organizationRateLimitTier"]
+        .as_str()
+        .and_then(|tier| tier.rsplit('_').next())
+        .filter(|m| m.ends_with('x') && m.starts_with(|c: char| c.is_ascii_digit()));
+    let plan = read_credentials().ok().and_then(|c| c.subscription_type).map(|s| match multiplier {
+        Some(m) => format!("Claude {} {m}", title_case(&s)),
+        None => format!("Claude {}", title_case(&s)),
+    });
     ClaudeJson {
         account: Account {
             email: text("emailAddress"),
             organization: text("organizationName"),
-            plan: read_credentials()
-                .ok()
-                .and_then(|c| c.subscription_type)
-                .map(|s| format!("Claude {}", title_case(&s))),
+            plan,
+            since: parse_time(&account["subscriptionCreatedAt"]),
+            billing: account["billingType"]
+                .as_str()
+                .map(|b| title_case(b.trim_end_matches("_subscription")))
+                .filter(|b| !b.is_empty()),
+            role: account["organizationRole"].as_str().map(title_case),
         },
         cached_usage,
     }
@@ -183,25 +315,62 @@ pub fn local_account() -> Account {
 
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
-struct Session {
+struct SessionFile {
+    pid: Option<u32>,
     session_id: String,
+    name: String,
     cwd: String,
+    entrypoint: String,
     status: String,
+    started_at: Option<i64>,
     status_updated_at: Option<i64>,
 }
 
+impl SessionFile {
+    fn session(&self, busy: bool) -> Session {
+        let folder = Path::new(&self.cwd).file_name().map(|name| name.to_string_lossy().into_owned());
+        // The Claude app runs its sessions in scratch folders under %APPDATA%.
+        let app_data = std::env::var("APPDATA").unwrap_or_default().to_lowercase();
+        let made_by_app = !app_data.is_empty() && self.cwd.to_lowercase().starts_with(&app_data);
+        let project = folder.filter(|_| !made_by_app);
+        let app = match self.entrypoint.as_str() {
+            "cli" => "Terminal".to_owned(),
+            "claude-vscode" => "VS Code".to_owned(),
+            "claude-desktop" => "Claude app".to_owned(),
+            other => title_case(&other.trim_start_matches("claude-").replace('-', "_")),
+        };
+        Session {
+            name: Some(self.name.clone())
+                .filter(|n| !n.is_empty())
+                .or_else(|| project.clone())
+                .unwrap_or_else(|| "Session".into()),
+            project,
+            app,
+            busy,
+            started: self.started_at.and_then(DateTime::<Utc>::from_timestamp_millis),
+        }
+    }
+}
+
+/// What Claude Code is doing on this machine.
+struct Activity {
+    working: bool,
+    /// When any session last did something.
+    last_active: Option<DateTime<Utc>>,
+    sessions: Vec<Session>,
+}
+
 /// Claude Code keeps a `sessions/<pid>.json` per running session (CLI, VS Code, desktop)
-/// with a `busy`/`idle` status. Returns whether any session is working, and when any
-/// session last did something.
-fn session_activity(now: DateTime<Utc>) -> (bool, Option<DateTime<Utc>>) {
+/// with a `busy`/`idle` status.
+fn session_activity(now: DateTime<Utc>) -> Activity {
     let dir = claude_dir();
-    let Ok(entries) = std::fs::read_dir(dir.join("sessions")) else { return (false, None) };
-    let (mut working, mut last_active) = (false, None);
+    let mut activity = Activity { working: false, last_active: None, sessions: Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir.join("sessions")) else { return activity };
     for path in entries.flatten().map(|e| e.path()) {
         if path.extension().is_none_or(|ext| ext != "json") {
             continue;
         }
-        let Some(session) = read_json::<Session>(&path) else { continue };
+        let Some(session) = read_json::<SessionFile>(&path) else { continue };
         // Transcripts are appended while a session works, so they are the freshest sign of life.
         let project: String = session
             .cwd
@@ -216,13 +385,19 @@ fn session_activity(now: DateTime<Utc>) -> (bool, Option<DateTime<Utc>>) {
             .status_updated_at
             .and_then(DateTime::<Utc>::from_timestamp_millis)
             .max(modified(&transcript));
-        last_active = last_active.max(active_at);
-        working |= session.status == "busy" && active_at.is_some_and(|t| now - t < STALE_BUSY);
+        activity.last_active = activity.last_active.max(active_at);
+        let busy = session.status == "busy" && active_at.is_some_and(|t| now - t < STALE_BUSY);
+        activity.working |= busy;
+        // A session that crashed leaves its file behind.
+        if session.pid.is_none_or(crate::win::process_alive) {
+            activity.sessions.push(session.session(busy));
+        }
     }
-    (working, last_active)
+    activity.sessions.sort_by(|a, b| b.busy.cmp(&a.busy).then_with(|| a.name.cmp(&b.name)));
+    activity
 }
 
-pub fn fetch() -> Result<Vec<Limit>, Error> {
+pub fn fetch() -> Result<Usage, Error> {
     let login = login()?;
     if login
         .expires_at
@@ -243,7 +418,7 @@ pub fn fetch() -> Result<Vec<Limit>, Error> {
     request(&login.access_token)
 }
 
-fn request(token: &str) -> Result<Vec<Limit>, Error> {
+fn request(token: &str) -> Result<Usage, Error> {
     let response = ureq::get(USAGE_URL)
         .set("Authorization", &format!("Bearer {token}"))
         .set("anthropic-beta", "oauth-2025-04-20")
@@ -266,22 +441,79 @@ fn request(token: &str) -> Result<Vec<Limit>, Error> {
 /// Turns the usage response into display rows. Prefers the `limits` list that Claude Code's
 /// own usage panel shows (it includes per-model weekly limits such as Fable),
 /// falling back to the older fixed `five_hour` / `seven_day_<model>` fields.
-pub fn parse_usage(body: &Value) -> Vec<Limit> {
+pub fn parse_usage(body: &Value) -> Usage {
     let mut limits = match body["limits"].as_array() {
-        Some(list) => list.iter().filter_map(listed_limit).collect(),
+        Some(list) => list.iter().enumerate().filter_map(|(i, entry)| listed_limit(entry, share(body, i))).collect(),
         None => legacy_limits(body),
     };
 
     let extra = &body["extra_usage"];
     if extra["is_enabled"].as_bool() == Some(true)
-        && let Some(l) = legacy_window("Extra".into(), extra)
+        && let Some(l) = legacy_window("Extra".into(), extra, None)
     {
         limits.push(l);
     }
-    limits
+    Usage { limits, breakdown: breakdown(&body["seven_day_breakdown"]), extra: extra_usage(body) }
 }
 
-fn listed_limit(entry: &Value) -> Option<Limit> {
+/// The share of the overall weekly limit that the `index`th listed limit has used and may use.
+fn share(body: &Value, index: usize) -> Option<(f32, f32)> {
+    let share = body["weekly_scoped_shares"]
+        .as_array()?
+        .iter()
+        .find(|s| s["limit_index"].as_u64() == Some(index as u64))?;
+    Some((
+        share["used_percent_of_weekly"].as_f64()? as f32,
+        share["allowance_percent_of_weekly"].as_f64()? as f32,
+    ))
+}
+
+fn breakdown(value: &Value) -> Option<Breakdown> {
+    let parts = value["rows"]
+        .as_array()?
+        .iter()
+        .filter_map(|row| {
+            let name = row["display_name"].as_str()?;
+            let key = row["key"].as_str().unwrap_or(name);
+            Some((key.to_owned(), name.to_owned(), row["percent"].as_f64()? as f32))
+        })
+        .collect();
+    Some(Breakdown { since: parse_time(&value["window_started_at"]), parts })
+}
+
+fn extra_usage(body: &Value) -> Option<Extra> {
+    let (spend, extra) = (&body["spend"], &body["extra_usage"]);
+    if !spend.is_object() && !extra.is_object() {
+        return None;
+    }
+    Some(Extra {
+        enabled: spend["enabled"].as_bool().or(extra["is_enabled"].as_bool()).unwrap_or(false),
+        used: money(&spend["used"]),
+        limit: money(&spend["limit"]).or_else(|| money(&spend["cap"])),
+        capped: extra["spend_limit_reached"].as_bool().unwrap_or(false),
+    })
+}
+
+/// `{"amount_minor": 1230, "currency": "USD", "exponent": 2}` is $12.30.
+fn money(value: &Value) -> Option<Money> {
+    let minor = value["amount_minor"].as_f64()?;
+    let exponent = value["exponent"].as_i64().unwrap_or(2) as i32;
+    Some(Money {
+        amount: minor / 10f64.powi(exponent),
+        currency: value["currency"].as_str().unwrap_or("USD").to_owned(),
+    })
+}
+
+/// How long a limit's window runs, from its group ("session", "weekly") or kind.
+fn window_length(group: &str) -> Option<TimeDelta> {
+    match group {
+        "session" | "five_hour" => Some(TimeDelta::hours(5)),
+        g if g.starts_with("weekly") || g.starts_with("seven_day") => Some(TimeDelta::days(7)),
+        _ => None,
+    }
+}
+
+fn listed_limit(entry: &Value, share: Option<(f32, f32)>) -> Option<Limit> {
     let label = match entry["kind"].as_str()? {
         "session" => "Session".to_owned(),
         "weekly_all" => "Weekly".to_owned(),
@@ -293,23 +525,26 @@ fn listed_limit(entry: &Value) -> Option<Limit> {
                 .map_or_else(|| title_case(kind), str::to_owned)
         }
     };
+    let group = entry["group"].as_str().or(entry["kind"].as_str()).unwrap_or_default();
     Some(Limit {
         label,
         percent: entry["percent"].as_f64()? as f32,
         resets_at: parse_time(&entry["resets_at"]),
+        window: window_length(group),
+        share,
     })
 }
 
 fn legacy_limits(body: &Value) -> Vec<Limit> {
     let mut limits: Vec<Limit> = [("five_hour", "Session"), ("seven_day", "Weekly")]
         .into_iter()
-        .filter_map(|(key, label)| legacy_window(label.into(), &body[key]))
+        .filter_map(|(key, label)| legacy_window(label.into(), &body[key], window_length(key)))
         .collect();
 
     for (key, window) in body.as_object().into_iter().flatten() {
         let Some(model) = key.strip_prefix("seven_day_") else { continue };
         // Windows for models that were never used come back as 0% with no reset time.
-        if let Some(l) = legacy_window(title_case(model), window)
+        if let Some(l) = legacy_window(title_case(model), window, window_length(key))
             && (l.percent > 0.0 || l.resets_at.is_some())
         {
             limits.push(l);
@@ -318,11 +553,13 @@ fn legacy_limits(body: &Value) -> Vec<Limit> {
     limits
 }
 
-fn legacy_window(label: String, window: &Value) -> Option<Limit> {
+fn legacy_window(label: String, window: &Value, length: Option<TimeDelta>) -> Option<Limit> {
     Some(Limit {
         label,
         percent: window["utilization"].as_f64()? as f32,
         resets_at: parse_time(&window["resets_at"]),
+        window: length,
+        share: None,
     })
 }
 
@@ -331,7 +568,7 @@ fn parse_time(value: &Value) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(text).ok().map(|t| t.with_timezone(&Utc))
 }
 
-fn title_case(s: &str) -> String {
+pub fn title_case(s: &str) -> String {
     s.split('_')
         .filter(|w| !w.is_empty())
         .map(|w| {
@@ -389,13 +626,15 @@ impl Poller {
     /// Returns true when `state` changed.
     fn tick(&mut self, state: &Mutex<Arc<State>>, force: bool) -> bool {
         let now = Utc::now();
-        let (working, last_active) = session_activity(now);
-        self.last_activity = self.last_activity.max(last_active);
+        let activity = session_activity(now);
+        self.last_activity = self.last_activity.max(activity.last_active);
         let mut changed = false;
         {
             let mut shared = state.lock().unwrap();
-            if shared.working != working {
-                Arc::make_mut(&mut shared).working = working;
+            if shared.working != activity.working || shared.sessions != activity.sessions {
+                let s = Arc::make_mut(&mut shared);
+                s.working = activity.working;
+                s.sessions = activity.sessions;
                 changed = true;
             }
         }
@@ -407,10 +646,10 @@ impl Poller {
             let mut shared = state.lock().unwrap();
             let s = Arc::make_mut(&mut shared);
             s.account = local.account;
-            if let Some((limits, fetched_at)) = local.cached_usage
+            if let Some((usage, fetched_at)) = local.cached_usage
                 && self.data_time < Some(fetched_at)
             {
-                self.show(s, limits, fetched_at);
+                self.show(s, usage, fetched_at);
             }
             changed = true;
         }
@@ -420,8 +659,8 @@ impl Poller {
             let mut shared = state.lock().unwrap();
             let s = Arc::make_mut(&mut shared);
             match result {
-                Ok(limits) => {
-                    self.show(s, limits, now);
+                Ok(usage) => {
+                    self.show(s, usage, now);
                     self.retry_at = None;
                     self.backoff = self.active_interval;
                 }
@@ -456,10 +695,12 @@ impl Poller {
         now - data_time >= if used_since { self.active_interval } else { IDLE_INTERVAL }
     }
 
-    fn show(&mut self, s: &mut State, limits: Vec<Limit>, fetched_at: DateTime<Utc>) {
+    fn show(&mut self, s: &mut State, usage: Usage, fetched_at: DateTime<Utc>) {
         self.data_time = Some(fetched_at);
-        self.next_reset = limits.iter().filter_map(|l| l.resets_at).min();
-        s.limits = limits;
+        self.next_reset = usage.limits.iter().filter_map(|l| l.resets_at).min();
+        s.limits = usage.limits;
+        s.breakdown = usage.breakdown;
+        s.extra = usage.extra;
         s.updated = Some(fetched_at.with_timezone(&Local));
         s.error = None;
     }
@@ -506,25 +747,46 @@ pub fn spawn_poller(
 /// Fake data for previewing the overlay without a login (`--demo`).
 pub fn demo_state() -> State {
     let now = Utc::now();
-    let limit = |label: &str, percent, mins| Limit {
+    let limit = |label: &str, percent, mins, window| Limit {
         label: label.into(),
         percent,
         resets_at: Some(now + TimeDelta::minutes(mins)),
+        window: Some(window),
+        share: None,
+    };
+    let (five_hours, week) = (TimeDelta::hours(5), TimeDelta::days(7));
+    let mut fable = limit("Fable", 92.0, 1_630, week);
+    fable.share = Some((46.0, 50.0));
+    let part = |key: &str, name: &str, percent| (key.to_owned(), name.to_owned(), percent);
+    let session = |name: &str, project: &str, app: &str, busy, mins| Session {
+        name: name.into(),
+        project: Some(project.into()),
+        app: app.into(),
+        busy,
+        started: Some(now - TimeDelta::minutes(mins)),
     };
     State {
-        limits: vec![
-            limit("Session", 15.0, 134),
-            limit("Weekly", 49.0, 1_630),
-            limit("Fable", 92.0, 1_630),
-        ],
+        limits: vec![limit("Session", 15.0, 134, five_hours), limit("Weekly", 49.0, 1_630, week), fable],
+        breakdown: Some(Breakdown {
+            since: Some(now + TimeDelta::minutes(1_630) - week),
+            parts: vec![part("claude_code", "Claude Code", 81.0), part("chat", "Chats", 15.0), part("cowork", "Cowork", 4.0)],
+        }),
+        extra: Some(Extra::default()),
         account: Account {
             email: Some("you@example.com".into()),
             organization: Some("Example Organization".into()),
-            plan: Some("Claude Max".into()),
+            plan: Some("Claude Max 5x".into()),
+            since: DateTime::parse_from_rfc3339("2025-08-25T15:00:00Z").ok().map(|t| t.to_utc()),
+            billing: Some("Stripe".into()),
+            role: Some("Admin".into()),
         },
         updated: Some(Local::now()),
         error: None,
         working: true,
+        sessions: vec![
+            session("cuota-94", "Cuota", "VS Code", true, 95),
+            session("website-12", "Website", "Terminal", false, 300),
+        ],
     }
 }
 
@@ -547,7 +809,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let limits = parse_usage(&body);
+        let limits = parse_usage(&body).limits;
         let labels: Vec<_> = limits.iter().map(|l| l.label.as_str()).collect();
         assert_eq!(labels, ["Session", "Weekly", "Fable"]);
         assert_eq!(limits[2].percent, 8.0);
@@ -555,6 +817,67 @@ mod tests {
             limits[0].resets_at.unwrap().to_rfc3339(),
             "2026-10-13T19:00:00.113858+00:00"
         );
+        assert_eq!(limits[0].window, Some(TimeDelta::hours(5)));
+        assert_eq!(limits[2].window, Some(TimeDelta::days(7)));
+    }
+
+    #[test]
+    fn parses_details() {
+        let body: Value = serde_json::from_str(
+            r#"{
+                "limits": [
+                    {"kind": "session", "group": "session", "percent": 23, "resets_at": "2026-10-13T19:00:00+00:00"},
+                    {"kind": "weekly_all", "group": "weekly", "percent": 52, "resets_at": "2026-10-15T03:00:00+00:00"},
+                    {"kind": "weekly_scoped", "group": "weekly", "percent": 11, "resets_at": "2026-10-15T03:00:00+00:00",
+                     "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}}
+                ],
+                "extra_usage": {"is_enabled": true, "utilization": 24.6, "spend_limit_reached": false},
+                "spend": {"used": {"amount_minor": 1230, "currency": "USD", "exponent": 2},
+                          "limit": {"amount_minor": 5000, "currency": "USD", "exponent": 2}, "enabled": true},
+                "seven_day_breakdown": {"window_started_at": "2026-10-08T03:00:00+00:00", "rows": [
+                    {"key": "claude_code", "display_name": "Claude Code", "percent": 96},
+                    {"key": "chat", "display_name": "Chats", "percent": 3}
+                ]},
+                "weekly_scoped_shares": [{"limit_index": 2, "used_percent_of_weekly": 6, "allowance_percent_of_weekly": 50}]
+            }"#,
+        )
+        .unwrap();
+        let usage = parse_usage(&body);
+        assert_eq!(usage.limits[2].share, Some((6.0, 50.0)));
+        assert_eq!(usage.limits[1].share, None);
+        let breakdown = usage.breakdown.unwrap();
+        assert_eq!(breakdown.since.unwrap().to_rfc3339(), "2026-10-08T03:00:00+00:00");
+        assert_eq!(breakdown.parts[0], ("claude_code".into(), "Claude Code".into(), 96.0));
+        let extra = usage.extra.unwrap();
+        assert!(extra.enabled);
+        assert_eq!(extra.used.unwrap().to_string(), "$12.30");
+        assert_eq!(extra.limit.unwrap().to_string(), "$50.00");
+        let mut state = State { limits: usage.limits, ..State::default() };
+        assert_eq!(state.week_start().to_rfc3339(), "2026-10-08T03:00:00+00:00", "from the weekly limit");
+        state.limits.clear();
+        assert!(Utc::now() - state.week_start() < TimeDelta::days(7), "no usage yet: about a week back");
+    }
+
+    #[test]
+    fn projects_where_a_limit_is_headed() {
+        let now = Utc::now();
+        let weekly = |percent, hours_left| Limit {
+            label: "Weekly".into(),
+            percent,
+            resets_at: Some(now + TimeDelta::hours(hours_left)),
+            window: Some(TimeDelta::days(7)),
+            share: None,
+        };
+        // 4 of 7 days gone.
+        let Some(Pace::Finish(end)) = weekly(40.0, 72).pace(now) else { panic!("should finish") };
+        assert!((end - 70.0).abs() < 0.5, "{end}");
+        // 80% used halfway: 100% after 5/8 of the week.
+        let Some(Pace::RunsOut(at)) = weekly(80.0, 84).pace(now) else { panic!("should run out") };
+        let start = now - TimeDelta::hours(84);
+        assert!((at - (start + TimeDelta::hours(105))).num_minutes().abs() <= 1, "{at}");
+        assert_eq!(weekly(100.0, 84).pace(now), Some(Pace::Reached));
+        assert_eq!(weekly(5.0, 7 * 24 - 2).pace(now), None, "too early to tell");
+        assert_eq!(Limit { window: None, ..weekly(40.0, 72) }.pace(now), None);
     }
 
     #[test]
@@ -570,10 +893,11 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let limits = parse_usage(&body);
+        let limits = parse_usage(&body).limits;
         let labels: Vec<_> = limits.iter().map(|l| l.label.as_str()).collect();
         assert_eq!(labels, ["Session", "Weekly", "Fable"]);
         assert_eq!(limits[0].percent, 15.0);
+        assert_eq!(limits[2].window, Some(TimeDelta::days(7)));
     }
 
     #[test]
@@ -585,7 +909,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let limits = parse_usage(&body);
+        let limits = parse_usage(&body).limits;
         assert_eq!(limits.len(), 2);
         assert_eq!(limits[0].resets_at, None);
         assert_eq!(limits[1].label, "Extra");

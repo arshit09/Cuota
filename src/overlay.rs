@@ -1,21 +1,22 @@
 //! The window: a floating panel (Popup), a panel behind other windows (Desktop), or a flyout
-//! opened from the tray icons (Taskbar alone). It also hosts the settings window, and keeps
-//! itself sized, placed and layered for the chosen modes.
+//! opened from the tray icons (Taskbar alone). Double-clicking it expands it with usage
+//! details. It also hosts the settings window, and keeps itself sized, placed and layered for
+//! the chosen modes.
 
 use crate::claude::{self, Limit, Shared, State};
+use crate::details;
 use crate::mascot::Mascot;
-use crate::settings::{Mode, Settings, Style};
+use crate::settings::{DoubleClick, Mode, Settings, Style};
+use crate::stats::Transcripts;
 use crate::tray::{Tray, TrayConfig, TrayEvent};
 use crate::view::{self, AMBER, DIM, TEXT};
-use crate::widgets::{self, Fonts, icon};
+use crate::widgets::{self, Fonts, icon, single_line};
 use crate::win;
 use chrono::{TimeDelta, Utc};
 use eframe::egui::{
-    self, Align, Align2, Color32, FontData, FontFamily, FontId, Galley, IconData, Label, Layout,
-    Painter, PointerButton, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2,
-    ViewportBuilder, ViewportCommand, ViewportId, WindowLevel, pos2,
-    text::{LayoutJob, TextWrapping},
-    vec2,
+    self, Align, Align2, Color32, FontData, FontFamily, FontId, IconData, Label, Layout, Margin, PointerButton,
+    Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2, ViewportBuilder, ViewportCommand, ViewportId,
+    WindowLevel, pos2, vec2,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::BTreeSet;
@@ -30,6 +31,15 @@ const GAP: f32 = 10.0;
 /// Wrap width for an error message when there are no meters to line up with.
 const NOTE_WIDTH: f32 = 220.0;
 const SETTINGS_WIDTH: f32 = 340.0;
+/// The expanded panel's details: as wide as the settings' cards plus a lane for the scroll bar,
+/// which egui would otherwise draw over them, and scrolling past this height.
+const SCROLL_LANE: f32 = 10.0;
+const DETAILS_WIDTH: f32 = 348.0 + SCROLL_LANE;
+const DETAILS_HEIGHT: f32 = 520.0;
+/// How often the expanded panel reads what Claude Code has done since it last looked.
+const STATS_REFRESH: Duration = Duration::from_secs(15);
+/// Keeps an expanded panel this far from its screen's edges.
+const SCREEN_GAP: f32 = 8.0;
 const SAVE_DELAY: Duration = Duration::from_secs(1);
 /// After a Show as change, the reported window position is trusted only once the move landed.
 const SETTLE: Duration = Duration::from_millis(500);
@@ -98,6 +108,18 @@ pub struct Overlay {
     settings_surface: Surface,
     /// Whether Windows starts Cuota at sign-in, as last read from the registry.
     starts_with_windows: bool,
+    /// Whether the Claude app is installed, as last looked up.
+    claude_app_installed: bool,
+    /// The panel shows usage details under its meters.
+    expanded: bool,
+    /// How far the expanded panel moved up and left to stay on screen, to move back when it
+    /// shrinks.
+    lift: Vec2,
+    /// How tall the details were when last drawn.
+    details_height: f32,
+    transcripts: Transcripts,
+    /// When the expanded panel last asked for Claude Code's stats.
+    stats_asked: Option<Instant>,
 }
 
 impl Overlay {
@@ -125,11 +147,15 @@ impl Overlay {
             }
         };
         let (refresh, wake) = mpsc::channel();
-        if demo {
+        let transcripts = if demo {
+            let since = state.lock().unwrap().week_start();
             spawn_demo_toggle(state.clone(), on_update);
+            Transcripts::demo(since)
         } else {
             claude::spawn_poller(state.clone(), wake, interval, on_update);
-        }
+            let ctx = ctx.clone();
+            Transcripts::spawn(move || ctx.request_repaint())
+        };
 
         Self {
             state,
@@ -156,6 +182,12 @@ impl Overlay {
             settings_height: 0.0,
             settings_surface: Surface::Panel,
             starts_with_windows: false,
+            claude_app_installed: false,
+            expanded: false,
+            lift: Vec2::ZERO,
+            details_height: 0.0,
+            transcripts,
+            stats_asked: None,
         }
     }
 
@@ -205,11 +237,15 @@ impl Overlay {
         match self.flyout {
             Flyout::Closed { at: Some(at) } if at.elapsed() < REOPEN_GUARD => {}
             Flyout::Closed { .. } => self.open_flyout(ctx),
-            Flyout::Opening(..) | Flyout::Open(..) => {
-                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
-                self.flyout = Flyout::Closed { at: Some(Instant::now()) };
-            }
+            Flyout::Opening(..) | Flyout::Open(..) => self.close_flyout(ctx),
         }
+    }
+
+    /// Like Windows' own flyouts, it opens fresh each time, without details.
+    fn close_flyout(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        self.flyout = Flyout::Closed { at: Some(Instant::now()) };
+        self.set_expanded(false);
     }
 
     fn open_flyout(&mut self, ctx: &egui::Context) {
@@ -246,27 +282,82 @@ impl Overlay {
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
         match self.flyout {
             Flyout::Opening(bar, click) if focused => self.flyout = Flyout::Open(bar, click),
-            Flyout::Open(..) if !focused && !self.settings_open => {
-                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
-                self.flyout = Flyout::Closed { at: Some(Instant::now()) };
-            }
+            Flyout::Open(..) if !focused && !self.settings_open => self.close_flyout(ctx),
             _ => {}
         }
     }
 
-    /// Clawd beside the meters, with the window sized to fit. Returns whether Clawd animates.
+    fn set_expanded(&mut self, expanded: bool) {
+        if expanded && !self.expanded {
+            // Laid out at full height first, so the window grows once rather than twice.
+            self.details_height = DETAILS_HEIGHT;
+            self.stats_asked = None;
+        }
+        self.expanded = expanded;
+    }
+
+    /// The part of the panel's monitor that the taskbar leaves free, in points.
+    fn work_area(&self, ctx: &egui::Context) -> Option<Rect> {
+        let ppp = ctx.pixels_per_point();
+        let center = ctx.input(|i| i.viewport().outer_rect)?.center();
+        let work = win::work_area((center.x * ppp) as i32, (center.y * ppp) as i32)?;
+        let work = Rect::from_min_max(pos2(work.left as f32, work.top as f32), pos2(work.right as f32, work.bottom as f32));
+        Some(work / ppp)
+    }
+
+    /// Moves the Popup or Desktop panel up or left as little as it takes for the expanded panel
+    /// to stay on screen, and back again when it shrinks.
+    fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2) {
+        let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else { return };
+        // Where the panel sits when it isn't expanded.
+        let mut at = rect.min + self.lift;
+        self.lift = Vec2::ZERO;
+        if self.expanded
+            && let Some(work) = self.work_area(ctx)
+        {
+            let gap = Vec2::splat(SCREEN_GAP);
+            let fitted = at.min(work.max - size - gap).max(work.min + gap);
+            self.lift = at - fitted;
+            at = fitted;
+        }
+        if at != rect.min {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at.round()));
+        }
+    }
+
+    /// Asks for Claude Code's latest stats every `STATS_REFRESH` while the panel is expanded.
+    /// Returns how long until the next ask.
+    fn refresh_stats(&mut self, state: &State) -> Duration {
+        let wait = self.stats_asked.map_or(Duration::ZERO, |at| STATS_REFRESH.saturating_sub(at.elapsed()));
+        if !wait.is_zero() {
+            return wait;
+        }
+        self.transcripts.refresh(state.week_start());
+        self.stats_asked = Some(Instant::now());
+        STATS_REFRESH
+    }
+
+    /// Clawd beside the meters, and usage details under them when expanded, with the window
+    /// sized to fit. Returns whether Clawd animates.
     fn panel(&mut self, ui: &mut egui::Ui, state: &State) -> bool {
         let ctx = ui.ctx().clone();
         let full = ui.max_rect();
         let docked = self.settings.pinned().is_none();
 
-        // Drag to move (the flyout stays put); right-click for settings.
+        // Drag to move (the flyout stays put); right-click for settings; double-click as set.
         let background = ui.interact(full, ui.id().with("background"), Sense::click_and_drag());
         if background.secondary_clicked() {
             if self.settings_open {
                 self.settings_open = false;
             } else {
                 self.open_settings(&ctx);
+            }
+        }
+        if background.double_clicked() {
+            match self.settings.double_click {
+                DoubleClick::Details => self.set_expanded(!self.expanded),
+                DoubleClick::Website => win::open_claude(false),
+                DoubleClick::App => win::open_claude(true),
             }
         }
         if !docked && background.drag_started_by(PointerButton::Primary) {
@@ -293,27 +384,61 @@ impl Overlay {
         let note_gap = if note.is_some() && meters.size.y > 0.0 { 4.0 } else { 0.0 };
         let body = vec2(meters.size.x.max(note_size.x), meters.size.y + note_gap + note_size.y);
         let gap = if clawd.x > 0.0 && body.x > 0.0 { GAP } else { 0.0 };
-        let inner = vec2(clawd.x + gap + body.x, clawd.y.max(body.y));
+        let row = vec2(clawd.x + gap + body.x, clawd.y.max(body.y));
+        // Details scroll once they'd run past DETAILS_HEIGHT or off the screen.
+        let details = self.expanded.then(|| {
+            let room = self
+                .work_area(&ctx)
+                .map_or(DETAILS_HEIGHT, |work| work.height() - row.y - 2.0 * (MARGIN + SCREEN_GAP));
+            vec2(DETAILS_WIDTH, self.details_height.min(DETAILS_HEIGHT).min(room).max(0.0))
+        });
+        let inner = details.map_or(row, |details| vec2(row.x.max(details.x), row.y + details.y));
         let size = (inner + Vec2::splat(2.0 * MARGIN)).round();
         if size != self.size {
             self.size = size;
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
             self.place_flyout(&ctx);
+            if !docked {
+                self.fit_on_screen(&ctx, size);
+            }
         }
 
         let origin = full.min + Vec2::splat(MARGIN);
         if clawd.x > 0.0 {
             let time = if self.settings.animate { ui.input(|i| i.time) } else { 0.0 };
-            let at = origin + vec2(0.0, (inner.y - clawd.y) / 2.0);
+            let at = origin + vec2(0.0, (row.y - clawd.y) / 2.0);
             self.mascot.paint(&painter, Rect::from_min_size(at, clawd), state.working, time);
         }
-        let body_at = origin + vec2(clawd.x + gap, (inner.y - body.y) / 2.0);
+        let body_at = origin + vec2(clawd.x + gap, (row.y - body.y) / 2.0);
         let hints = meters.paint(&painter, body_at);
         if let Some(note) = note {
             painter.galley(body_at + vec2(0.0, body.y - note_size.y), note, TEXT);
         }
         for (i, (rect, hint)) in hints.into_iter().enumerate() {
             ui.interact(rect, ui.id().with(("hint", i)), Sense::hover()).on_hover_text(hint);
+        }
+
+        if let Some(details) = details {
+            let area = Rect::from_min_size(origin + vec2(0.0, row.y), vec2(inner.x, details.y));
+            painter.hline(full.left() + MARGIN..=full.right() - MARGIN, area.top() + 6.0, Stroke::new(1.0, BORDER));
+            let stats = self.transcripts.latest();
+            let mut slot = ui.new_child(UiBuilder::new().max_rect(area));
+            // Dragging anywhere moves the panel, so the details scroll by wheel and scroll bar.
+            let scroll_by = egui::scroll_area::ScrollSource { drag: egui::scroll_area::ScrollSource::NONE.drag, ..Default::default() };
+            let scroll = egui::ScrollArea::vertical()
+                .id_salt("details")
+                .max_height(area.height())
+                .auto_shrink([false, true])
+                .scroll_source(scroll_by)
+                .show(&mut slot, |ui| {
+                    let lane = Margin { right: SCROLL_LANE as i8, ..Margin::ZERO };
+                    egui::Frame::new().inner_margin(lane).show(ui, |ui| details::ui(ui, &self.fonts, state, stats.as_deref()));
+                });
+            let height = scroll.content_size.y.ceil();
+            if (height - self.details_height).abs() >= 1.0 {
+                self.details_height = height;
+                ctx.request_repaint();
+            }
         }
         animating
     }
@@ -345,6 +470,7 @@ impl Overlay {
         self.settings_open = true;
         self.settings_surface = Surface::of(&self.settings);
         self.starts_with_windows = win::starts_with_windows();
+        self.claude_app_installed = win::claude_app_installed();
         // Already open, maybe behind other windows.
         ctx.send_viewport_cmd_to(settings_viewport(), ViewportCommand::Focus);
     }
@@ -388,7 +514,7 @@ impl Overlay {
     fn settings_ui(&mut self, ui: &mut egui::Ui, state: &State) {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         self.settings_header(ui, state);
-        let Self { settings, settings_surface: surface, fonts, starts_with_windows, .. } = self;
+        let Self { settings, settings_surface: surface, fonts, starts_with_windows, claude_app_installed, .. } = self;
 
         ui.add_space(16.0);
         widgets::heading(ui, fonts, "General", |_| {});
@@ -414,6 +540,17 @@ impl Overlay {
                         }
                     }
                 });
+            });
+            widgets::divider(ui, fonts);
+            let about = match settings.double_click {
+                DoubleClick::Details => "Expands the panel with usage details. Double-click again to shrink it.",
+                DoubleClick::Website => "Opens your usage page on claude.ai",
+                DoubleClick::App if *claude_app_installed => "Opens the Claude app",
+                DoubleClick::App => "The Claude app isn't installed, so this opens claude.ai",
+            };
+            widgets::row_below(ui, fonts, icon::DOUBLE_CLICK, "Double-click", Some(about), |ui| {
+                let options = [(DoubleClick::Details, "Details"), (DoubleClick::Website, "Website"), (DoubleClick::App, "App")];
+                widgets::segmented(ui, &mut settings.double_click, &options, None);
             });
             widgets::divider(ui, fonts);
             let about = Some("Opens Cuota when you sign in");
@@ -555,22 +692,26 @@ impl eframe::App for Overlay {
         self.apply_modes(ctx);
         self.sync_tray();
         while let Ok(event) = self.tray_events.try_recv() {
-            let settings = match event {
-                TrayEvent::Click => false,
-                TrayEvent::Settings => true,
+            let (settings, details) = match event {
+                TrayEvent::Click => (false, false),
+                TrayEvent::Settings => (true, false),
+                TrayEvent::Details => (false, true),
                 TrayEvent::Quit => {
                     ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
                     continue;
                 }
             };
+            if details {
+                self.set_expanded(true);
+            }
             if self.settings.pinned().is_some() {
-                // A click hides or shows the panel; settings bring it back if it was hidden.
-                self.set_hidden(ctx, !settings && !self.hidden);
+                // A click hides or shows the panel; settings and details bring it back if it was hidden.
+                self.set_hidden(ctx, !settings && !details && !self.hidden);
                 self.settings_requested |= settings;
                 ctx.request_repaint();
-            } else if settings {
-                // Settings, with the panel open beside them.
-                self.settings_requested = true;
+            } else if settings || details {
+                // Settings with the panel open beside them, or the panel with its details.
+                self.settings_requested |= settings;
                 if matches!(self.flyout, Flyout::Closed { .. }) {
                     self.open_flyout(ctx);
                 }
@@ -595,6 +736,10 @@ impl eframe::App for Overlay {
             } else {
                 Duration::from_millis(60_000 - Utc::now().timestamp_millis().rem_euclid(60_000) as u64)
             });
+            if self.expanded {
+                let wait = self.refresh_stats(&state);
+                next_frame = next_frame.map(|next| next.min(wait));
+            }
             if self.settings_requested && ctx.cumulative_frame_nr() > self.shown_frame {
                 self.settings_requested = false;
                 self.open_settings(&ctx);
@@ -604,7 +749,9 @@ impl eframe::App for Overlay {
             } else if self.applied.as_ref().is_some_and(|(_, at)| at.elapsed() > SETTLE)
                 && let Some(rect) = ctx.input(|i| i.viewport().outer_rect)
             {
-                self.settings.panel_pos = Some([rect.min.x, rect.min.y]);
+                // Where it sits when not expanded, so it starts there next time.
+                let at = rect.min + self.lift;
+                self.settings.panel_pos = Some([at.x, at.y]);
             }
         }
 
@@ -645,13 +792,6 @@ fn show_as_about(settings: &Settings) -> String {
         );
     }
     about.trim_start().to_owned()
-}
-
-/// `text` on one line, cut short with an ellipsis past `width`.
-fn single_line(painter: &Painter, text: &str, font: FontId, color: Color32, width: f32) -> Arc<Galley> {
-    let mut job = LayoutJob::simple_singleline(text.to_owned(), font, color);
-    job.wrap = TextWrapping::truncate_at_width(width);
-    painter.layout_job(job)
 }
 
 /// A status line under the meters: the last error, or "Loading..." before any data.

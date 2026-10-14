@@ -8,25 +8,39 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HWND, LPARAM,
+    LRESULT, POINT, RECT, STILL_ACTIVE, WPARAM,
 };
-use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromPoint};
+use windows_sys::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint,
+};
+use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW,
     RegGetValueW, RegSetKeyValueW,
 };
-use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::System::Threading::{
+    CreateMutexW, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
-use windows_sys::Win32::UI::Shell::{ABM_GETTASKBARPOS, APPBARDATA, DefSubclassProc, SHAppBarMessage, SetWindowSubclass};
+use windows_sys::Win32::UI::Shell::{
+    ABM_GETTASKBARPOS, APPBARDATA, DefSubclassProc, SHAppBarMessage, SetWindowSubclass, ShellExecuteW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, GetCursorPos,
-    GetForegroundWindow, GetMessageW, HWND_BOTTOM, MSG, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+    GetForegroundWindow, GetMessageW, HWND_BOTTOM, MSG, SW_SHOWNORMAL, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WINEVENT_OUTOFCONTEXT,
     WM_NCCALCSIZE,
 };
+
+/// claude.ai's page of plan usage.
+const CLAUDE_USAGE_PAGE: &str = "https://claude.ai/settings/usage";
+/// The Claude app from the Microsoft Store (MSIX), as the Start menu launches it: packaged apps
+/// can't be started from their exe.
+const CLAUDE_STORE_APP: &str = r"shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude";
 
 pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain([0]).collect()
@@ -102,6 +116,52 @@ pub fn set_start_with_windows(on: bool) -> bool {
     status == 0
 }
 
+/// How to start the Claude desktop app, from the handler for claude:// links that it registers:
+/// `"C:\...\claude.exe" "%1"`. `None` when it isn't installed.
+fn claude_app() -> Option<String> {
+    let command = registry_string(HKEY_CURRENT_USER, r"Software\Classes\claude\shell\open\command", "")?;
+    let exe = command.trim_start().strip_prefix('"')?.split('"').next()?;
+    Some(if exe.to_lowercase().contains(r"\windowsapps\") { CLAUDE_STORE_APP.to_owned() } else { exe.to_owned() })
+}
+
+pub fn claude_app_installed() -> bool {
+    claude_app().is_some()
+}
+
+/// Opens the Claude app, or claude.ai's usage page in the browser when `app` is false or the
+/// app isn't installed. Starting either can take a moment, so it happens on a thread of its own.
+pub fn open_claude(app: bool) {
+    let targets: Vec<String> =
+        app.then(claude_app).flatten().into_iter().chain([CLAUDE_USAGE_PAGE.to_owned()]).collect();
+    std::thread::spawn(move || unsafe {
+        // Some links are handled by shell extensions, which need COM.
+        CoInitializeEx(null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as _);
+        let verb = wide("open");
+        for target in targets {
+            let target = wide(&target);
+            // Values above 32 mean it opened.
+            if ShellExecuteW(0, verb.as_ptr(), target.as_ptr(), null(), null(), SW_SHOWNORMAL as _) > 32 {
+                break;
+            }
+        }
+    });
+}
+
+/// Whether a process is still running. One running as administrator can't be looked into,
+/// which still means it's there.
+pub fn process_alive(pid: u32) -> bool {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process == 0 {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let mut code = 0;
+        let read = GetExitCodeProcess(process, &mut code) != 0;
+        CloseHandle(process);
+        read && code == STILL_ACTIVE as u32
+    }
+}
+
 /// Claims "one Cuota per sign-in" until the process exits. False when another Cuota has it.
 pub fn first_instance() -> bool {
     let name = wide(r"Local\Cuota");
@@ -146,6 +206,16 @@ pub fn cursor() -> POINT {
 /// monitor that has since been unplugged.
 pub fn on_screen(x: i32, y: i32) -> bool {
     unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL) != 0 }
+}
+
+/// The part of the monitor nearest a point that the taskbar leaves free.
+pub fn work_area(x: i32, y: i32) -> Option<RECT> {
+    unsafe {
+        let monitor = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = zeroed();
+        info.cbSize = size_of::<MONITORINFO>() as u32;
+        (GetMonitorInfoW(monitor, &mut info) != 0).then_some(info.rcWork)
+    }
 }
 
 /// Physical pixels per point on the primary monitor, before any window exists.

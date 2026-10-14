@@ -1,7 +1,7 @@
 //! Native icons in the notification area. In Taskbar mode, Clawd dances while Claude works and
 //! sleeps when idle, and each limit shows its percentage as pixel digits over a bar, or as a
 //! ring; otherwise Clawd stands still there as Cuota's own icon. Hovering shows details,
-//! clicking opens the panel, and right-clicking opens a menu with Settings and Quit. Runs on
+//! clicking opens the panel, and right-clicking opens a menu with details, Settings and Quit. Runs on
 //! its own thread with a hidden window, so the icons stay live while the panel is hidden, and
 //! only redraws an icon when what it shows changed.
 
@@ -61,6 +61,8 @@ pub enum TrayEvent {
     Click,
     /// Settings, picked from an icon's menu or asked for by launching Cuota again.
     Settings,
+    /// Usage details, picked from an icon's menu.
+    Details,
     /// Quit, picked from an icon's menu.
     Quit,
 }
@@ -245,16 +247,18 @@ unsafe extern "system" fn window_proc(window: HWND, message: u32, wparam: WPARAM
     if handled { 0 } else { unsafe { DefWindowProcW(window, message, wparam, lparam) } }
 }
 
-/// The icons' menu, at the cursor: Cuota's name and version, Settings and Quit.
+/// The icons' menu, at the cursor: Cuota's name and version, Usage details, Settings and Quit.
 fn pick_from_menu(window: HWND) -> Option<TrayEvent> {
     const SETTINGS: usize = 1;
     const QUIT: usize = 2;
+    const DETAILS: usize = 3;
     let title = wide(concat!("Cuota v", env!("CARGO_PKG_VERSION")));
-    let (settings, quit) = (wide("Settings"), wide("Quit"));
+    let (details, settings, quit) = (wide("Usage details"), wide("Settings"), wide("Quit"));
     let picked = unsafe {
         let menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        AppendMenuW(menu, MF_STRING, DETAILS, details.as_ptr());
         AppendMenuW(menu, MF_STRING, SETTINGS, settings.as_ptr());
         AppendMenuW(menu, MF_STRING, QUIT, quit.as_ptr());
         // Without this, clicking elsewhere wouldn't close the menu.
@@ -269,6 +273,7 @@ fn pick_from_menu(window: HWND) -> Option<TrayEvent> {
     };
     match picked {
         SETTINGS => Some(TrayEvent::Settings),
+        DETAILS => Some(TrayEvent::Details),
         QUIT => Some(TrayEvent::Quit),
         _ => None,
     }
@@ -603,7 +608,7 @@ mod tests {
 
     #[test]
     fn draws_icons_at_any_tray_size() {
-        let limit = Limit { label: "Weekly".into(), percent: 49.0, resets_at: None };
+        let limit = Limit { label: "Weekly".into(), percent: 49.0, resets_at: None, window: None, share: None };
         for size in [16, 20, 24, 32] {
             for style in [Style::Bars, Style::Pie] {
                 let view = View { style, ..View::default() };

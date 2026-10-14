@@ -2,9 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod claude;
+mod details;
 mod mascot;
 mod overlay;
 mod settings;
+mod stats;
 mod tray;
 mod view;
 mod widgets;
@@ -91,10 +93,10 @@ fn initial_position(settings: &mut Settings) -> [f32; 2] {
 
 fn print_once() {
     match claude::fetch() {
-        Ok(limits) => {
+        Ok(usage) => {
             println!("{}", claude::local_account().plan.as_deref().unwrap_or("Claude"));
             let now = chrono::Utc::now();
-            for limit in limits {
+            for limit in usage.limits {
                 let reset = limit
                     .resets_at
                     .map(|t| format!("resets in {}", claude::until(t, now)))

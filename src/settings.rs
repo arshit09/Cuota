@@ -24,6 +24,18 @@ pub enum Style {
     Pie,
 }
 
+/// What double-clicking the panel does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DoubleClick {
+    /// Expands the panel with usage details.
+    #[default]
+    Details,
+    /// Opens the usage page on claude.ai.
+    Website,
+    /// Opens the Claude desktop app.
+    App,
+}
+
 /// What one surface (the panel, or the taskbar icons) shows.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -64,6 +76,7 @@ pub struct Settings {
     pub opacity: f32,
     pub panel: View,
     pub taskbar: View,
+    pub double_click: DoubleClick,
     /// Top-left of the panel in Popup and Desktop modes, in points.
     pub panel_pos: Option<[f32; 2]>,
 }
@@ -76,6 +89,7 @@ impl Default for Settings {
             opacity: 0.96,
             panel: View::default(),
             taskbar: View::default(),
+            double_click: DoubleClick::default(),
             panel_pos: None,
         }
     }

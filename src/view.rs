@@ -11,8 +11,8 @@ use std::sync::Arc;
 pub const TEXT: Color32 = Color32::from_rgb(232, 232, 232);
 pub const DIM: Color32 = Color32::from_rgb(150, 150, 156);
 pub const AMBER: Color32 = Color32::from_rgb(232, 163, 61);
-const RED: Color32 = Color32::from_rgb(229, 72, 77);
-const TRACK: Color32 = Color32::from_rgb(64, 64, 70);
+pub const RED: Color32 = Color32::from_rgb(229, 72, 77);
+pub const TRACK: Color32 = Color32::from_rgb(64, 64, 70);
 const FILL: Color32 = Color32::from_rgb(200, 200, 204);
 
 pub struct Meters {
@@ -182,7 +182,7 @@ fn widest(galleys: &[Arc<Galley>]) -> f32 {
     galleys.iter().map(|g| g.size().x).fold(0.0, f32::max)
 }
 
-fn level(percent: f32) -> Color32 {
+pub fn level(percent: f32) -> Color32 {
     match percent {
         p if p >= 90.0 => RED,
         p if p >= 75.0 => AMBER,
