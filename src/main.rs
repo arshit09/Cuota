@@ -4,6 +4,7 @@
 mod animations;
 mod claude;
 mod details;
+mod glance;
 mod mascot;
 mod overlay;
 mod settings;

@@ -8,9 +8,10 @@ use crate::vector;
 use crate::view::DIM;
 use eframe::egui::{
     Align, Align2, Color32, ColorImage, Context, CornerRadius, CursorIcon, EventFilter, FontFamily, FontId, Frame,
-    Galley, Id, Key, Layout, Margin, Painter, Popup, Rect, Response, Sense, Shadow, Shape, Stroke, StrokeKind,
-    TextureHandle, TextureId, TextureOptions, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, emath,
+    Galley, Id, Key, Layout, Margin, Modifiers, Painter, Popup, Pos2, Rect, Response, Sense, Shadow, Shape, Stroke,
+    StrokeKind, TextureHandle, TextureId, TextureOptions, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, emath,
     emath::GuiRounding, pos2,
+    style::ScrollAnimation,
     text::{LayoutJob, TextWrapping},
     vec2,
 };
@@ -57,6 +58,7 @@ pub mod icon {
     pub const APPEARANCE: char = '\u{E771}';
     pub const BROWSE: char = '\u{E8E5}';
     pub const CHECK: char = '\u{E73E}';
+    pub const CHECKLIST: char = '\u{E9D5}';
     pub const CHEVRON_DOWN: char = '\u{E70D}';
     pub const CHEVRON_UP: char = '\u{E70E}';
     pub const CLAWD: char = '\u{E76E}';
@@ -70,6 +72,8 @@ pub mod icon {
     pub const PERCENT: char = '\u{E94C}';
     pub const QUIT: char = '\u{E7E8}';
     pub const REFRESH: char = '\u{E72C}';
+    /// A gripper, to drag a row into another order by.
+    pub const REORDER: char = '\u{E76F}';
     pub const SETTINGS: char = '\u{E713}';
     pub const SHOW_AS: char = '\u{E7F4}';
     pub const SIZE: char = '\u{E740}';
@@ -107,6 +111,14 @@ const DROPDOWN_WIDTH: f32 = 120.0;
 const CHEVRON_ROOM: f32 = 34.0;
 /// An expander's chevron.
 const CHEVRON: f32 = 20.0;
+/// How long a sortable list's rows take to slide out of a dragged row's way, in seconds.
+const SLIDE: f32 = 0.12;
+/// A sortable row's gripper lane when there's no icon column for it.
+const GRIP_LANE: f32 = 28.0;
+/// A dragged row scrolls its list this fast, in points a second, while the pointer is this
+/// near the top or bottom of what shows of it.
+const EDGE_SCROLL: f32 = 600.0;
+const EDGE: f32 = 32.0;
 
 /// The font families the UI draws with.
 #[derive(Clone)]
@@ -353,15 +365,48 @@ pub fn expander(
         let response = header.response.on_hover_cursor(CursorIcon::PointingHand);
 
         if open {
-            let background = painter.add(Shape::Noop);
-            let top = response.rect.bottom();
-            let items = ui.vertical(|ui| add_items(ui)).response.rect;
-            // Up a pixel, so its edge and the header's are one line.
-            let rect = Rect::from_min_max(pos2(response.rect.left(), top - 1.0), pos2(response.rect.right(), items.bottom()));
-            let corners = CornerRadius { nw: 0, ne: 0, sw: 4, se: 4 };
-            painter.set(background, Shape::Rect(epaint_rect(rect, corners, INSET, SETTING_EDGE)));
+            under(ui, &painter, response.rect, add_items);
         }
     });
+}
+
+/// A card heading settings that always show under it, like an [`expander`] that stays open,
+/// with `summary` on its right.
+pub fn group<R>(
+    ui: &mut Ui,
+    fonts: &Fonts,
+    glyph: char,
+    title: &str,
+    description: Option<&str>,
+    summary: &str,
+    add_items: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let painter = ui.painter().clone();
+        let room = ui.available_width() / 3.0;
+        let summary = single_line(&painter, summary, FontId::proportional(BODY), SECONDARY, room);
+        let header = header(ui, fonts, glyph, title, description, summary.size().x, Sense::hover());
+        let corners = CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 };
+        painter.add(Shape::Rect(epaint_rect(header.rect, corners, SETTING, SETTING_EDGE)));
+        header.paint(&painter);
+        let at = pos2(header.control.right() - summary.size().x, header.control.center().y - summary.size().y / 2.0);
+        painter.galley(at, summary, SECONDARY);
+        under(ui, &painter, header.rect, add_items)
+    })
+    .inner
+}
+
+/// Adds what `add_items` adds under a card's header, on a background down to the last of them.
+fn under<R>(ui: &mut Ui, painter: &Painter, header: Rect, add_items: impl FnOnce(&mut Ui) -> R) -> R {
+    let background = painter.add(Shape::Noop);
+    let items = ui.vertical(add_items);
+    // Up a pixel, so its edge and the header's are one line.
+    let bottom = items.response.rect.bottom();
+    let rect = Rect::from_min_max(pos2(header.left(), header.bottom() - 1.0), pos2(header.right(), bottom));
+    let corners = CornerRadius { nw: 0, ne: 0, sw: 4, se: 4 };
+    painter.set(background, Shape::Rect(epaint_rect(rect, corners, INSET, SETTING_EDGE)));
+    items.inner
 }
 
 /// One of an [`expander`]'s settings: a check box beside a title and an optional description,
@@ -398,6 +443,218 @@ pub fn check_item(ui: &mut Ui, fonts: &Fonts, on: &mut bool, title: &str, descri
     }
     focus_ring(ui, &response, check, 4.0);
     response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// A row of a [`sortable`] list.
+pub struct SortRow<'a> {
+    /// Tells the row apart from the others, whatever order they're in.
+    pub id: Id,
+    pub on: bool,
+    pub title: &'a str,
+    /// A line under the title, cut short when too long.
+    pub description: &'a str,
+}
+
+/// What was done to a [`sortable`] list, for the caller to do to what it lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sorted {
+    /// The row at this index was checked or unchecked.
+    Toggled(usize),
+    /// The row at `from` was moved to `to`, where it lands once out of the way.
+    Moved { from: usize, to: usize },
+}
+
+/// Rows like [`check_item`]s that can also be dragged into another order, for under a
+/// [`group`] or an [`expander`]. A gripper on the left shows where to grab, though a row drags
+/// from anywhere. The dragged row lifts and follows the pointer, and the others slide out of
+/// its way, leaving a slot where it will land. Escape puts it back, and Alt+Up and Alt+Down
+/// move the row with keyboard focus. Returns what was done, if anything.
+pub fn sortable(ui: &mut Ui, fonts: &Fonts, rows: &[SortRow]) -> Option<Sorted> {
+    let width = ui.available_width();
+    let (check_left, text_left) = sortable_columns(fonts);
+    let room = (width - text_left - CARD_PADDING).max(60.0);
+    let painter = ui.painter().clone();
+    // A line of each, so the rows are all as tall and a dragged one fits any slot.
+    let texts: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            let title = single_line(&painter, row.title, FontId::proportional(BODY), PRIMARY, room);
+            let description = (!row.description.is_empty())
+                .then(|| single_line(&painter, row.description, FontId::proportional(CAPTION), SECONDARY, room));
+            (title, description)
+        })
+        .collect();
+    let heights: Vec<f32> = texts
+        .iter()
+        .map(|(title, description)| {
+            let text = title.size().y + description.as_ref().map_or(0.0, |d| 1.0 + d.size().y);
+            (text + 2.0 * CARD_PADDING_Y).max(48.0)
+        })
+        .collect();
+    // Laid out in the list's order. A drag only changes where they're painted.
+    let responses: Vec<Response> = rows
+        .iter()
+        .zip(&heights)
+        .map(|(row, &height)| {
+            let (_, rect) = ui.allocate_space(vec2(width, height));
+            ui.interact(rect, row.id, Sense::click_and_drag())
+        })
+        .collect();
+    let list = responses.first()?.rect.union(responses.last()?.rect);
+    let laid_out: Vec<f32> = responses.iter().map(|response| response.rect.top() - list.top()).collect();
+    let pointer = ui.input(|i| i.pointer.latest_pos());
+    let on_grip = |at: Pos2| at.x < list.left() + check_left - 6.0;
+
+    let mut sorted = None;
+    // The dragged row, how far down the list it shows, and where it would land.
+    let mut drag = None;
+    if let Some(from) = responses.iter().position(|r| r.dragged() || r.drag_stopped()) {
+        let response = &responses[from];
+        // Where on the row it was picked up, and whether Escape has put it back since.
+        let held = rows[from].id.with("held");
+        let half = heights[from] / 2.0;
+        if response.drag_started() {
+            let grab = ui.input(|i| i.pointer.press_origin()).map_or(half, |at| at.y - response.rect.top());
+            ui.data_mut(|data| data.insert_temp(held, (grab, false)));
+        }
+        let (grab, mut put_back) = ui.data(|data| data.get_temp::<(f32, bool)>(held)).unwrap_or((half, false));
+        if ui.input(|i| i.key_pressed(Key::Escape)) {
+            put_back = true;
+            ui.data_mut(|data| data.insert_temp(held, (grab, true)));
+        }
+        let pointer_y = pointer.map_or(response.rect.center().y, |at| at.y);
+        let shown_at = (pointer_y - grab - list.top()).clamp(0.0, list.height() - heights[from]);
+        // It lands past each row whose middle its own middle has passed.
+        let middle = shown_at + half;
+        let passed = (0..rows.len()).filter(|&i| i != from && laid_out[i] + heights[i] / 2.0 < middle).count();
+        let to = if put_back { from } else { passed };
+        if response.drag_stopped() {
+            ui.data_mut(|data| data.remove_temp::<(f32, bool)>(held));
+            if to != from {
+                sorted = Some(Sorted::Moved { from, to });
+            }
+        } else {
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+            scroll_near_edge(ui, pointer_y);
+        }
+        drag = Some((from, shown_at, to));
+    }
+
+    // Where each row goes: in order, but with the dragged one where it would land.
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    if let Some((from, _, to)) = drag {
+        order.remove(from);
+        order.insert(to, from);
+    }
+    let mut slots = vec![0.0; rows.len()];
+    let mut y = 0.0;
+    for &i in &order {
+        slots[i] = y;
+        y += heights[i];
+    }
+
+    let row_rect = |y: f32, i: usize| Rect::from_min_size(pos2(list.left(), list.top() + y), vec2(width, heights[i]));
+    for (i, (row, response)) in rows.iter().zip(&responses).enumerate() {
+        response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), row.on, row.title));
+        // A click on the gripper isn't one on the check box.
+        if response.clicked() && !response.interact_pointer_pos().is_some_and(on_grip) {
+            sorted = Some(Sorted::Toggled(i));
+        }
+        if response.has_focus() {
+            let (up, down) = ui.input_mut(|input| {
+                (input.consume_key(Modifiers::ALT, Key::ArrowUp), input.consume_key(Modifiers::ALT, Key::ArrowDown))
+            });
+            if up && i > 0 {
+                sorted = Some(Sorted::Moved { from: i, to: i - 1 });
+            } else if down && i + 1 < rows.len() {
+                sorted = Some(Sorted::Moved { from: i, to: i + 1 });
+            }
+        }
+        if drag.is_some_and(|(from, ..)| from == i) {
+            continue;
+        }
+        let grip = drag.is_none() && response.hovered() && pointer.is_some_and(on_grip);
+        if drag.is_none() && response.hovered() {
+            ui.ctx().set_cursor_icon(if grip { CursorIcon::Grab } else { CursorIcon::PointingHand });
+        }
+        let y = ui.ctx().animate_value_with_time(row.id.with("at"), slots[i], SLIDE);
+        let rect = row_rect(y, i);
+        // A line along the top: the first one lies on the header's edge, and the others part them.
+        ui.painter().hline(rect.x_range(), rect.top() - 0.5, Stroke::new(1.0, SETTING_EDGE));
+        paint_sortable_row(ui, fonts, rect, &texts[i], row.on, response, grip);
+    }
+    if let Some((from, shown_at, _)) = drag {
+        // The slot it will land in, then the row itself, lifted over the others.
+        let slot = row_rect(slots[from], from).shrink(3.0);
+        ui.painter().rect(slot, 4, WINDOW, Stroke::new(1.0, CONTROL_EDGE), StrokeKind::Inside);
+        let rect = row_rect(shown_at, from);
+        let shadow = Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(110) };
+        ui.painter().add(shadow.as_shape(rect, 4));
+        ui.painter().rect(rect, 4, SETTING_HOVER, Stroke::new(1.0, CONTROL_EDGE), StrokeKind::Inside);
+        paint_sortable_row(ui, fonts, rect, &texts[from], rows[from].on, &responses[from], true);
+        // Kept up with, so once let go it glides from here to its slot.
+        ui.ctx().animate_value_with_time(rows[from].id.with("at"), shown_at, 0.0);
+    }
+    sorted
+}
+
+/// Where a [`sortable`] row's check box and text start. Its gripper takes the icon column of
+/// the card above, or a lane of its own without the icon font.
+fn sortable_columns(fonts: &Fonts) -> (f32, f32) {
+    let check_left = CARD_PADDING + if fonts.icons.is_some() { fonts.indent() } else { GRIP_LANE };
+    (check_left, check_left + CHECK_BOX + 12.0)
+}
+
+/// Scrolls the list a row is dragged in while the pointer is near the top or bottom of what
+/// shows of it.
+fn scroll_near_edge(ui: &Ui, pointer_y: f32) {
+    let shown = ui.clip_rect();
+    let speed = if pointer_y < shown.top() + EDGE {
+        EDGE_SCROLL
+    } else if pointer_y > shown.bottom() - EDGE {
+        -EDGE_SCROLL
+    } else {
+        return;
+    };
+    let dt = ui.input(|i| i.stable_dt).min(0.1);
+    ui.scroll_with_delta_animation(vec2(0.0, speed * dt), ScrollAnimation::none());
+    ui.ctx().request_repaint();
+}
+
+/// A [`sortable`] row's gripper, lit while it's grabbed or about to be, check box, title and
+/// description.
+fn paint_sortable_row(
+    ui: &Ui,
+    fonts: &Fonts,
+    rect: Rect,
+    (title, description): &(Arc<Galley>, Option<Arc<Galley>>),
+    on: bool,
+    response: &Response,
+    grip_lit: bool,
+) {
+    let painter = ui.painter();
+    let (check_left, text_left) = sortable_columns(fonts);
+    let grip_color = if grip_lit { PRIMARY } else { SECONDARY };
+    if let Some(font) = fonts.icon(16.0) {
+        let grip = pos2(rect.left() + CARD_PADDING + ICON_SIZE / 2.0, rect.center().y);
+        painter.text(grip, Align2::CENTER_CENTER, icon::REORDER, font, grip_color);
+    } else {
+        let grip = rect.left() + CARD_PADDING + GRIP_LANE / 2.0 - 6.0;
+        for dy in [-2.5, 2.5] {
+            painter.hline(grip - 6.0..=grip + 6.0, rect.center().y + dy, Stroke::new(1.0, grip_color));
+        }
+    }
+    let text_height = title.size().y + description.as_ref().map_or(0.0, |d| 1.0 + d.size().y);
+    let mut at = pos2(rect.left() + text_left, rect.center().y - text_height / 2.0);
+    let first_line = at.y + title.rows[0].height() / 2.0;
+    let check = Rect::from_center_size(pos2(rect.left() + check_left + CHECK_BOX / 2.0, first_line), vec2(CHECK_BOX, CHECK_BOX));
+    paint_check_box(ui, fonts, check, on, response);
+    painter.galley(at, title.clone(), PRIMARY);
+    if let Some(description) = description {
+        at.y += title.size().y + 1.0;
+        painter.galley(at, description.clone(), SECONDARY);
+    }
+    focus_ring(ui, response, check, 4.0);
 }
 
 /// A card's icon, title and description, laid out but not yet painted.

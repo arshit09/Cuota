@@ -1,7 +1,7 @@
 //! What Claude Code did this week on this PC, from the transcripts it keeps in `projects/`:
 //! every reply there names its model and counts its tokens. They add up to gigabytes, so they're
-//! read on a thread of their own, only while the details window asks, and each file only from
-//! where the last read stopped.
+//! read on a thread of their own, only while the panel shows some of what they tell, and each
+//! file only from where the last read stopped.
 
 use crate::claude::{self, title_case};
 use chrono::{DateTime, Local, NaiveDate, TimeDelta, Timelike, Utc};

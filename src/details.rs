@@ -4,7 +4,7 @@
 
 use crate::claude::{self, Extra, Limit, Pace, Session, State};
 use crate::mascot::CLAUDE_ORANGE;
-use crate::stats::{Stats, Tally};
+use crate::stats::{Stats, Tally, Tokens};
 use crate::view::{self, AMBER, DIM, RED, TEXT, TRACK};
 use crate::widgets::{self, Fonts};
 use chrono::{DateTime, Local, NaiveDate, Utc};
@@ -14,8 +14,8 @@ use eframe::egui::{
 use std::sync::Arc;
 
 /// What the week went to, colored in the order the API lists it: a set checked to stay apart
-/// for color-blind eyes on the card. "Other" is gray.
-const PARTS: [Color32; 4] = [
+/// for color-blind eyes on the card. "Other" is gray. Tokens per day are drawn in the first.
+pub(crate) const PARTS: [Color32; 4] = [
     Color32::from_rgb(0x39, 0x87, 0xe5),
     Color32::from_rgb(0xd9, 0x59, 0x26),
     Color32::from_rgb(0x19, 0x9e, 0x70),
@@ -99,29 +99,34 @@ fn meter(ui: &mut Ui, limit: &Limit, now: DateTime<Utc>) {
 /// When the limit resets, what share of the weekly limit a model's limit is, and where it's
 /// headed.
 fn limit_notes(limit: &Limit, now: DateTime<Utc>) -> Vec<(String, Color32)> {
-    let mut notes = Vec::new();
-    match limit.resets_at {
-        Some(t) => notes.push((format!("Resets {} \u{B7} in {}", local(t), claude::until(t, now)), DIM)),
-        None if limit.window.is_some() => notes.push(("Not started yet".to_owned(), DIM)),
-        None => {}
-    }
-    if let Some((used, allowed)) = limit.share {
-        notes.push((format!("{used:.0}% of your Weekly limit so far \u{B7} capped at {allowed:.0}% of it"), DIM));
-    }
-    match limit.pace(now) {
-        Some(Pace::Reached) => notes.push(("Limit reached".to_owned(), RED)),
-        Some(Pace::Finish(end)) => notes.push((format!("On pace to end at about {end:.0}%"), DIM)),
-        Some(Pace::RunsOut(at)) => notes.push((format!("At this pace, runs out {}", local(at)), AMBER)),
-        None => {}
-    }
-    notes
+    let share = limit.share.map(|(used, allowed)| {
+        (format!("{used:.0}% of your Weekly limit so far \u{B7} capped at {allowed:.0}% of it"), DIM)
+    });
+    reset_note(limit, now).into_iter().chain(share).chain(pace_note(limit, now)).collect()
 }
 
-/// One bar split by what the week went to, with a legend under it.
-fn parts(ui: &mut Ui, parts: &[(String, String, f32)]) {
-    const GAP: f32 = 2.0;
+/// When the limit resets and how long until then, or that its window hasn't started.
+pub(crate) fn reset_note(limit: &Limit, now: DateTime<Utc>) -> Option<(String, Color32)> {
+    match limit.resets_at {
+        Some(t) => Some((format!("Resets {} \u{B7} in {}", local(t), claude::until(t, now)), DIM)),
+        None if limit.window.is_some() => Some(("Not started yet".to_owned(), DIM)),
+        None => None,
+    }
+}
+
+/// Where the limit is headed at the pace it's going, in amber or red when that's trouble.
+pub(crate) fn pace_note(limit: &Limit, now: DateTime<Utc>) -> Option<(String, Color32)> {
+    match limit.pace(now)? {
+        Pace::Reached => Some(("Limit reached".to_owned(), RED)),
+        Pace::Finish(end) => Some((format!("On pace to end at about {end:.0}%"), DIM)),
+        Pace::RunsOut(at) => Some((format!("At this pace, runs out {}", local(at)), AMBER)),
+    }
+}
+
+/// What the week went to, each with its color and percent, leaving out what wasn't used.
+pub(crate) fn app_parts(parts: &[(String, String, f32)]) -> Vec<(&str, Color32, f32)> {
     let mut slot = 0;
-    let parts: Vec<(&str, Color32, f32)> = parts
+    parts
         .iter()
         .map(|(key, name, percent)| {
             let color = if key == "other" { OTHER } else { PARTS.get(slot).copied().unwrap_or(OTHER) };
@@ -129,7 +134,13 @@ fn parts(ui: &mut Ui, parts: &[(String, String, f32)]) {
             (name.as_str(), color, *percent)
         })
         .filter(|(_, _, percent)| *percent > 0.0)
-        .collect();
+        .collect()
+}
+
+/// One bar split by what the week went to, with a legend under it.
+fn parts(ui: &mut Ui, parts: &[(String, String, f32)]) {
+    const GAP: f32 = 2.0;
+    let parts = app_parts(parts);
     let total: f32 = parts.iter().map(|p| p.2).sum();
     if total <= 0.0 {
         note(ui, "Nothing used yet this week.");
@@ -187,7 +198,7 @@ fn account(ui: &mut Ui, state: &State) {
     }
 }
 
-fn extra_usage(extra: &Extra) -> String {
+pub(crate) fn extra_usage(extra: &Extra) -> String {
     let spent = match (extra.enabled, &extra.used, &extra.limit) {
         (false, ..) => return "Off".into(),
         (true, Some(used), Some(limit)) => format!("{used} of {limit}"),
@@ -217,13 +228,9 @@ fn session_row(ui: &mut Ui, session: &Session, now: DateTime<Utc>) {
     let status = text(ui, status, SMALL, color);
     let width = ui.available_width();
     let room = width - INDENT - status.size().x - 12.0;
-    let mut about: Vec<String> = session.project.iter().cloned().collect();
-    about.extend(Some(session.app.clone()).filter(|app| !app.is_empty()));
-    // `until` counts from the second time to the first.
-    about.extend(session.started.map(|t| format!("started {} ago", claude::until(now, t))));
     let painter = ui.painter().clone();
     let name = widgets::single_line(&painter, session.display_name(), FontId::proportional(BODY), TEXT, room);
-    let about = widgets::single_line(&painter, &about.join(" \u{B7} "), FontId::proportional(SMALL), DIM, room);
+    let about = widgets::single_line(&painter, &session_about(session, now), FontId::proportional(SMALL), DIM, room);
 
     let name_height = name.size().y;
     let height = name_height + about.size().y + 2.0 * PADDING;
@@ -241,6 +248,15 @@ fn session_row(ui: &mut Ui, session: &Session, now: DateTime<Utc>) {
     painter.galley(pos2(rect.left() + INDENT, top), name, TEXT);
     painter.galley(pos2(rect.left() + INDENT, top + name_height), about, DIM);
     painter.galley(rect.right_center() - vec2(status.size().x, status.size().y / 2.0), status, TEXT);
+}
+
+/// Where a session runs and since when: "Cuota · VS Code · started 1h 35m ago".
+pub(crate) fn session_about(session: &Session, now: DateTime<Utc>) -> String {
+    let mut about: Vec<String> = session.project.iter().cloned().collect();
+    about.extend(Some(session.app.clone()).filter(|app| !app.is_empty()));
+    // `until` counts from the second time to the first.
+    about.extend(session.started.map(|t| format!("started {} ago", claude::until(now, t))));
+    about.join(" \u{B7} ")
 }
 
 fn claude_code(ui: &mut Ui, fonts: &Fonts, stats: Option<&Stats>) {
@@ -264,7 +280,7 @@ fn claude_code(ui: &mut Ui, fonts: &Fonts, stats: Option<&Stats>) {
         ui.add_space(8.0);
         if let Some(hour) = stats.busiest_hour {
             widgets::rule(ui);
-            fact(ui, "Busiest hour", format!("{hour:02}:00\u{2013}{:02}:00", (hour + 1) % 24));
+            fact(ui, "Busiest hour", hour_span(hour));
         }
     });
     if !stats.models.is_empty() {
@@ -342,15 +358,35 @@ fn days(ui: &mut Ui, days: &[(NaiveDate, Tally)]) {
         let (name, color) = if *date == today { ("Today".to_owned(), TEXT) } else { (date.format("%a").to_string(), DIM) };
         painter.text(pos2(center, base + 4.0), Align2::CENTER_TOP, name, FontId::proportional(11.0), color);
         let hover = Rect::from_min_max(pos2(center - slot / 2.0, rect.top()), pos2(center + slot / 2.0, rect.bottom()));
-        let about = format!(
-            "{} \u{B7} {} tokens \u{B7} {} replies \u{B7} {} tool calls",
-            date.format("%a %-d %b"),
-            compact(tokens),
-            grouped(tally.replies),
-            grouped(tally.tool_calls),
-        );
-        ui.interact(hover, ui.id().with(("day", i)), Sense::hover()).on_hover_text(about);
+        ui.interact(hover, ui.id().with(("day", i)), Sense::hover()).on_hover_text(day_about(*date, tally));
     }
+}
+
+/// A day's numbers: "Wed 8 Oct · 4.5M tokens · 120 replies · 96 tool calls".
+pub(crate) fn day_about(date: NaiveDate, tally: &Tally) -> String {
+    format!(
+        "{} \u{B7} {} tokens \u{B7} {} replies \u{B7} {} tool calls",
+        date.format("%a %-d %b"),
+        compact(tally.tokens.total()),
+        grouped(tally.replies),
+        grouped(tally.tool_calls),
+    )
+}
+
+/// "14:00–15:00".
+pub(crate) fn hour_span(hour: u32) -> String {
+    format!("{hour:02}:00\u{2013}{:02}:00", (hour + 1) % 24)
+}
+
+/// Tokens split up by kind, as hovering a model or project shows them.
+pub(crate) fn token_kinds(tokens: &Tokens) -> String {
+    format!(
+        "Input {} \u{B7} Output {} \u{B7} Cache read {} \u{B7} Cache write {}",
+        compact(tokens.input),
+        compact(tokens.output),
+        compact(tokens.cache_read),
+        compact(tokens.cache_write),
+    )
 }
 
 /// A model or project: its tokens, with replies and tool calls underneath. Hovering splits
@@ -370,14 +406,7 @@ fn tally_row(ui: &mut Ui, fonts: &Fonts, name: &str, tally: &Tally) {
     painter.galley(pos2(rect.left(), rect.top() + PADDING), name, TEXT);
     painter.galley(pos2(rect.left(), rect.top() + PADDING + name_height), counts, DIM);
     painter.galley(rect.right_center() - vec2(tokens.size().x, tokens.size().y / 2.0), tokens, TEXT);
-    let t = &tally.tokens;
-    response.on_hover_text(format!(
-        "Input {} \u{B7} Output {} \u{B7} Cache read {} \u{B7} Cache write {}",
-        compact(t.input),
-        compact(t.output),
-        compact(t.cache_read),
-        compact(t.cache_write),
-    ));
+    response.on_hover_text(token_kinds(&tally.tokens));
 }
 
 /// A label and its value on one line.
@@ -413,12 +442,12 @@ fn strong(ui: &Ui, fonts: &Fonts, text: impl Into<String>, size: f32) -> Arc<Gal
 }
 
 /// "Wed 08:30", in local time.
-fn local(t: DateTime<Utc>) -> String {
+pub(crate) fn local(t: DateTime<Utc>) -> String {
     t.with_timezone(&Local).format("%a %H:%M").to_string()
 }
 
 /// 950, 12.3K, 4.5M, 120M, 1.2B.
-fn compact(n: u64) -> String {
+pub(crate) fn compact(n: u64) -> String {
     for (size, suffix) in [(1e9, "B"), (1e6, "M"), (1e3, "K")] {
         let scaled = n as f64 / size;
         if scaled >= 1.0 {
@@ -429,7 +458,7 @@ fn compact(n: u64) -> String {
 }
 
 /// 12,345.
-fn grouped(n: u64) -> String {
+pub(crate) fn grouped(n: u64) -> String {
     let digits = n.to_string();
     let mut grouped = String::new();
     for (i, digit) in digits.chars().enumerate() {

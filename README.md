@@ -94,6 +94,8 @@ The exe is self-contained, so copy it anywhere. To start it when you sign in, tu
 - the Claude Code sessions running now
 - Claude Code's replies, tool calls and tokens this week, by day, model and project, on this PC
 
+To keep some of them in view, pick them on the **Details** page of settings: they show under the meters all the time, in the order you drag them into.
+
 **Show as** (pick one or more):
 
 - **Always on top**: floats above all windows
@@ -114,7 +116,7 @@ Tips:
 
 - Reads Claude Code's login token from `%USERPROFILE%\.claude\.credentials.json` (or `CLAUDE_CONFIG_DIR`, or `CLAUDE_CODE_OAUTH_TOKEN`).
 - Calls `api.anthropic.com/api/oauth/usage`, the same endpoint Claude Code uses. The token goes only to Anthropic.
-- For usage details, reads Claude Code's session transcripts in `%USERPROFILE%\.claude\projects`, only while the panel is expanded. They stay on your PC.
+- For usage details, reads Claude Code's session transcripts in `%USERPROFILE%\.claude\projects`, only while the panel is expanded or shows a detail from them. They stay on your PC.
 - Never writes to Claude's files. Its own settings live in `%APPDATA%\Cuota\settings.json`.
 
 API calls stay rare: about once a minute while Claude is working, every 10 minutes when idle, and right after a limit resets. It also reuses usage Claude Code already fetched.
