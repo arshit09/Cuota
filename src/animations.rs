@@ -201,8 +201,16 @@ impl Clawd {
     /// Paints Clawd into `rect` and returns when his next frame is due, or `None` when
     /// `animate` is off and he holds still. When `standing`, `rect` is sized by [`STANDING`]
     /// and he stands on its bottom edge, ready for his status under him; otherwise it's sized
-    /// by [`SIZE`] and what he draws is centred in it.
-    pub fn paint(&mut self, painter: &Painter, rect: Rect, state: &State, animate: bool, standing: bool) -> Option<Duration> {
+    /// by [`SIZE`] and what he draws is centred in it. Either way, times `scale`.
+    pub fn paint(
+        &mut self,
+        painter: &Painter,
+        rect: Rect,
+        state: &State,
+        animate: bool,
+        standing: bool,
+        scale: f32,
+    ) -> Option<Duration> {
         let now = Instant::now();
         let mood = Mood::of(state);
         let busy: Vec<_> = state.sessions.iter().filter(|s| s.busy).map(|s| (s.name.clone(), s.started)).collect();
@@ -233,13 +241,14 @@ impl Clawd {
         // The clip's drawing centred in the slot, or Clawd's feet on its bottom edge, with the
         // frame around it cut off past SPILL, or past FLOOR under his feet.
         let bounds = self.playing.bounds;
+        let (zoom, spill) = (SCALE * scale, SPILL * scale);
         let (top, room) = if standing {
-            let room = Rect::from_min_max(rect.min - Vec2::splat(SPILL), rect.max + vec2(SPILL, FLOOR));
-            (rect.bottom() - GROUND * SCALE, room)
+            let room = Rect::from_min_max(rect.min - Vec2::splat(spill), rect.max + vec2(spill, FLOOR * scale));
+            (rect.bottom() - GROUND * zoom, room)
         } else {
-            (rect.center().y - bounds.center().y * SCALE, rect.expand(SPILL))
+            (rect.center().y - bounds.center().y * zoom, rect.expand(spill))
         };
-        let frame = Rect::from_min_size(pos2(rect.center().x - bounds.center().x * SCALE, top), FRAME * SCALE);
+        let frame = Rect::from_min_size(pos2(rect.center().x - bounds.center().x * zoom, top), FRAME * zoom);
         let painter = painter.with_clip_rect(painter.clip_rect().intersect(room));
         painter.image(self.texture.id(), frame, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         animate.then(|| lasts.min(self.playing.ends().saturating_duration_since(now)).max(Duration::from_millis(1)))

@@ -73,12 +73,18 @@ impl View {
     }
 }
 
+/// The steps of the panel's Size slider, as multiples of its original size: small, medium
+/// (the original) and large, and the steps between.
+pub const SIZES: [f32; 10] = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6];
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub show: BTreeSet<Mode>,
     pub animate: bool,
     pub opacity: f32,
+    /// How big the panel is: one of [`SIZES`].
+    pub size: f32,
     pub panel: View,
     pub taskbar: View,
     pub double_click: DoubleClick,
@@ -95,6 +101,7 @@ impl Default for Settings {
             show: BTreeSet::from([Mode::AlwaysOnTop]),
             animate: true,
             opacity: 0.96,
+            size: 1.0,
             panel: View::default(),
             taskbar: View::default(),
             double_click: DoubleClick::default(),
@@ -118,7 +125,15 @@ impl Settings {
         if settings.show.is_empty() {
             settings.show = Self::default().show;
         }
+        // A size edited into the file by hand snaps to the nearest step.
+        settings.size = SIZES[settings.size_step()];
         settings
+    }
+
+    /// The Size slider's step nearest to `size`.
+    pub fn size_step(&self) -> usize {
+        let off = |step: &usize| (SIZES[*step] - self.size).abs();
+        (0..SIZES.len()).min_by(|a, b| off(a).total_cmp(&off(b))).unwrap_or_default()
     }
 
     pub fn shows_as(&self, mode: Mode) -> bool {
@@ -207,5 +222,24 @@ mod tests {
         let older: Settings = serde_json::from_str(r#"{"double_click":"App"}"#).unwrap();
         assert_eq!(older.double_click, DoubleClick::App);
         assert_eq!(older.custom_target, "");
+    }
+
+    #[test]
+    fn the_panel_starts_at_its_original_size_in_the_middle_of_ten_steps() {
+        assert_eq!(SIZES.len(), 10);
+        assert!(SIZES.windows(2).all(|pair| pair[0] < pair[1]));
+        let older: Settings = serde_json::from_str(r#"{"opacity":0.8}"#).unwrap();
+        assert_eq!(older.size, 1.0);
+        assert_eq!(SIZES[older.size_step()], 1.0);
+        assert!((3..=6).contains(&older.size_step()), "medium sits mid-slider");
+    }
+
+    #[test]
+    fn a_size_between_or_past_the_steps_snaps_to_the_nearest() {
+        let step = |size| SIZES[Settings { size, ..Settings::default() }.size_step()];
+        assert_eq!(step(1.04), 1.0);
+        assert_eq!(step(1.16), 1.2);
+        assert_eq!(step(0.1), SIZES[0]);
+        assert_eq!(step(5.0), SIZES[9]);
     }
 }

@@ -36,6 +36,7 @@ pub mod icon {
     pub const REFRESH: char = '\u{E72C}';
     pub const SETTINGS: char = '\u{E713}';
     pub const SHOW_AS: char = '\u{E7F4}';
+    pub const SIZE: char = '\u{E740}';
     pub const STARTUP: char = '\u{EC4A}';
     pub const STATUS: char = '\u{E8BD}';
     pub const STYLE: char = '\u{EB05}';
@@ -300,32 +301,61 @@ pub fn chip(ui: &mut Ui, fonts: &Fonts, on: &mut bool, label: &str) -> Response 
 
 /// A horizontal slider. Arrow keys nudge it when focused.
 pub fn slider(ui: &mut Ui, value: &mut f32, range: RangeInclusive<f32>, width: f32) -> Response {
+    let mut t = emath::remap_clamp(*value, range.clone(), 0.0..=1.0);
+    let response = slide(ui, &mut t, None, width);
+    if response.changed() {
+        *value = emath::lerp(range, t);
+    }
+    response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), f64::from(*value), ""));
+    response
+}
+
+/// A slider that stops only at `count` steps, each marked on its track. `step` is the one it's
+/// on, counting from 0. Arrow keys move it a step when focused.
+pub fn stepped_slider(ui: &mut Ui, step: &mut usize, count: usize, width: f32) -> Response {
+    let last = count.max(2) - 1;
+    let mut t = (*step).min(last) as f32 / last as f32;
+    let response = slide(ui, &mut t, Some(last), width);
+    *step = (t * last as f32).round() as usize;
+    response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), *step as f64 + 1.0, ""));
+    response
+}
+
+/// What both sliders share, at `t` from 0 to 1. With `steps`, `t` stops only at that many even
+/// divisions of the track, each marked, and an arrow key moves it one; otherwise a twentieth.
+fn slide(ui: &mut Ui, t: &mut f32, steps: Option<usize>, width: f32) -> Response {
     const KNOB: f32 = 7.0;
     let (rect, mut response) = ui.allocate_exact_size(vec2(width, 20.0), Sense::click_and_drag());
     let track = rect.shrink2(vec2(KNOB, 0.0));
-    let before = *value;
+    let nudge = steps.map_or(0.05, |steps| 1.0 / steps as f32);
+    let snap = |t: f32| steps.map_or(t, |steps| (t * steps as f32).round() / steps as f32);
+    let before = *t;
     if let Some(pointer) = response.interact_pointer_pos() {
-        let t = ((pointer.x - track.left()) / track.width()).clamp(0.0, 1.0);
-        *value = emath::lerp(range.clone(), t);
+        *t = snap(((pointer.x - track.left()) / track.width()).clamp(0.0, 1.0));
     }
     if response.has_focus() {
         let filter = EventFilter { horizontal_arrows: true, ..Default::default() };
         ui.memory_mut(|memory| memory.set_focus_lock_filter(response.id, filter));
-        let step = (range.end() - range.start()) / 20.0;
-        let steps = ui.input(|i| i.num_presses(Key::ArrowRight) as f32 - i.num_presses(Key::ArrowLeft) as f32);
-        *value = (*value + steps * step).clamp(*range.start(), *range.end());
+        let presses = ui.input(|i| i.num_presses(Key::ArrowRight) as f32 - i.num_presses(Key::ArrowLeft) as f32);
+        *t = snap((*t + presses * nudge).clamp(0.0, 1.0));
     }
-    if *value != before {
+    if *t != before {
         response.mark_changed();
     }
-    response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), f64::from(*value), ""));
 
-    let x = emath::lerp(track.x_range(), emath::remap_clamp(*value, range, 0.0..=1.0));
+    let x = emath::lerp(track.x_range(), *t);
     let y = rect.center().y;
     let bar = |from: f32, to: f32| Rect::from_min_max(pos2(from, y - 2.0), pos2(to, y + 2.0));
     let painter = ui.painter();
     painter.rect_filled(bar(track.left(), track.right()), 2, TRACK);
     painter.rect_filled(bar(track.left(), x), 2, ACCENT);
+    if let Some(steps) = steps {
+        // Dark dots on the filled part, light ones past it.
+        for i in 0..=steps {
+            let at = emath::lerp(track.x_range(), i as f32 / steps as f32);
+            painter.circle_filled(pos2(at, y), 1.25, if at <= x { WINDOW } else { DIM });
+        }
+    }
     let active = response.hovered() || response.dragged();
     painter.circle_filled(pos2(x, y), if active { KNOB + 0.5 } else { KNOB }, Color32::WHITE);
     focus_ring(ui, &response, Rect::from_center_size(pos2(x, y), vec2(2.0 * KNOB, 2.0 * KNOB)), KNOB);

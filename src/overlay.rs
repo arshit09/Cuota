@@ -7,7 +7,7 @@ use crate::animations::{self, Clawd};
 use crate::claude::{self, Limit, Shared, State};
 use crate::details;
 use crate::mascot::{CLAUDE_ORANGE, Mascot};
-use crate::settings::{DoubleClick, Mode, Settings, Style};
+use crate::settings::{DoubleClick, Mode, SIZES, Settings, Style};
 use crate::stats::Transcripts;
 use crate::tray::{Tray, TrayConfig, TrayEvent};
 use crate::view::{self, AMBER, DIM, TEXT};
@@ -417,44 +417,47 @@ impl Overlay {
         }
 
         let painter = ui.painter().clone();
+        // Everything but the details is drawn at the chosen size.
+        let scale = self.settings.size;
+        let margin = MARGIN * scale;
         let alpha = (self.settings.opacity * 255.0) as u8;
-        painter.rect_filled(full, 12, Color32::from_rgba_unmultiplied(BG.r(), BG.g(), BG.b(), alpha));
-        painter.rect_stroke(full, 12, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+        painter.rect_filled(full, 12.0 * scale, Color32::from_rgba_unmultiplied(BG.r(), BG.g(), BG.b(), alpha));
+        painter.rect_stroke(full, 12.0 * scale, Stroke::new(1.0, BORDER), StrokeKind::Inside);
 
         // Lay everything out first so the window can be sized to fit.
         let view = &self.settings.panel;
         let limits: Vec<&Limit> = state.limits.iter().filter(|l| view.shows(&l.label)).collect();
-        let builder = view::Builder { painter: &painter, strong: &self.fonts.strong, view, now: Utc::now() };
+        let builder = view::Builder { painter: &painter, strong: &self.fonts.strong, view, now: Utc::now(), scale };
         let meters = builder.build(&limits);
         let note = note(state).map(|(text, color)| {
-            painter.layout(text, FontId::proportional(12.0), color, meters.size.x.max(NOTE_WIDTH))
+            painter.layout(text, FontId::proportional(12.0 * scale), color, meters.size.x.max(NOTE_WIDTH * scale))
         });
         // Clawd stands over his status when it shows.
         let status = view.clawd && view.status;
-        let status_font = FontId::proportional(STATUS_SIZE);
+        let status_font = FontId::proportional(STATUS_SIZE * scale);
         let clawd = match (view.clawd, status) {
             (false, _) => Vec2::ZERO,
-            (true, false) => animations::SIZE,
+            (true, false) => animations::SIZE * scale,
             (true, true) => {
                 let line = painter.fonts_mut(|fonts| fonts.row_height(&status_font));
-                animations::STANDING + vec2(0.0, STATUS_GAP + line)
+                animations::STANDING * scale + vec2(0.0, STATUS_GAP * scale + line)
             }
         };
 
         let note_size = note.as_ref().map_or(Vec2::ZERO, |n| n.size());
-        let note_gap = if note.is_some() && meters.size.y > 0.0 { 4.0 } else { 0.0 };
+        let note_gap = if note.is_some() && meters.size.y > 0.0 { 4.0 * scale } else { 0.0 };
         let body = vec2(meters.size.x.max(note_size.x), meters.size.y + note_gap + note_size.y);
-        let gap = if clawd.x > 0.0 && body.x > 0.0 { GAP } else { 0.0 };
+        let gap = if clawd.x > 0.0 && body.x > 0.0 { GAP * scale } else { 0.0 };
         let row = vec2(clawd.x + gap + body.x, clawd.y.max(body.y));
         // Details scroll once they'd run past DETAILS_HEIGHT or off the screen.
         let details = self.expanded.then(|| {
             let room = self
                 .work_area(&ctx)
-                .map_or(DETAILS_HEIGHT, |work| work.height() - row.y - 2.0 * (MARGIN + SCREEN_GAP));
+                .map_or(DETAILS_HEIGHT, |work| work.height() - row.y - 2.0 * (margin + SCREEN_GAP));
             vec2(DETAILS_WIDTH, self.details_height.min(DETAILS_HEIGHT).min(room).max(0.0))
         });
         let inner = details.map_or(row, |details| vec2(row.x.max(details.x), row.y + details.y));
-        let size = (inner + Vec2::splat(2.0 * MARGIN)).round();
+        let size = (inner + Vec2::splat(2.0 * margin)).round();
         if size != self.size {
             self.size = size;
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
@@ -464,18 +467,18 @@ impl Overlay {
             }
         }
 
-        let origin = full.min + Vec2::splat(MARGIN);
+        let origin = full.min + Vec2::splat(margin);
         let mut next_frame = None;
         if clawd.x > 0.0 {
             let at = origin + vec2(0.0, (row.y - clawd.y) / 2.0);
-            let slot = Rect::from_min_size(at, if status { animations::STANDING } else { clawd });
-            next_frame = self.clawd.paint(&painter, slot, state, self.settings.animate, status);
+            let slot = Rect::from_min_size(at, if status { animations::STANDING * scale } else { clawd });
+            next_frame = self.clawd.paint(&painter, slot, state, self.settings.animate, status, scale);
             if status {
                 // Orange while he's on the job, like Claude Code's spinner; dim while he rests.
                 let (text, working) = self.clawd.status();
                 let color = if working { CLAUDE_ORANGE } else { DIM };
                 let galley = single_line(&painter, text, status_font, color, slot.width());
-                painter.galley(pos2(slot.center().x - galley.size().x / 2.0, slot.bottom() + STATUS_GAP), galley, color);
+                painter.galley(pos2(slot.center().x - galley.size().x / 2.0, slot.bottom() + STATUS_GAP * scale), galley, color);
             }
         }
         let body_at = origin + vec2(clawd.x + gap, (row.y - body.y) / 2.0);
@@ -489,7 +492,7 @@ impl Overlay {
 
         if let Some(details) = details {
             let area = Rect::from_min_size(origin + vec2(0.0, row.y), vec2(inner.x, details.y));
-            painter.hline(full.left() + MARGIN..=full.right() - MARGIN, area.top() + 6.0, Stroke::new(1.0, BORDER));
+            painter.hline(full.left() + margin..=full.right() - margin, area.top() + 6.0, Stroke::new(1.0, BORDER));
             let stats = self.transcripts.latest();
             let mut slot = ui.new_child(UiBuilder::new().max_rect(area));
             // Dragging anywhere moves the panel, so the details scroll by wheel and scroll bar.
@@ -644,6 +647,14 @@ impl Overlay {
                     win::set_start_with_windows(on);
                     *starts_with_windows = win::starts_with_windows();
                 }
+            });
+            widgets::divider(ui, fonts);
+            let size = format!("{:.0}%", settings.size * 100.0);
+            widgets::row(ui, fonts, icon::SIZE, "Size", Some("Small to large"), 134.0, |ui| {
+                ui.add_sized([34.0, 20.0], Label::new(RichText::new(size).size(12.0).color(DIM)));
+                let mut step = settings.size_step();
+                widgets::stepped_slider(ui, &mut step, SIZES.len(), 92.0);
+                settings.size = SIZES[step];
             });
             widgets::divider(ui, fonts);
             let opacity = format!("{:.0}%", settings.opacity * 100.0);
