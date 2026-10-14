@@ -6,11 +6,11 @@
 
 A tiny Windows widget that shows your Claude plan usage: session (5hr), weekly, and per-model limits. Same numbers as Claude Code's **Account & Usage** panel.
 
-Clawd, the Claude Code mascot, acts out a random activity while Claude works: a new one whenever a session starts working, and another every so often. He greets you as work starts and celebrates when it's done, waits around while sessions sit idle, and sleeps when none is open. Above the meters, a line says what he's up to, like Claude Code's spinner: a turning star, then *Percolating…*, *Spelunking…*, *Flibbertigibbeting…*, each new word typing itself over the last. The 62 animations come from [Mascot Studio](https://github.com/Harriszed/mascot-studio).
+Clawd, the Claude Code mascot, acts out a random activity while Claude works: a new one whenever a session starts working, and another every so often. He greets you as work starts and celebrates when it's done, waits around for a minute after, then falls asleep until there's work again. Above the meters, a line says what he's up to, like Claude Code's spinner: a turning star, then *Percolating…*, *Spelunking…*, *Flibbertigibbeting…*, each new word typing itself over the last. The 62 animations come from [Mascot Studio](https://github.com/Harriszed/mascot-studio).
 
 ## Screenshots
 
-**Clawd's moods**: working, waiting while sessions sit idle, asleep when none is open, and celebrating when work is done.
+**Clawd's moods**: working, waiting for a minute after a session goes idle, asleep once nothing is happening, and celebrating when work is done.
 
 <img src="docs/screenshots/moods.png" width="776" alt="Four panels: Clawd running commands in sunglasses (Wrangling…), drinking coffee while he waits (Lollygagging…), asleep in a nightcap (Snoozing…), and celebrating under confetti (Nailed it!)">
 

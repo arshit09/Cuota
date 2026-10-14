@@ -1,8 +1,8 @@
 //! Clawd's animations: the Mascot Studio GIFs in `assets/mascot` (see its NOTICE.md), built
 //! into the exe. While Claude works, Clawd acts out a random activity, switching to another
 //! whenever a session starts working and every so often in between. He greets when work
-//! starts and celebrates when it's done; with nothing to do he waits around, or sleeps when
-//! no session is open.
+//! starts and celebrates when it's done; with nothing to do he waits around a little, then
+//! falls asleep.
 
 use crate::claude::State;
 use chrono::{DateTime, Utc};
@@ -32,6 +32,9 @@ const REST_SPELL: Range<u64> = 60..180;
 /// Work this long earns a celebration when it ends, and a rest this long a greeting when work
 /// resumes; shorter turns just switch clips, so a quick chat isn't all hellos and confetti.
 const SPELL_WORTH_MARKING: Duration = Duration::from_secs(45);
+/// With no session busy for this long, Clawd falls asleep. Sessions are often left open all
+/// day, so he doesn't wait for them to close.
+const DOZE: Duration = Duration::from_secs(60);
 /// Mipmaps keep the pixel art smooth when it's drawn smaller than the frame.
 const OPTIONS: TextureOptions = TextureOptions { mipmap_mode: Some(TextureFilter::Linear), ..TextureOptions::LINEAR };
 
@@ -66,14 +69,14 @@ const WORKING: &[Clip] = &clips![
     "gag-hallucinate", "gag-tokens", "gag-context", "gag-prompt",
     "gag-robot", "gag-dance", "gag-buffering", "gag-deploy",
 ];
-/// Sessions are open, but none is busy.
+/// No session is busy, but one was a moment ago.
 const WAITING: &[Clip] = &clips![
     "idle", "idle-wizard-hat", "idle-fluid",
     "waiting-for-you", "waiting-for-you-fluid",
     "typing", "typing-fluid",
     "gag-coffee",
 ];
-/// No session is open.
+/// No session has been busy for a while, or none is open.
 const ASLEEP: &[Clip] = &clips!["asleep", "asleep-nightcap", "asleep-fluid", "gag-nap"];
 /// Cuota can't read the usage.
 const ERROR: &[Clip] = &clips!["error", "error-propeller-cap", "error-fluid"];
@@ -102,12 +105,12 @@ const BUSY_WORDS: &[&str] = &[
     "Untangling", "Vibing", "Weaving", "Whirring", "Whittling", "Wibbling", "Wizarding", "Wondering",
     "Working", "Wrangling",
 ];
-/// Sessions are open, but none is busy.
+/// No session is busy, but one was a moment ago.
 const WAITING_WORDS: &[&str] = &[
     "Waiting", "Idling", "Standing by", "Lounging", "Loafing", "Lollygagging", "Dawdling",
     "Daydreaming", "Twiddling thumbs", "Loitering", "Chilling",
 ];
-/// No session is open.
+/// No session has been busy for a while, or none is open.
 const ASLEEP_WORDS: &[&str] = &["Sleeping", "Snoozing", "Dozing", "Napping", "Hibernating", "Slumbering", "Snoring"];
 /// Cuota can't read the usage.
 const ERROR_WORDS: &[&str] = &["Stumped", "Befuddled", "Flummoxed", "Perplexed", "Bamboozled", "Baffled"];
@@ -123,12 +126,13 @@ enum Mood {
 }
 
 impl Mood {
-    fn of(state: &State) -> Self {
+    /// `worked` is when a session was last busy, if one has been since Cuota started.
+    fn of(state: &State, worked: Option<Instant>, now: Instant) -> Self {
         if state.working {
             Self::Working
         } else if state.error.is_some() {
             Self::Error
-        } else if state.sessions.is_empty() {
+        } else if state.sessions.is_empty() || worked.is_none_or(|t| now.saturating_duration_since(t) >= DOZE) {
             Self::Asleep
         } else {
             Self::Waiting
@@ -167,6 +171,8 @@ pub struct Clawd {
     mood: Mood,
     /// When the mood last changed.
     since: Instant,
+    /// When a session was last busy, if one has been since he started.
+    worked: Option<Instant>,
     /// The sessions that were busy at the last paint, by name and start time.
     busy: Vec<(String, Option<DateTime<Utc>>)>,
     playing: Playing,
@@ -182,7 +188,7 @@ impl Clawd {
         let blank = ColorImage::filled(playing.frames[0].image.size, Color32::TRANSPARENT);
         let texture = ctx.load_texture("clawd", blank, OPTIONS);
         let status = status(&mut rng, Mood::Asleep, false, "");
-        Self { texture, rng, mood: Mood::Asleep, since: now, busy: Vec::new(), playing, status }
+        Self { texture, rng, mood: Mood::Asleep, since: now, worked: None, busy: Vec::new(), playing, status }
     }
 
     /// His status, like "Percolating…", and whether it's about work rather than waiting,
@@ -195,7 +201,11 @@ impl Clawd {
     /// out, so the panel makes room for the status he paints with.
     pub fn update(&mut self, state: &State, animate: bool) {
         let now = Instant::now();
-        let mood = Mood::of(state);
+        // Work ends at the first update that finds it over, however long ago the last one was.
+        if state.working || self.mood == Mood::Working {
+            self.worked = Some(now);
+        }
+        let mood = Mood::of(state, self.worked, now);
         let busy: Vec<_> = state.sessions.iter().filter(|s| s.busy).map(|s| (s.name.clone(), s.started)).collect();
         let started_working = busy.iter().any(|session| !self.busy.contains(session));
         self.busy = busy;
@@ -586,12 +596,27 @@ mod tests {
     #[test]
     fn mood_follows_the_sessions() {
         let session = |busy| Session { name: "x".into(), title: None, project: None, app: "VS Code".into(), busy, started: None };
+        let now = Instant::now();
+        let just = Some(now);
         let state = State { working: true, sessions: vec![session(true)], error: Some("down".into()), ..State::default() };
-        assert_eq!(Mood::of(&state), Mood::Working);
+        assert_eq!(Mood::of(&state, None, now), Mood::Working);
         let state = State { sessions: vec![session(false)], error: Some("down".into()), ..State::default() };
-        assert_eq!(Mood::of(&state), Mood::Error);
+        assert_eq!(Mood::of(&state, None, now), Mood::Error);
         let state = State { sessions: vec![session(false)], ..State::default() };
-        assert_eq!(Mood::of(&state), Mood::Waiting);
-        assert_eq!(Mood::of(&State::default()), Mood::Asleep);
+        assert_eq!(Mood::of(&state, just, now), Mood::Waiting);
+        assert_eq!(Mood::of(&state, just, now + DOZE - Duration::from_secs(1)), Mood::Waiting);
+        assert_eq!(Mood::of(&State::default(), just, now), Mood::Asleep);
+    }
+
+    #[test]
+    fn clawd_falls_asleep_when_nothing_happens_though_sessions_are_open() {
+        let session = Session { name: "x".into(), title: None, project: None, app: "VS Code".into(), busy: false, started: None };
+        let state = State { sessions: vec![session], ..State::default() };
+        let now = Instant::now();
+        assert_eq!(Mood::of(&state, Some(now), now + DOZE), Mood::Asleep);
+        // Nothing has worked since Cuota started.
+        assert_eq!(Mood::of(&state, None, now), Mood::Asleep);
+        let (words, _) = Mood::Asleep.words(false);
+        assert!(words.contains(&"Sleeping"));
     }
 }
