@@ -599,7 +599,8 @@ impl Overlay {
                         let mut shown = settings.shows_as(mode);
                         // The last one stays on, so there's always something to right-click for settings.
                         let last = shown && settings.show.len() == 1;
-                        let chip = ui.add_enabled_ui(!last, |ui| widgets::chip(ui, fonts, &mut shown, name)).inner;
+                        // Added in place, not in an add_enabled_ui scope, so it can wrap to the next line.
+                        let chip = ui.add_enabled(!last, |ui: &mut egui::Ui| widgets::chip(ui, fonts, &mut shown, name));
                         if chip.on_disabled_hover_text("At least one stays on").changed() {
                             settings.set_shown_as(mode, shown);
                             // Show the options for what was just turned on.

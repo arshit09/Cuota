@@ -1,8 +1,45 @@
 # Cuota
 
+<p align="center">
+  <img src="docs/screenshots/clawd-at-work.png" width="383" alt="Cuota's panel: Clawd acts out one activity after another, with a word under him like Percolating…, beside bars for the Session, Weekly and Fable limits">
+</p>
+
 A tiny Windows widget that shows your Claude plan usage: session (5hr), weekly, and per-model limits. Same numbers as Claude Code's **Account & Usage** panel.
 
 Clawd, the Claude Code mascot, acts out a random activity while Claude works: a new one whenever a session starts working, and another every so often. He greets you as work starts and celebrates when it's done, waits around while sessions sit idle, and sleeps when none is open. A word under him says what he's up to, like Claude Code's spinner: *Percolating…*, *Spelunking…*, *Flibbertigibbeting…* The 62 animations come from [Mascot Studio](https://github.com/Harriszed/mascot-studio).
+
+## Screenshots
+
+**Clawd's moods**: working, waiting while sessions sit idle, asleep when none is open, and celebrating when work is done.
+
+<img src="docs/screenshots/moods.png" width="776" alt="Four panels: Clawd running commands in sunglasses (Wrangling…), drinking coffee while he waits (Lollygagging…), asleep in a nightcap (Snoozing…), and celebrating under confetti (Nailed it!)">
+
+**Make it yours**: rings instead of bars, Clawd without his status word, or just the meters.
+
+<p>
+  <img src="docs/screenshots/panel-pie.png" width="286" alt="The panel with a ring per limit, showing its percentage inside and the time left underneath">
+  <img src="docs/screenshots/panel-no-status.png" width="383" alt="The panel with Clawd searching the web and no status word under him">
+  <img src="docs/screenshots/panel-no-clawd.png" width="259" alt="The panel with only the limit bars, percentages and time left">
+</p>
+
+**Usage details and settings**: double-click the panel for details, right-click it for settings.
+
+<table>
+  <tr>
+    <td valign="top"><img src="docs/screenshots/panel-details.png" width="383" alt="The expanded panel: each limit's reset time and pace, and what the week's usage went to by app"></td>
+    <td valign="top"><img src="docs/screenshots/settings.png" width="340" alt="Cuota's settings: the account, Show as, Double-click, Start with Windows, Opacity and Animate Clawd, then what the panel displays"></td>
+  </tr>
+</table>
+
+**Taskbar and tray menu**: with Show as set to Taskbar, Clawd dances by the clock while Claude works, and each limit gets an icon, as Bars or Pie (enlarged here). Right-click any of Cuota's icons for its menu.
+
+<p>
+  <img src="docs/screenshots/taskbar.png" width="208" alt="Taskbar icons: Clawd dancing, then 15, 49 and 92 percent as numbers over bars, and again inside rings">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/tray-menu.png" width="145" alt="The tray menu: Cuota v0.1.0 by Clawd, then Usage details, Settings and Quit">
+</p>
+
+The screenshots use `--demo`'s made-up account and usage.
 
 ## Requirements
 
@@ -73,6 +110,12 @@ The endpoint is undocumented, so a Claude update could break it.
 | *Rate limited* | Cuota backs off on its own. Try a longer `--interval`. |
 | Taskbar icons missing | Click **^** by the clock and drag the Cuota icons onto the taskbar. |
 
+## License
+
+Cuota's code is free software, licensed under the [GNU General Public License v3.0](LICENSE) or any later version. You can use it, change it, share it and even sell it. If you share Cuota or anything built from its code, changed or not, you have to share the source code too, under the same license.
+
+The license covers Cuota's own code only. It doesn't cover Clawd's animations in `assets/mascot`, Anthropic's names, logo or mascot, or the screenshots in `docs/screenshots`, which show them. See [Credits and legal notice](#credits-and-legal-notice).
+
 ## Credits and legal notice
 
 Cuota is an unofficial project. It isn't made, endorsed or supported by Anthropic, and has no affiliation with Anthropic.
@@ -88,7 +131,7 @@ Cuota is an unofficial project. It isn't made, endorsed or supported by Anthropi
 - The reference animation's page says "© Copyright 2025" and gives no permission to reuse it.
 - The character they draw is Anthropic's.
 
-The GIFs are here, with credit, for personal, non-commercial use. Being in this repo gives you no rights to them. They're built into the exe (about 3.5 MB of it), so the same goes for any `cuota.exe` you build. Get permission from their owners before you reuse them, share them, or share a build that includes them.
+The GIFs are here, with credit, for personal, non-commercial use. Being in this repo gives you no rights to them, and Cuota's license doesn't apply to them. They're built into the exe (about 3.5 MB of it), so the same goes for any `cuota.exe` you build. Get permission from their owners before you reuse them, share them, or share a build that includes them.
 
 **Removal.** If you own any of this and want it taken down, [open an issue](https://github.com/arshit09/Cuota/issues) and it will be removed.
 
