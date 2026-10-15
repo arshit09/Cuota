@@ -38,9 +38,10 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, GetClientRect, GetCursorPos,
-    GetForegroundWindow, GetMessageW, HWND_BOTTOM, MSG, SW_SHOWNORMAL, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WINEVENT_OUTOFCONTEXT,
-    WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED, WM_NCCALCSIZE, WM_SIZE,
+    GWL_EXSTYLE, GetForegroundWindow, GetMessageW, GetWindowLongW, HWND_BOTTOM, MSG, STYLESTRUCT, SW_SHOWNORMAL,
+    SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW,
+    SetWindowPos, WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED, WM_NCCALCSIZE, WM_SIZE,
+    WM_STYLECHANGING, WS_EX_TOOLWINDOW,
 };
 
 /// claude.ai's page of plan usage.
@@ -355,6 +356,10 @@ unsafe extern "system" fn panel_window(
     match message {
         // Returning 0 leaves the proposed rectangle as is: the client area is the whole window.
         WM_NCCALCSIZE if wparam != 0 => return 0,
+        // winit rewrites the extended style whenever the window shows, hides or changes level.
+        WM_STYLECHANGING if wparam as i32 == GWL_EXSTYLE => unsafe {
+            (*(lparam as *mut STYLESTRUCT)).styleNew |= WS_EX_TOOLWINDOW;
+        },
         // The new width and height are the low and high words.
         WM_SIZE => cut_corners(window, (lparam & 0xffff) as i32, (lparam >> 16 & 0xffff) as i32),
         WM_DWMCOMPOSITIONCHANGED | WM_DISPLAYCHANGE => see_through(window),
@@ -364,14 +369,20 @@ unsafe extern "system" fn panel_window(
 }
 
 /// Sets up the panel's borderless window: its client area covers all of it, it's see-through,
-/// and it's cut to the panel's rounded corners as it resizes (see [`round_corners`]).
+/// it's cut to the panel's rounded corners as it resizes (see [`round_corners`]), and it's a
+/// tool window.
 ///
 /// egui asks winit for a drop shadow on every borderless window, which winit gets by moving
 /// the client area down a pixel: that leaves a line along the top and cuts the bottom row (the
 /// panel's bottom border) off.
+///
+/// Tools that arrange app windows leave tool windows alone. One that moved new windows to the
+/// cursor's monitor also put the panel back to its first size, cropping it. It also keeps the
+/// panel out of Alt+Tab.
 pub fn set_up_panel(window: HWND) {
     unsafe {
         SetWindowSubclass(window, Some(panel_window), 1, 0);
+        SetWindowLongW(window, GWL_EXSTYLE, GetWindowLongW(window, GWL_EXSTYLE) | WS_EX_TOOLWINDOW as i32);
         let flags = SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
         SetWindowPos(window, 0, 0, 0, 0, 0, flags);
     }

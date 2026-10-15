@@ -245,6 +245,8 @@ pub struct Overlay {
     /// The Show as choice the window was last set up for, and when.
     applied: Option<(BTreeSet<Mode>, Instant)>,
     size: Vec2,
+    /// The window's actual size last frame, to notice when something else resizes it.
+    window_size: Option<Vec2>,
     wheel: Wheel,
     flyout: Flyout,
     /// The Always on top or Desktop panel was hidden with a click on a tray icon.
@@ -336,6 +338,7 @@ impl Overlay {
             window: None,
             applied: None,
             size: Vec2::ZERO,
+            window_size: None,
             wheel: Wheel::default(),
             flyout: Flyout::Closed { at: None },
             hidden: false,
@@ -594,7 +597,13 @@ impl Overlay {
         let inner = details.map_or(row, |details| vec2(row.x.max(details.x), row.y + details.y));
         let size = (inner + Vec2::splat(2.0 * margin)).round();
         let wheel_shift = self.wheel.shift.take();
-        if size != self.size {
+        // Scripts and window managers can resize it too (one put it back to its first size,
+        // cropping the panel), so a size changed to anything else is asked for again. Only
+        // when it changes, so a size Windows won't allow isn't asked for every frame.
+        let window_size = ctx.input(|i| i.viewport().inner_rect).map(|r| r.size().round());
+        let resized = window_size != self.window_size && window_size.is_some_and(|actual| actual != size);
+        self.window_size = window_size;
+        if size != self.size || resized {
             self.size = size;
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
             self.place_flyout(&ctx);
