@@ -616,9 +616,9 @@ impl Overlay {
         let details = details.map(|details| Rect::from_min_size(origin + vec2(0.0, row.y), vec2(inner.x, details.y)));
         let mut next_frame = None;
         if clawd.x > 0.0 {
-            // Level with the meters, so the details under them run on below him.
-            let level = (row.y - body.y) / 2.0 + (head - clawd.y) / 2.0;
-            let slot = Rect::from_min_size(origin + vec2(0.0, level.clamp(0.0, row.y - clawd.y)), clawd);
+            // Halfway down what's beside him, so a long list of details doesn't leave him
+            // perched at the top with a gap under him.
+            let slot = Rect::from_min_size(origin + vec2(0.0, (row.y - clawd.y) / 2.0), clawd);
             next_frame = self.clawd.paint(&painter, slot, animate, scale);
         }
         let body_at = origin + vec2(clawd.x + gap, (row.y - body.y) / 2.0);
@@ -1432,6 +1432,27 @@ mod tests {
             assert!(panel_size(&ctx, &mut overlay, &state).y > (animations::SIZE.y + 2.0 * MARGIN) * size);
         }
         assert!(grown.windows(2).all(|pair| pair[0] < pair[1]), "they scale with the panel: {grown:?}");
+    }
+
+    #[test]
+    fn clawd_sits_halfway_down_the_panel_however_many_details_it_lists() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        let all: Details = Detail::ALL.map(|detail| (detail, true)).into_iter().collect();
+        for size in [SIZES[0], 1.0, SIZES[9]] {
+            overlay.settings.size = size;
+            for details in [Details::default(), all.clone()] {
+                overlay.settings.panel.details = details;
+                let output = ctx.run_ui(window(vec2(1600.0, 1200.0)), |ui| {
+                    overlay.panel(ui, &state);
+                });
+                // He's the only picture in the panel, clipped to his slot plus SPILL all round.
+                let slot = output.shapes.iter().find(|clipped| clipped.shape.texture_id() != egui::TextureId::default());
+                let slot = slot.expect("Clawd is drawn").clip_rect;
+                let middle = overlay.size.y / 2.0;
+                assert!((slot.center().y - middle).abs() <= 1.0, "at {size} he's at {slot:?} in {:?}", overlay.size);
+            }
+            assert!(overlay.size.y > (animations::SIZE.y + 2.0 * MARGIN) * size, "the details run past him at {size}");
+        }
     }
 
     /// Where the settings drew `text`, the first time.
