@@ -30,6 +30,10 @@ const IDLE_INTERVAL: TimeDelta = TimeDelta::minutes(10);
 const SETTLE: TimeDelta = TimeDelta::seconds(15);
 /// A busy session that hasn't written anything for this long has probably crashed.
 const STALE_BUSY: TimeDelta = TimeDelta::minutes(10);
+/// After a rate limit the API is left alone this long, doubling while it keeps refusing.
+/// Its `Retry-After` is often 0, and taking that at its word retried every tick, which kept
+/// the limit from ever lifting.
+const RATE_LIMIT_WAIT: TimeDelta = TimeDelta::minutes(5);
 const MAX_BACKOFF: TimeDelta = TimeDelta::minutes(15);
 /// Re-reading the credentials file is cheap, so an expired login is re-checked often
 /// to pick up the new token as soon as Claude Code refreshes it.
@@ -842,6 +846,7 @@ struct Poller {
     /// `None` until `.claude.json` has been read once.
     claude_json_modified: Option<Option<DateTime<Utc>>>,
     retry_at: Option<DateTime<Utc>>,
+    /// The wait after the last rate limit, or zero when the last fetch wasn't limited.
     backoff: TimeDelta,
     /// What's been read of each running session's transcript.
     transcripts: HashMap<PathBuf, Transcript>,
@@ -868,7 +873,7 @@ impl Poller {
             last_activity: None,
             claude_json_modified: None,
             retry_at: None,
-            backoff: active_interval,
+            backoff: TimeDelta::zero(),
             transcripts: HashMap::new(),
             fetched: false,
             failing: None,
@@ -909,7 +914,9 @@ impl Poller {
             changed = true;
         }
 
-        if force || self.api_due(now) {
+        // Refresh skips the usual wait, but not a rate limit's: asking again early only
+        // makes it last longer.
+        if (force && !self.rate_limited(now)) || self.api_due(now) {
             let result = fetch();
             let mut shared = state.lock().unwrap();
             let s = Arc::make_mut(&mut shared);
@@ -918,15 +925,12 @@ impl Poller {
                     self.log_success(&usage, now);
                     self.show(s, usage, now);
                     self.retry_at = None;
-                    self.backoff = self.active_interval;
+                    self.backoff = TimeDelta::zero();
                 }
                 Err(e) => {
                     let wait = match &e {
                         Error::Expired => EXPIRED_RECHECK,
-                        Error::RateLimited(after) => {
-                            self.backoff = (self.backoff * 2).min(MAX_BACKOFF);
-                            after.unwrap_or(self.backoff)
-                        }
+                        Error::RateLimited(after) => self.rate_limit_wait(*after),
                         _ => self.active_interval,
                     };
                     self.retry_at = Some(now + wait);
@@ -980,6 +984,16 @@ impl Poller {
         log::warn!("{message}{tries}. Trying again in {}.", until(now + wait, now));
         failing.logged = message;
         failing.logged_at = now;
+    }
+
+    /// How long to leave the API alone after it rate limited us, given its `Retry-After`.
+    fn rate_limit_wait(&mut self, after: Option<TimeDelta>) -> TimeDelta {
+        self.backoff = (self.backoff * 2).clamp(RATE_LIMIT_WAIT, MAX_BACKOFF);
+        after.map_or(self.backoff, |after| after.max(self.backoff))
+    }
+
+    fn rate_limited(&self, now: DateTime<Utc>) -> bool {
+        self.backoff > TimeDelta::zero() && self.retry_at.is_some_and(|t| now < t)
     }
 
     fn api_due(&self, now: DateTime<Utc>) -> bool {
@@ -1382,6 +1396,22 @@ mod tests {
         assert!(poller.api_due(now), "window reset since the fetch");
         poller.retry_at = Some(now + TimeDelta::seconds(30));
         assert!(!poller.api_due(now), "backing off");
+    }
+
+    #[test]
+    fn rate_limits_wait_minutes_even_when_told_zero() {
+        let (mut poller, now) = poller_with_data(2);
+        let zero = Some(TimeDelta::zero());
+        assert_eq!(poller.rate_limit_wait(zero), TimeDelta::minutes(5));
+        assert_eq!(poller.rate_limit_wait(zero), TimeDelta::minutes(10));
+        assert_eq!(poller.rate_limit_wait(None), TimeDelta::minutes(15));
+        assert_eq!(poller.rate_limit_wait(None), TimeDelta::minutes(15), "capped");
+        assert_eq!(poller.rate_limit_wait(Some(TimeDelta::hours(1))), TimeDelta::hours(1), "a longer ask is kept");
+
+        poller.retry_at = Some(now + TimeDelta::minutes(5));
+        assert!(poller.rate_limited(now), "Refresh waits too");
+        poller.backoff = TimeDelta::zero();
+        assert!(!poller.rate_limited(now), "other failures can be refreshed past");
     }
 
     #[test]
