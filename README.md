@@ -34,16 +34,28 @@ Clawd, the Claude Code mascot, acts out a random activity while Claude works: a 
 
 <img src="docs/screenshots/panel-details.png" width="383" alt="The expanded panel: each limit's reset time and pace, and what the week's usage went to by app">
 
-**Settings**: right-click the panel. Like Windows 11's Settings, it has a page for each part.
+**Desktop pet**: just Clawd, out on your screen with nothing around him, walking about and doing what Claude's doing, with what he's up to under him. Rest the pointer on him for a card of your usage.
+
+<p>
+  <img src="docs/screenshots/desktop-pet.png" width="230" alt="Clawd walking to the right and back on his own, his eyes looking the way he goes, with ✻ Percolating… under him">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/desktop-pet-card.png" width="355" alt="The pointer resting on Clawd, and a card beside him with the Session, Weekly and Fable bars, 2 sessions running with 1 working, and when usage was updated">
+</p>
+
+**Settings**: right-click the panel, or Clawd. Like Windows 11's Settings, it has a page for each part.
 
 <table>
   <tr>
-    <td><img src="docs/screenshots/settings-general.png" width="400" alt="Settings, General page: Show as open, with Always on top and Taskbar checked and Desktop not, Double-click set to Show details, and Start with Windows on"></td>
-    <td><img src="docs/screenshots/settings-appearance.png" width="400" alt="Settings, Appearance page: Size at 100%, Resize with mouse wheel on, Opacity at 96%, and Animate Clawd on"></td>
+    <td><img src="docs/screenshots/settings-general.png" width="400" alt="Settings, General page: Show as open, with Always on top, Taskbar and Desktop pet checked and Desktop not, Double-click set to Show details, and Move aside for the pointer off"></td>
+    <td><img src="docs/screenshots/settings-appearance.png" width="400" alt="Settings, Appearance page: Size at 100%, Resize with mouse wheel on, Opacity at 96%, Animate Clawd and Sound effects on, Sound mode set to Normal, and Hear the sounds"></td>
   </tr>
   <tr>
     <td><img src="docs/screenshots/settings-panel.png" width="400" alt="Settings, Panel page: Style set to Bars, Limits showing Session, Weekly and Fable, and Percentage, Time left, Clawd and Status all on"></td>
     <td><img src="docs/screenshots/settings-taskbar.png" width="400" alt="Settings, Taskbar page: Style set to Bars, Limits open with Session, Weekly and Fable checked, and Percentage, Time left and Clawd on"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/settings-pet.png" width="400" alt="Settings, Desktop pet page: Size at 100%, Status, React to pointer and Card on hover on, then the card's Style set to Bars, its Limits, and Percentage and Time left on"></td>
+    <td></td>
   </tr>
 </table>
 
@@ -101,12 +113,20 @@ To keep some of them in view, pick them on the **Details** page of settings: the
 - **Always on top**: floats above all windows
 - **Desktop**: sits behind windows, like a desktop widget
 - **Taskbar**: Clawd and each limit as tray icons. Click one for the panel.
+- **Desktop pet**: just Clawd, out on your screen with no panel around him. Pick it alone to have only him.
 
 Drag the panel to move it. Always on top and Desktop are the same panel, so only one can be on.
 
+**Desktop pet**: Clawd walks about the screen on his own, legs going, and does what Claude's doing. At work he acts out a task and now and then scuttles somewhere new; with nothing going on he falls asleep, and every few minutes wakes up, ambles off and sleeps somewhere else. When Claude stops to ask you something, he tells you it's your turn until you answer. There's nothing around him: clicks anywhere but on Clawd himself reach whatever is behind him. His status line, like *Percolating…*, sits under him. Drag him anywhere, click him and he says hi, and right-click him for settings. He steps behind a full-screen game, video or presentation until it's done. On the **Desktop pet** page of settings:
+
+- **Size**: ten steps, like the panel's.
+- **Status**: the line under him, on or off.
+- **React to pointer**: his eyes follow the pointer, and he walks over to it when Claude needs you. Now and then he comes to say hi, keeps it company (following when it moves off), or naps beside it.
+- **Card on hover**: rest the pointer on him to see a card of usage beside him. A pointer just passing over him, or him walking under a still one, doesn't count. Pick the card's style, limits and details on the same page, and drag the details into order. Double-click him to show it straight away.
+
 **Move aside for the pointer** (in General, off at first): to click something behind the panel, just head for it. When the pointer slows down coming toward the panel, as it does before a click, the panel slides out of the way, and it slides back once the pointer has left its spot. Passing quickly over it, or idling beside it, leaves it where it is. To use the panel itself, hold **Ctrl** as you point at it; it then stays put until the pointer leaves it.
 
-Settings has a page for each part, picked in its sidebar: **General** (Show as, Double-click, Move aside for the pointer, Start with Windows), **Appearance** (the panel's size and opacity, Clawd's animation, and 8-bit sound effects: Normal plays only what matters, like work starting, Claude asking you something and work finishing, while Lively adds a sound for each kind of step; a list plays each one so you can learn them), and **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel. **View on GitHub**, at the foot of the sidebar, opens this repository.
+Settings has a page for each part, picked in its sidebar: **General** (Show as, Double-click, Move aside for the pointer, Start with Windows), **Appearance** (the panel's size and opacity, Clawd's animation, and 8-bit sound effects: Normal plays only what matters, like work starting, Claude asking you something and work finishing, while Lively adds a sound for each kind of step; a list plays each one so you can learn them), **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel, and **Desktop pet** (above). **View on GitHub**, at the foot of the sidebar, opens this repository.
 
 Tips:
 

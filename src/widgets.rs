@@ -68,13 +68,19 @@ pub mod icon {
     pub const EXTERNAL: char = '\u{E8A7}';
     pub const FOLDER: char = '\u{E838}';
     pub const HEAR: char = '\u{E7F6}';
+    /// A card with a picture and lines.
+    pub const HOVER_CARD: char = '\u{E8A1}';
     pub const LIMITS: char = '\u{E9F9}';
     pub const LOG: char = '\u{E8A5}';
     pub const MOVE_ASIDE: char = '\u{E759}';
     pub const OPACITY: char = '\u{E793}';
     pub const PANEL: char = '\u{E737}';
     pub const PERCENT: char = '\u{E94C}';
+    /// Someone walking: Clawd out on the desktop.
+    pub const PET: char = '\u{E805}';
     pub const PLAY: char = '\u{E768}';
+    /// A pointer, touched.
+    pub const REACT: char = '\u{E7C9}';
     pub const QUIT: char = '\u{E7E8}';
     pub const REFRESH: char = '\u{E72C}';
     /// A gripper, to drag a row into another order by.

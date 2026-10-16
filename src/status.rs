@@ -4,7 +4,7 @@
 
 use crate::mascot::CLAUDE_ORANGE;
 use crate::view::{DIM, TEXT};
-use eframe::egui::{FontId, Painter, Pos2, Rect, Vec2, pos2, vec2};
+use eframe::egui::{Color32, FontId, Painter, Pos2, Rect, Vec2, pos2, vec2};
 use std::time::{Duration, Instant};
 
 /// Text size, in points at the panel's normal size.
@@ -32,11 +32,14 @@ pub struct Status {
     typing: Option<(String, Instant)>,
     /// When the star started turning.
     since: Instant,
+    /// A rim of this colour around everything, so the line reads over whatever is behind it
+    /// when there's no panel: the desktop pet's.
+    pub outline: Option<Color32>,
 }
 
 impl Status {
     pub fn new() -> Self {
-        Self { word: String::new(), typing: None, since: Instant::now() }
+        Self { word: String::new(), typing: None, since: Instant::now(), outline: None }
     }
 
     /// Shows `word`, typed over the last one when `animate`.
@@ -71,9 +74,21 @@ impl Status {
         let turning = working && animate;
         let turned = now.saturating_duration_since(self.since);
         let glyph = if turning { star(turned) } else { RESTING };
+        // A pixel's rim in every direction, under the text.
+        let outline = self.outline;
+        let rim = |text: &str, at: Pos2| {
+            let Some(outline) = outline else { return };
+            let galley = painter.layout_no_wrap(text.to_owned(), font.clone(), outline);
+            let pixel = 1.0 / painter.pixels_per_point();
+            for (dx, dy) in [(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)] {
+                painter.galley(at + vec2(dx, dy) * pixel, galley.clone(), outline);
+            }
+        };
         // Centred in its room, on the word's baseline.
         let galley = painter.layout_no_wrap(glyph.to_string(), font.clone(), star_color);
-        painter.galley(pos2(at.x + (STAR_WIDTH * em - galley.size().x) / 2.0, at.y), galley, star_color);
+        let star_at = pos2(at.x + (STAR_WIDTH * em - galley.size().x) / 2.0, at.y);
+        rim(&glyph.to_string(), star_at);
+        painter.galley(star_at, galley, star_color);
 
         let mut x = at.x + (STAR_WIDTH + STAR_GAP) * em;
         let typing = self.typing.as_ref().filter(|_| animate).and_then(|(last, since)| {
@@ -87,7 +102,9 @@ impl Status {
             let galley = painter.layout_no_wrap(text.to_owned(), font.clone(), color);
             *x += galley.size().x;
             let height = galley.size().y;
-            painter.galley(pos2(*x - galley.size().x, at.y), galley, color);
+            let left = pos2(*x - galley.size().x, at.y);
+            rim(text, left);
+            painter.galley(left, galley, color);
             height
         };
         let mut next = None;
@@ -98,6 +115,9 @@ impl Status {
             Some(((before, after), elapsed)) => {
                 let height = text(before, &mut x);
                 let cursor = Rect::from_min_size(pos2(x + 0.06 * em, at.y + 0.12 * height), vec2(CURSOR_WIDTH * em, 0.8 * height));
+                if let Some(outline) = outline {
+                    painter.rect_filled(cursor.expand(1.0 / painter.pixels_per_point()), 0.0, outline);
+                }
                 painter.rect_filled(cursor, 0.0, color);
                 x += CURSOR_ROOM * em;
                 text(after, &mut x);
@@ -133,7 +153,7 @@ fn typed(from: &str, to: &str, elapsed: Duration) -> Option<(String, String)> {
         // Each settling letter picks noise, or itself, afresh with each step of the cursor.
         let mixed = (i as u32).wrapping_mul(0x9E37_79B9) ^ (cursor as u32).wrapping_mul(0x85EB_CA6B);
         let mixed = mixed ^ (mixed >> 15);
-        if mixed % 3 == 0 { c } else { NOISE[(mixed >> 4) as usize % NOISE.len()] }
+        if mixed.is_multiple_of(3) { c } else { NOISE[(mixed >> 4) as usize % NOISE.len()] }
     });
     // The cursor stands on the old letter it's replacing.
     Some((before.collect(), from.iter().skip(cursor + 1).collect()))

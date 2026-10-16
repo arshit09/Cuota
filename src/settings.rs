@@ -18,6 +18,9 @@ pub enum Mode {
     /// Icons in the taskbar's notification area. Clicking one opens the panel, or hides and
     /// shows it when Always on top or Desktop keeps it on screen.
     Taskbar,
+    /// Clawd on his own, walking about the screen with no panel around him (see pet.rs). Goes
+    /// with any of the others.
+    Pet,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +259,48 @@ impl<'de> Deserialize<'de> for Details {
 /// (the original) and large, and the steps between.
 pub const SIZES: [f32; 10] = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6];
 
+/// The step of [`SIZES`] nearest to `size`.
+pub fn size_step(size: f32) -> usize {
+    let off = |step: &usize| (SIZES[*step] - size).abs();
+    (0..SIZES.len()).min_by(|a, b| off(a).total_cmp(&off(b))).unwrap_or_default()
+}
+
+/// Clawd on his own as a desktop pet, when Show as includes [`Mode::Pet`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Pet {
+    /// How big he is: one of [`SIZES`].
+    pub size: f32,
+    /// What he's up to, like "Percolating…", under him.
+    pub status: bool,
+    /// His eyes follow the pointer, and now and then he walks over to it to say hi, keep it
+    /// company or nap beside it.
+    pub react: bool,
+    /// Resting the pointer on him shows a card beside him, with what `card` picks.
+    pub hover: bool,
+    /// What that card shows: its meters, and the details under them. Its `clawd` and `status`
+    /// aren't used.
+    pub card: View,
+    /// Where he last settled, so he's there next time: the top-left of his frame (see
+    /// `animations::FRAME`), in pixels.
+    pub pos: Option<[f32; 2]>,
+}
+
+impl Default for Pet {
+    fn default() -> Self {
+        // A quick look: the limits, and the sessions behind them.
+        let details = [(Detail::Sessions, true), (Detail::Updated, true)].into_iter().collect();
+        Self {
+            size: 1.0,
+            status: true,
+            react: true,
+            hover: true,
+            card: View { details, ..View::default() },
+            pos: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -275,6 +320,7 @@ pub struct Settings {
     pub move_aside: bool,
     pub panel: View,
     pub taskbar: View,
+    pub pet: Pet,
     pub double_click: DoubleClick,
     /// What a Custom double-click opens: the path of a file, program, script or shortcut.
     /// Empty until one is picked.
@@ -296,6 +342,7 @@ impl Default for Settings {
             move_aside: false,
             panel: View::default(),
             taskbar: View::default(),
+            pet: Pet::default(),
             double_click: DoubleClick::default(),
             custom_target: String::new(),
             panel_pos: None,
@@ -316,6 +363,7 @@ impl Settings {
         }
         // A size edited into the file by hand snaps to the nearest step.
         settings.size = SIZES[settings.size_step()];
+        settings.pet.size = SIZES[size_step(settings.pet.size)];
         settings
     }
 
@@ -337,8 +385,7 @@ impl Settings {
 
     /// The Size slider's step nearest to `size`.
     pub fn size_step(&self) -> usize {
-        let off = |step: &usize| (SIZES[*step] - self.size).abs();
-        (0..SIZES.len()).min_by(|a, b| off(a).total_cmp(&off(b))).unwrap_or_default()
+        size_step(self.size)
     }
 
     /// Moves the size `steps` steps up (or down, when negative), stopping at either end.
@@ -360,7 +407,7 @@ impl Settings {
         match mode {
             Mode::AlwaysOnTop => self.show.remove(&Mode::Desktop),
             Mode::Desktop => self.show.remove(&Mode::AlwaysOnTop),
-            Mode::Taskbar => false,
+            Mode::Taskbar | Mode::Pet => false,
         };
         self.show.insert(mode);
     }
@@ -447,8 +494,10 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.panel.details.shown().count(), 0);
         assert_eq!(order(&settings.panel.details), Detail::ALL);
-        let text = serde_json::to_string(&settings).unwrap();
-        assert!(!text.contains("details"), "untouched, they stay out of the file: {text}");
+        let saved = serde_json::to_value(&settings).unwrap();
+        for view in ["panel", "taskbar"] {
+            assert!(saved[view].get("details").is_none(), "untouched, they stay out of the file: {saved}");
+        }
         let older: Settings = serde_json::from_str(r#"{"panel":{"clawd":true,"percent":false},"opacity":0.8}"#).unwrap();
         assert_eq!(older.panel.details, Details::default());
         assert_eq!(older.opacity, 0.8);
@@ -562,6 +611,33 @@ mod tests {
         let off = Settings { wheel_resize: false, ..Settings::default() };
         let text = serde_json::to_string(&off).unwrap();
         assert!(!serde_json::from_str::<Settings>(&text).unwrap().wheel_resize);
+    }
+
+    #[test]
+    fn the_desktop_pet_goes_with_any_mode_and_keeps_its_own_settings() {
+        let mut settings = Settings::default();
+        assert!(!settings.shows_as(Mode::Pet), "off until picked");
+        settings.set_shown_as(Mode::Pet, true);
+        settings.set_shown_as(Mode::Desktop, true);
+        assert_eq!(settings.show, BTreeSet::from([Mode::Desktop, Mode::Pet]));
+        // Pet alone: no panel stays on screen.
+        settings.set_shown_as(Mode::Desktop, false);
+        assert_eq!(settings.pinned(), None);
+
+        // Older settings get him with everything on, and a card with a couple of details.
+        let older: Settings = serde_json::from_str(r#"{"show":["Taskbar","Pet"],"size":1.2}"#).unwrap();
+        assert!(older.shows_as(Mode::Pet) && older.pet.status && older.pet.react && older.pet.hover);
+        assert_eq!(older.pet.size, 1.0);
+        assert_eq!(older.pet.card.details.shown().collect::<Vec<_>>(), [Detail::Sessions, Detail::Updated]);
+        let mut changed = Settings { pet: Pet { react: false, size: 1.4, pos: Some([10.0, 20.0]), ..Pet::default() }, ..older };
+        changed.pet.card.details.toggle(0);
+        let text = serde_json::to_string(&changed).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), changed);
+        // Picking none of the card's details is kept, though it matches View's default.
+        let none = Pet { card: View::default(), ..Pet::default() };
+        let text = serde_json::to_string(&Settings { pet: none.clone(), ..Settings::default() }).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().pet, none);
+        assert_eq!(SIZES[size_step(1.43)], 1.4);
     }
 
     #[test]

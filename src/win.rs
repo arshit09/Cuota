@@ -15,7 +15,7 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Graphics::Dwm::{DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DwmEnableBlurBehindWindow};
 use windows_sys::Win32::Graphics::Gdi::{
     CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO,
-    MonitorFromPoint, RGN_OR, SetWindowRgn,
+    MonitorFromPoint, MonitorFromWindow, RGN_OR, SetWindowRgn,
 };
 use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -24,7 +24,7 @@ use windows_sys::Win32::System::Registry::{
     RegGetValueW, RegSetKeyValueW,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    CreateMutexW, GetCurrentThreadId, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows_sys::Win32::UI::Controls::Dialogs::{
@@ -39,11 +39,13 @@ use windows_sys::Win32::UI::Shell::{
     ABM_GETTASKBARPOS, APPBARDATA, DefSubclassProc, SHAppBarMessage, SetWindowSubclass, ShellExecuteW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, GA_ROOT, GetAncestor, GetClientRect,
-    GetCursorPos, GWL_EXSTYLE, GetForegroundWindow, GetMessageW, GetWindowLongW, GetWindowRect, HWND_BOTTOM, MSG,
-    STYLESTRUCT, SW_SHOWNORMAL, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SetWindowLongW, SetWindowPos, WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED,
-    WM_NCCALCSIZE, WM_SIZE, WM_STYLECHANGING, WS_EX_TOOLWINDOW, WindowFromPoint,
+    DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, EnumThreadWindows, GA_ROOT, GetAncestor,
+    GetClassNameW, GetClientRect, GetCursorPos, GWL_EXSTYLE, GetForegroundWindow, GetMessageW, GetWindowLongW,
+    GetWindowRect, GetWindowTextW, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, IsZoomed, MA_NOACTIVATE, MSG,
+    STYLESTRUCT, SW_SHOWNORMAL,
+    SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW,
+    SetWindowPos, WINDOWPOS, WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED, WM_MOUSEACTIVATE,
+    WM_NCCALCSIZE, WM_SIZE, WM_STYLECHANGING, WM_WINDOWPOSCHANGED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WindowFromPoint,
 };
 
 /// claude.ai's page of plan usage.
@@ -508,6 +510,155 @@ pub fn corner_radius() -> f32 {
     f32::from_bits(CORNER_RADIUS.load(Ordering::Relaxed))
 }
 
+/// One of this thread's windows, by title. eframe makes every window on the main thread, and
+/// says nothing of the native windows behind viewports other than the first.
+pub fn own_window(title: &str) -> Option<HWND> {
+    unsafe extern "system" fn check(window: HWND, found: LPARAM) -> i32 {
+        let (title, found) = unsafe { &mut *(found as *mut (Vec<u16>, HWND)) };
+        let mut text = [0u16; 128];
+        let length = unsafe { GetWindowTextW(window, text.as_mut_ptr(), text.len() as i32) };
+        if usize::try_from(length).is_ok_and(|length| text[..length] == title[..title.len() - 1]) {
+            *found = window;
+            return 0;
+        }
+        1
+    }
+    let mut search = (wide(title), 0 as HWND);
+    unsafe { EnumThreadWindows(GetCurrentThreadId(), Some(check), &mut search as *mut _ as LPARAM) };
+    (search.1 != 0).then_some(search.1)
+}
+
+unsafe extern "system" fn pet_window(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _: usize,
+    _: usize,
+) -> LRESULT {
+    match message {
+        WM_NCCALCSIZE if wparam != 0 => return 0,
+        WM_STYLECHANGING if wparam as i32 == GWL_EXSTYLE => unsafe {
+            (*(lparam as *mut STYLESTRUCT)).styleNew |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        },
+        // Clicking him leaves the keyboard with whatever had it.
+        WM_MOUSEACTIVATE => return MA_NOACTIVATE as LRESULT,
+        // His own steps go ahead, but winit hears nothing moved (see place_window).
+        WM_WINDOWPOSCHANGED if QUIET_MOVE.load(Ordering::Relaxed) => unsafe {
+            let mut changed = *(lparam as *const WINDOWPOS);
+            changed.flags |= SWP_NOMOVE;
+            return DefSubclassProc(window, message, wparam, &mut changed as *mut WINDOWPOS as LPARAM);
+        },
+        WM_DWMCOMPOSITIONCHANGED | WM_DISPLAYCHANGE => see_through(window),
+        _ => {}
+    }
+    unsafe { DefSubclassProc(window, message, wparam, lparam) }
+}
+
+/// Sets up the desktop pet's borderless window as [`set_up_panel`] does the panel's, except
+/// that it takes clicks without taking the keyboard from the window you're typing in, and its
+/// shape comes from [`shape_window`] rather than rounded corners.
+pub fn set_up_pet(window: HWND) {
+    unsafe {
+        SetWindowSubclass(window, Some(pet_window), 2, 0);
+        let style = GetWindowLongW(window, GWL_EXSTYLE) | (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) as i32;
+        SetWindowLongW(window, GWL_EXSTYLE, style);
+        let flags = SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+        SetWindowPos(window, 0, 0, 0, 0, 0, flags);
+    }
+    see_through(window);
+}
+
+/// Set while [`place_window`] moves the desktop pet.
+static QUIET_MOVE: AtomicBool = AtomicBool::new(false);
+
+/// Moves the desktop pet's window's top-left to `x`, `y`, and sizes it `width` by `height` when
+/// given, in one step, so what it shows doesn't jump. A move alone needs no drawing, since the
+/// compositor keeps what the window shows, and winit isn't told of it: either would draw him
+/// again for every step he takes, on top of the frames he walks by, and each of those frames
+/// would take another step.
+pub fn place_window(window: HWND, x: i32, y: i32, size: Option<(i32, i32)>) {
+    let (width, height) = size.unwrap_or_default();
+    let keep = if size.is_none() { SWP_NOSIZE | SWP_NOREDRAW } else { 0 };
+    QUIET_MOVE.store(true, Ordering::Relaxed);
+    unsafe { SetWindowPos(window, 0, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE | keep) };
+    QUIET_MOVE.store(false, Ordering::Relaxed);
+}
+
+/// Cuts a window down to `rects`, in pixels from its top-left: elsewhere it neither draws nor
+/// takes clicks, which go to whatever is behind it.
+pub fn shape_window(window: HWND, rects: &[RECT]) {
+    unsafe {
+        let region = CreateRectRgn(0, 0, 0, 0);
+        for rect in rects {
+            let part = CreateRectRgn(rect.left, rect.top, rect.right, rect.bottom);
+            CombineRgn(region, region, part, RGN_OR);
+            DeleteObject(part);
+        }
+        // Windows owns the region from here on.
+        SetWindowRgn(window, region, 1);
+    }
+}
+
+/// `rect` with corners rounded to `radius` pixels, as rows: see [`corner_insets`].
+pub fn rounded(rect: RECT, radius: f32) -> Vec<RECT> {
+    let height = rect.bottom - rect.top;
+    let insets = corner_insets(radius);
+    let rows = (insets.len() as i32).min(height / 2);
+    let mut rects = vec![RECT { top: rect.top + rows, bottom: rect.bottom - rows, ..rect }];
+    for (y, &inset) in (0..rows).zip(&insets) {
+        let inset = inset.min((rect.right - rect.left) / 2);
+        for top in [rect.top + y, rect.bottom - 1 - y] {
+            rects.push(RECT { left: rect.left + inset, top, right: rect.right - inset, bottom: top + 1 });
+        }
+    }
+    rects
+}
+
+/// Keeps a window above all others, or puts it behind them.
+pub fn set_on_top(window: HWND, on_top: bool) {
+    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+    unsafe {
+        if on_top {
+            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, flags);
+        } else {
+            SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+            SetWindowPos(window, HWND_BOTTOM, 0, 0, 0, 0, flags);
+        }
+    }
+}
+
+/// The window in front fills the whole monitor at `x`, `y`, taskbar and all: a full-screen
+/// game, video, browser or presentation. A maximized window doesn't count, even with the
+/// taskbar hidden. (Windows' own SHQueryUserNotificationState says "busy" for a full-screen
+/// window on any monitor, and sometimes with none at all.)
+pub fn full_screen_at(x: i32, y: i32) -> bool {
+    unsafe {
+        let front = GetForegroundWindow();
+        if front == 0 || IsZoomed(front) != 0 {
+            return false;
+        }
+        // The desktop and the taskbar fill their monitors too.
+        let mut class = [0u16; 32];
+        let length = GetClassNameW(front, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
+        let class = String::from_utf16_lossy(&class[..length]);
+        if ["Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"].contains(&class.as_str()) {
+            return false;
+        }
+        let monitor = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        if MonitorFromWindow(front, MONITOR_DEFAULTTONULL) != monitor {
+            return false;
+        }
+        let mut info: MONITORINFO = zeroed();
+        info.cbSize = size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return false;
+        }
+        let (window, screen) = (window_rect(front), info.rcMonitor);
+        window.left <= screen.left && window.top <= screen.top && window.right >= screen.right && window.bottom >= screen.bottom
+    }
+}
+
 thread_local! {
     static BOTTOM: RefCell<Option<(HWND, Arc<AtomicBool>)>> = const { RefCell::new(None) };
 }
@@ -564,6 +715,31 @@ mod tests {
         assert!(insets.windows(2).all(|pair| pair[0] >= pair[1]));
         // A fractional radius, as at a smaller panel size: its last row holds the arc's centre and keeps everything.
         assert_eq!(corner_insets(9.6).last(), Some(&0));
+    }
+
+    #[test]
+    fn the_pets_card_is_cut_to_rounded_corners_wherever_it_is() {
+        let card = RECT { left: 100, top: 50, right: 300, bottom: 130 };
+        let rows = rounded(card, 12.0);
+        let inside = |x: i32, y: i32| rows.iter().any(|r| (r.left..r.right).contains(&x) && (r.top..r.bottom).contains(&y));
+        // The same corners as the panel's, moved to where the card is.
+        assert!(!inside(100, 50) && !inside(105, 50) && inside(106, 50));
+        assert!(!inside(299, 129) && inside(293, 129));
+        assert!(inside(100, 90) && inside(299, 90) && !inside(99, 90) && !inside(300, 90));
+        assert!(rows.iter().all(|r| r.left >= card.left && r.right <= card.right && r.top >= card.top && r.bottom <= card.bottom));
+    }
+
+    #[test]
+    fn finds_its_own_window_by_title() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_POPUP};
+        unsafe {
+            let (class, title) = (wide("STATIC"), wide("Cuota test window"));
+            let window = CreateWindowExW(0, class.as_ptr(), title.as_ptr(), WS_POPUP, 0, 0, 10, 10, 0, 0, 0, null());
+            assert_ne!(window, 0);
+            assert_eq!(own_window("Cuota test window"), Some(window));
+            assert_eq!(own_window("Cuota test"), None, "the whole title");
+            DestroyWindow(window);
+        }
     }
 
     #[test]

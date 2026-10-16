@@ -3,15 +3,16 @@
 //! details. It also hosts the settings window, and keeps itself sized, placed and layered for
 //! the chosen modes.
 
-use crate::animations::{self, Clawd};
+use crate::animations::{self, Act, Clawd};
 use crate::claude::{self, Limit, Shared, State, Step};
 use crate::details;
 use crate::dodge::Dodge;
 use crate::glance;
 use crate::log;
 use crate::mascot::Mascot;
+use crate::pet::{self, Pet};
 use crate::scripts::{self, Scripts};
-use crate::settings::{DoubleClick, Mode, SIZES, Settings, SoundMode, Style};
+use crate::settings::{DoubleClick, Mode, SIZES, Settings, SoundMode, Style, View, size_step};
 use crate::sound::{self, Cues};
 use crate::stats::Transcripts;
 use crate::status::Status;
@@ -33,22 +34,22 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const MARGIN: f32 = 12.0;
+pub(crate) const MARGIN: f32 = 12.0;
 /// The panel's corner radius.
-const CORNER: f32 = 12.0;
+pub(crate) const CORNER: f32 = 12.0;
 const GAP: f32 = 10.0;
 /// Between Clawd's status and the meters under it.
 const STATUS_GAP: f32 = 4.0;
 /// Wrap width for an error message, or the details picked to show under the meters, when the
 /// meters are narrower.
-const NOTE_WIDTH: f32 = 220.0;
+pub(crate) const NOTE_WIDTH: f32 = 220.0;
 /// Between the meters and those details.
-const GLANCE_GAP: f32 = 6.0;
+pub(crate) const GLANCE_GAP: f32 = 6.0;
 /// The settings window, a landscape one like other Windows apps' settings: this big when the
 /// screen has room, and resizable down to `SETTINGS_MIN`. A sidebar lists the pages, and the
 /// one shown runs no wider than `PAGE_WIDTH`.
 const SETTINGS_SIZE: Vec2 = vec2(800.0, 600.0);
-const SETTINGS_MIN: Vec2 = vec2(640.0, 420.0);
+const SETTINGS_MIN: Vec2 = vec2(640.0, 460.0);
 const SIDEBAR_WIDTH: f32 = 248.0;
 const PAGE_WIDTH: f32 = 760.0;
 /// The page's title, above what scrolls, and the room either side of the page.
@@ -76,13 +77,15 @@ const STATS_REFRESH: Duration = Duration::from_secs(15);
 /// Keeps an expanded panel this far from its screen's edges.
 const SCREEN_GAP: f32 = 8.0;
 const SAVE_DELAY: Duration = Duration::from_secs(1);
+/// The shortest wait between frames: one at 60 Hz.
+pub(crate) const FRAME_TIME: Duration = Duration::from_millis(16);
 /// After a Show as change, the reported window position is trusted only once the move landed.
 const SETTLE: Duration = Duration::from_millis(500);
 /// A tray click this soon after the flyout closed is the click that closed it.
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
 
-const BG: Color32 = Color32::from_rgb(28, 28, 30);
-const BORDER: Color32 = Color32::from_rgb(56, 56, 60);
+pub(crate) const BG: Color32 = Color32::from_rgb(28, 28, 30);
+pub(crate) const BORDER: Color32 = Color32::from_rgb(56, 56, 60);
 
 /// The card under a Custom double-click: what it opens, and a Browse button to pick it. The
 /// Open dialog runs on a thread of its own, so what it picked arrives on a later frame.
@@ -139,10 +142,12 @@ enum Page {
     Details,
     /// What the taskbar icons show.
     Taskbar,
+    /// Clawd on his own on the desktop, and the card he shows.
+    Pet,
 }
 
 impl Page {
-    const ALL: [Self; 5] = [Self::General, Self::Appearance, Self::Panel, Self::Details, Self::Taskbar];
+    const ALL: [Self; 6] = [Self::General, Self::Appearance, Self::Panel, Self::Details, Self::Taskbar, Self::Pet];
 
     fn name(self) -> &'static str {
         match self {
@@ -151,6 +156,7 @@ impl Page {
             Self::Panel => "Panel",
             Self::Details => "Details",
             Self::Taskbar => "Taskbar",
+            Self::Pet => "Desktop pet",
         }
     }
 
@@ -161,6 +167,7 @@ impl Page {
             Self::Panel => icon::PANEL,
             Self::Details => icon::DETAILS,
             Self::Taskbar => icon::TASKBAR,
+            Self::Pet => icon::PET,
         }
     }
 }
@@ -236,6 +243,8 @@ pub struct Overlay {
     mascot: Mascot,
     clawd: Clawd,
     status: Status,
+    /// Clawd on his own on the desktop, while Show as includes him.
+    pet: Option<Pet>,
     cues: Cues,
     fonts: Fonts,
     scripts: Scripts,
@@ -263,8 +272,11 @@ pub struct Overlay {
     /// Whether the settings window is on screen yet. A new one stays hidden until it has drawn
     /// itself once, or Windows shows it blank white for a moment.
     settings_shown: bool,
-    /// The size the settings window opens at, fitted to the panel's screen.
+    /// The size the settings window opens at, fitted to its screen.
     settings_size: Vec2,
+    /// Where on screen, in pixels, the desktop pet was when he asked for settings, so they
+    /// open on his screen rather than the panel's.
+    settings_near: Option<Pos2>,
     settings_page: Page,
     /// Which of the settings' expanders are open, by page and title.
     open_expanders: HashMap<(Page, &'static str), bool>,
@@ -333,6 +345,7 @@ impl Overlay {
             mascot: Mascot::new(ctx, spark),
             clawd: Clawd::new(ctx),
             status: Status::new(),
+            pet: None,
             cues: Cues::new(),
             fonts,
             scripts: Scripts::default(),
@@ -351,6 +364,7 @@ impl Overlay {
             settings_requested: false,
             settings_shown: false,
             settings_size: SETTINGS_SIZE,
+            settings_near: None,
             settings_page: Page::General,
             open_expanders: HashMap::new(),
             starts_with_windows: false,
@@ -581,7 +595,7 @@ impl Overlay {
         let animate = self.settings.animate;
         let status = view.clawd && view.status;
         let clawd = if view.clawd {
-            self.clawd.update(state, animate);
+            self.clawd.update(state, animate, Act::Mood);
             animations::SIZE * scale
         } else {
             Vec2::ZERO
@@ -696,17 +710,25 @@ impl Overlay {
                 next = Some(next.map_or(due - now, |n| n.min(due - now)));
             }
         }
+        // No sooner than a frame: Clawd's next frame, his status's star and its typing each ask
+        // for their own next change, and together they'd draw the panel a few milliseconds apart.
         if let Some(next) = next {
-            ctx.request_repaint_after(next);
+            repaint_after(ctx, next.max(FRAME_TIME));
         }
     }
 
     fn open_settings(&mut self, ctx: &egui::Context) {
+        self.open_settings_near(ctx, None);
+    }
+
+    /// Opens settings on the screen with `near` on it, a point in pixels, or else the panel's.
+    fn open_settings_near(&mut self, ctx: &egui::Context, near: Option<Pos2>) {
         if !self.settings_open {
             self.settings_shown = false;
             self.settings_page = Page::General;
-            // Its usual size, or as much of it as fits on the panel's screen.
-            self.settings_size = self.work_area(ctx).map_or(SETTINGS_SIZE, |screen| {
+            self.settings_near = near;
+            // Its usual size, or as much of it as fits on its screen.
+            self.settings_size = self.settings_screen(ctx).map_or(SETTINGS_SIZE, |screen| {
                 let room = screen.size() - TITLE_BAR - Vec2::splat(2.0 * SCREEN_GAP);
                 SETTINGS_SIZE.min(room).max(SETTINGS_MIN)
             });
@@ -718,10 +740,60 @@ impl Overlay {
         ctx.send_viewport_cmd_to(settings_viewport(), ViewportCommand::Focus);
     }
 
+    /// Opens settings at `page`, on the screen with `near` on it, as right-clicking the desktop
+    /// pet does.
+    fn open_settings_at(&mut self, ctx: &egui::Context, page: Page, near: Pos2) {
+        self.open_settings_near(ctx, Some(near));
+        self.settings_page = page;
+    }
+
+    /// The part of the screen settings open on that the taskbar leaves free, in points: the
+    /// desktop pet's when he asked for them, the panel's otherwise.
+    fn settings_screen(&self, ctx: &egui::Context) -> Option<Rect> {
+        let Some(near) = self.settings_near else { return self.work_area(ctx) };
+        let work = win::work_area(near.x as i32, near.y as i32)?;
+        let work = Rect::from_min_max(pos2(work.left as f32, work.top as f32), pos2(work.right as f32, work.bottom as f32));
+        Some(work / ctx.pixels_per_point())
+    }
+
+    /// Keeps the desktop pet on screen while Show as includes him, handing him what he shows,
+    /// and does what he asks. His window closes once this stops being called.
+    fn keep_pet(&mut self, ctx: &egui::Context, state: &Arc<State>) {
+        if !self.settings.shows_as(Mode::Pet) {
+            self.pet = None;
+            return;
+        }
+        let given = pet::Given {
+            state: state.clone(),
+            stats: self.transcripts.latest(),
+            pet: self.settings.pet.clone(),
+            animate: self.settings.animate,
+            opacity: self.settings.opacity,
+            double_click: self.settings.double_click,
+            custom_target: self.settings.custom_target.clone(),
+        };
+        let pet = self.pet.get_or_insert_with(|| Pet::new(ctx, &self.fonts, given.clone()));
+        pet.show(ctx, given);
+        let asks = pet.take_asks();
+        if let Some(near) = asks.settings {
+            if self.settings_open {
+                self.settings_open = false;
+            } else {
+                self.open_settings_at(ctx, Page::Pet, near);
+            }
+        }
+        if let Some(spot) = asks.spot {
+            self.settings.pet.pos = Some(spot);
+        }
+        if asks.stats {
+            self.refresh_stats(state);
+        }
+    }
+
     fn settings_window(&mut self, ctx: &egui::Context, state: &State) {
-        // The panel's screen, in pixels: where a new window opens.
+        // Its screen, in pixels: where a new window opens.
         let panel_screen =
-            if self.settings_shown { None } else { self.work_area(ctx).map(|work| work * ctx.pixels_per_point()) };
+            if self.settings_shown { None } else { self.settings_screen(ctx).map(|work| work * ctx.pixels_per_point()) };
         let builder = ViewportBuilder::default()
             .with_title("Cuota settings")
             .with_inner_size(self.settings_size)
@@ -859,11 +931,17 @@ impl Overlay {
         let page = *page;
 
         let note = match page {
-            Page::Panel | Page::Details if settings.pinned().is_none() => {
+            Page::Panel | Page::Details if settings.pinned().is_none() && settings.shows_as(Mode::Taskbar) => {
                 Some("The panel opens when you click a taskbar icon.")
+            }
+            Page::Panel | Page::Details if settings.pinned().is_none() => {
+                Some("These apply once Show as, under General, includes Always on top, Desktop or Taskbar.")
             }
             Page::Taskbar if !settings.shows_as(Mode::Taskbar) => {
                 Some("These apply once Show as, under General, includes Taskbar.")
+            }
+            Page::Pet if !settings.shows_as(Mode::Pet) => {
+                Some("These apply once Show as, under General, includes Desktop pet.")
             }
             _ => None,
         };
@@ -994,29 +1072,7 @@ impl Overlay {
             Page::Panel | Page::Taskbar => {
                 let taskbar = page == Page::Taskbar;
                 let view = if taskbar { &mut settings.taskbar } else { &mut settings.panel };
-                let styles = [(Style::Bars, "Bars"), (Style::Pie, "Pie")];
-                let width = widgets::dropdown_width(ui, &styles.map(|(_, name)| name));
-                widgets::setting(ui, fonts, icon::STYLE, "Style", Some("How each limit is drawn"), width, |ui| {
-                    widgets::dropdown(ui, fonts, &mut view.style, &styles, width);
-                });
-                if state.limits.is_empty() {
-                    let about = Some("They appear here once usage has loaded");
-                    widgets::setting(ui, fonts, icon::LIMITS, "Limits", about, 0.0, |_| {});
-                } else {
-                    let shown: Vec<&str> =
-                        state.limits.iter().filter(|limit| view.shows(&limit.label)).map(|limit| limit.label.as_str()).collect();
-                    let summary = if shown.is_empty() { "None".to_owned() } else { shown.join(", ") };
-                    let open = open_expanders.entry((page, "Limits")).or_default();
-                    let about = Some("Pick the ones to show");
-                    widgets::expander(ui, fonts, open, icon::LIMITS, "Limits", about, &summary, |ui| {
-                        for limit in &state.limits {
-                            let mut shown = view.shows(&limit.label);
-                            if widgets::check_item(ui, fonts, &mut shown, &limit.label, None).changed() {
-                                view.set_shown(&limit.label, shown);
-                            }
-                        }
-                    });
-                }
+                style_and_limits(ui, fonts, open_expanders, page, view, state);
                 let (time_left, clawd) = if taskbar {
                     ("Shows when you hover an icon", "Shows if Claude is working")
                 } else {
@@ -1042,38 +1098,123 @@ impl Overlay {
                 }
             }
             Page::Details => {
-                let view = &mut settings.panel;
-                // Each row's example is what the panel would show now, where it can.
                 let stats = self.transcripts.latest();
-                let limits: Vec<&Limit> = state.limits.iter().filter(|limit| view.shows(&limit.label)).collect();
-                let source = glance::Source { state, stats: stats.as_deref(), limits: &limits, now: Utc::now() };
-                let items = view.details.items();
-                let examples: Vec<String> = items.iter().map(|&(detail, _)| glance::example(detail, &source)).collect();
-                let rows: Vec<SortRow> = items
-                    .iter()
-                    .zip(&examples)
-                    .map(|(&(detail, on), example)| SortRow {
-                        id: Id::new(("detail", detail)),
-                        on,
-                        title: glance::title(detail),
-                        description: example,
-                    })
-                    .collect();
-                let summary = match view.details.shown().count() {
-                    0 => "None".to_owned(),
-                    shown => format!("{shown} shown"),
-                };
-                let about = Some("Pick what the panel shows there, and drag them into order");
-                let sorted = widgets::group(ui, fonts, icon::CHECKLIST, "Under the meters", about, &summary, |ui| {
-                    widgets::sortable(ui, fonts, &rows)
+                let about = "Pick what the panel shows there, and drag them into order";
+                details_list(ui, fonts, &mut settings.panel, state, stats.as_deref(), "Under the meters", about);
+            }
+            Page::Pet => {
+                let pet = &mut settings.pet;
+                let size = format!("{:.0}%", pet.size * 100.0);
+                widgets::setting(ui, fonts, icon::SIZE, "Size", Some("Small to large"), SLIDER_ROW, |ui| {
+                    value_label(ui, size);
+                    let mut step = size_step(pet.size);
+                    widgets::stepped_slider(ui, &mut step, SIZES.len(), SLIDER_WIDTH);
+                    pet.size = SIZES[step];
                 });
-                match sorted {
-                    Some(Sorted::Toggled(index)) => view.details.toggle(index),
-                    Some(Sorted::Moved { from, to }) => view.details.move_item(from, to),
-                    None => {}
-                }
+                let about = Some("What he's up to, like Percolating…, under him");
+                widgets::setting(ui, fonts, icon::STATUS, "Status", about, widgets::TOGGLE_WIDTH, |ui| {
+                    widgets::toggle(ui, &mut pet.status);
+                });
+                let about = Some("His eyes follow it. He comes over when Claude needs you, and now and then to say hi, keep it company or nap beside it.");
+                widgets::setting(ui, fonts, icon::REACT, "React to pointer", about, widgets::TOGGLE_WIDTH, |ui| {
+                    widgets::toggle(ui, &mut pet.react);
+                });
+                let about = Some("Rest the pointer on him to see your usage beside him. Passing over him doesn't count.");
+                widgets::setting(ui, fonts, icon::HOVER_CARD, "Card on hover", about, widgets::TOGGLE_WIDTH, |ui| {
+                    widgets::toggle(ui, &mut pet.hover);
+                });
+                // What the card shows.
+                let stats = self.transcripts.latest();
+                ui.add_enabled_ui(pet.hover, |ui| {
+                    let card = &mut pet.card;
+                    style_and_limits(ui, fonts, open_expanders, page, card, state);
+                    for (glyph, title, about, on) in [
+                        (icon::PERCENT, "Percentage", None, &mut card.percent),
+                        (icon::TIME_LEFT, "Time left", Some("Until each limit resets"), &mut card.time_left),
+                    ] {
+                        widgets::setting(ui, fonts, glyph, title, about, widgets::TOGGLE_WIDTH, |ui| {
+                            widgets::toggle(ui, on);
+                        });
+                    }
+                    let about = "Pick what the card shows under the meters, and drag them into order";
+                    details_list(ui, fonts, card, state, stats.as_deref(), "Also in the card", about);
+                });
             }
         }
+    }
+}
+
+/// How a view's limits are drawn, and which ones it shows.
+fn style_and_limits(
+    ui: &mut egui::Ui,
+    fonts: &Fonts,
+    open_expanders: &mut HashMap<(Page, &'static str), bool>,
+    page: Page,
+    view: &mut View,
+    state: &State,
+) {
+    let styles = [(Style::Bars, "Bars"), (Style::Pie, "Pie")];
+    let width = widgets::dropdown_width(ui, &styles.map(|(_, name)| name));
+    widgets::setting(ui, fonts, icon::STYLE, "Style", Some("How each limit is drawn"), width, |ui| {
+        widgets::dropdown(ui, fonts, &mut view.style, &styles, width);
+    });
+    if state.limits.is_empty() {
+        let about = Some("They appear here once usage has loaded");
+        widgets::setting(ui, fonts, icon::LIMITS, "Limits", about, 0.0, |_| {});
+    } else {
+        let shown: Vec<&str> =
+            state.limits.iter().filter(|limit| view.shows(&limit.label)).map(|limit| limit.label.as_str()).collect();
+        let summary = if shown.is_empty() { "None".to_owned() } else { shown.join(", ") };
+        let open = open_expanders.entry((page, "Limits")).or_default();
+        let about = Some("Pick the ones to show");
+        widgets::expander(ui, fonts, open, icon::LIMITS, "Limits", about, &summary, |ui| {
+            for limit in &state.limits {
+                let mut shown = view.shows(&limit.label);
+                if widgets::check_item(ui, fonts, &mut shown, &limit.label, None).changed() {
+                    view.set_shown(&limit.label, shown);
+                }
+            }
+        });
+    }
+}
+
+/// The details a view can show under its meters, to pick and drag into order, in a group
+/// called `title`.
+fn details_list(
+    ui: &mut egui::Ui,
+    fonts: &Fonts,
+    view: &mut View,
+    state: &State,
+    stats: Option<&crate::stats::Stats>,
+    title: &str,
+    about: &str,
+) {
+    // Each row's example is what would show now, where it can.
+    let limits: Vec<&Limit> = state.limits.iter().filter(|limit| view.shows(&limit.label)).collect();
+    let source = glance::Source { state, stats, limits: &limits, now: Utc::now() };
+    let items = view.details.items();
+    let examples: Vec<String> = items.iter().map(|&(detail, _)| glance::example(detail, &source)).collect();
+    let rows: Vec<SortRow> = items
+        .iter()
+        .zip(&examples)
+        .map(|(&(detail, on), example)| SortRow {
+            id: Id::new((title, detail)),
+            on,
+            title: glance::title(detail),
+            description: example,
+        })
+        .collect();
+    let summary = match view.details.shown().count() {
+        0 => "None".to_owned(),
+        shown => format!("{shown} shown"),
+    };
+    let sorted = widgets::group(ui, fonts, icon::CHECKLIST, title, Some(about), &summary, |ui| {
+        widgets::sortable(ui, fonts, &rows)
+    });
+    match sorted {
+        Some(Sorted::Toggled(index)) => view.details.toggle(index),
+        Some(Sorted::Moved { from, to }) => view.details.move_item(from, to),
+        None => {}
     }
 }
 
@@ -1110,6 +1251,13 @@ impl eframe::App for Overlay {
                 self.set_hidden(ctx, !settings && !details && !self.hidden);
                 self.settings_requested |= settings;
                 ctx.request_repaint();
+            } else if !self.settings.shows_as(Mode::Taskbar) {
+                // Only the desktop pet shows, so there's no panel to open, only settings: asked
+                // for by starting Cuota again.
+                if settings {
+                    self.open_settings(ctx);
+                }
+                ctx.request_repaint();
             } else if settings || details {
                 // Settings with the panel open beside them, or the panel with its details.
                 self.settings_requested |= settings;
@@ -1144,8 +1292,9 @@ impl eframe::App for Overlay {
             sound::play(sound);
         }
         if let Some(due) = self.cues.due() {
-            ctx.request_repaint_after(due.saturating_duration_since(now));
+            repaint_after(ctx, due.saturating_duration_since(now));
         }
+        self.keep_pet(ctx, &state);
 
         // Titles, folders and the account come in whatever script they were written in.
         let stats = self.transcripts.latest();
@@ -1215,7 +1364,7 @@ fn settings_viewport() -> ViewportId {
 }
 
 /// The Show as options: each one's mode, name and what it does.
-fn show_as_options(settings: &Settings) -> [(Mode, &'static str, String); 3] {
+fn show_as_options(settings: &Settings) -> [(Mode, &'static str, String); 4] {
     let click = if settings.pinned().is_some() { "to hide or show the panel" } else { "to open the panel" };
     [
         (Mode::AlwaysOnTop, "Always on top", "Floats above all windows. Drag it to move it.".to_owned()),
@@ -1228,6 +1377,13 @@ fn show_as_options(settings: &Settings) -> [(Mode, &'static str, String); 3] {
                  onto the taskbar once."
             ),
         ),
+        (
+            Mode::Pet,
+            "Desktop pet",
+            "Clawd on his own, walking about your screen and doing what Claude's doing. Right-click him \
+             for settings."
+                .to_owned(),
+        ),
     ]
 }
 
@@ -1236,8 +1392,17 @@ fn value_label(ui: &mut egui::Ui, value: String) {
     ui.add_sized([VALUE_WIDTH, 20.0], Label::new(RichText::new(value).size(14.0).color(widgets::SECONDARY)));
 }
 
+/// Asks for another frame after `wait`. egui starts every wait a frame's time early, so the
+/// frame is ready on time, which turns any wait shorter than a frame into none at all: an
+/// animation waiting for its next frame then drew again and again until it came due, keeping
+/// a CPU core a fifth busy. That frame's time is added back here.
+pub(crate) fn repaint_after(ctx: &egui::Context, wait: Duration) {
+    let frame = Duration::try_from_secs_f32(ctx.input(|i| i.predicted_dt)).unwrap_or_default();
+    ctx.request_repaint_after(wait + frame);
+}
+
 /// A status line under the meters: the last error, or "Loading..." before any data.
-fn note(state: &State) -> Option<(String, Color32)> {
+pub(crate) fn note(state: &State) -> Option<(String, Color32)> {
     match (&state.error, state.limits.is_empty()) {
         (Some(error), _) => Some((error.clone(), AMBER)),
         (None, true) => Some(("Loading...".into(), DIM)),
@@ -1601,7 +1766,7 @@ mod tests {
             });
         };
         frame(&mut overlay, vec![]);
-        ctx.memory_mut(|memory| memory.request_focus(Id::new(("detail", Detail::ALL[0]))));
+        ctx.memory_mut(|memory| memory.request_focus(Id::new(("Under the meters", Detail::ALL[0]))));
         frame(&mut overlay, vec![key(egui::Key::ArrowDown)]);
         frame(&mut overlay, vec![key(egui::Key::ArrowDown)]);
         let order: Vec<Detail> = overlay.settings.panel.details.items().iter().map(|(detail, _)| *detail).collect();
@@ -1651,8 +1816,9 @@ mod tests {
         for settings in tallest_settings() {
             let show = settings.show.clone();
             overlay.settings = settings;
-            // Details is a list of everything the panel can show, which scrolls like any long list.
-            for page in Page::ALL.into_iter().filter(|&page| page != Page::Details) {
+            // Details is a list of everything the panel can show, which scrolls like any long
+            // list, and Desktop pet has that list for his card.
+            for page in Page::ALL.into_iter().filter(|&page| ![Page::Details, Page::Pet].contains(&page)) {
                 overlay.settings_page = page;
                 let mut height = 0.0;
                 let _ = ctx.run_ui(window(SETTINGS_SIZE), |ui| height = overlay.settings_ui(ui, &state));
