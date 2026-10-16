@@ -4,6 +4,7 @@
 mod animations;
 mod claude;
 mod details;
+mod dodge;
 mod glance;
 mod log;
 mod mascot;

@@ -6,6 +6,7 @@
 use crate::animations::{self, Clawd};
 use crate::claude::{self, Limit, Shared, State, Step};
 use crate::details;
+use crate::dodge::Dodge;
 use crate::glance;
 use crate::log;
 use crate::mascot::Mascot;
@@ -248,6 +249,8 @@ pub struct Overlay {
     /// The window's actual size last frame, to notice when something else resizes it.
     window_size: Option<Vec2>,
     wheel: Wheel,
+    /// Slides the Always on top or Desktop panel out of the pointer's way, when that's on.
+    dodge: Dodge,
     flyout: Flyout,
     /// The Always on top or Desktop panel was hidden with a click on a tray icon.
     hidden: bool,
@@ -340,6 +343,7 @@ impl Overlay {
             size: Vec2::ZERO,
             window_size: None,
             wheel: Wheel::default(),
+            dodge: Dodge::new(),
             flyout: Flyout::Closed { at: None },
             hidden: false,
             shown_frame: 0,
@@ -474,13 +478,22 @@ impl Overlay {
         Some(work / ppp)
     }
 
+    /// Where the Always on top or Desktop panel sits when it isn't expanded or moved out of the
+    /// pointer's way, given where its window is.
+    fn home(&self, window: Rect) -> Pos2 {
+        self.dodge.home().unwrap_or(window.min + self.lift)
+    }
+
     /// Moves the Always on top or Desktop panel up or left as little as it takes for the expanded panel
     /// to stay on screen, and back again when it shrinks. A resize by mouse wheel moves it by
     /// `wheel_shift` first, and keeps it on screen too.
     fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2, wheel_shift: Option<Vec2>) {
         let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else { return };
-        // Where the panel sits when it isn't expanded.
-        let mut at = rect.min + self.lift + wheel_shift.unwrap_or_default();
+        // Aside for the pointer, or sliding, it's where the slide puts it.
+        if self.dodge.moving() {
+            return;
+        }
+        let mut at = self.home(rect) + wheel_shift.unwrap_or_default();
         self.lift = Vec2::ZERO;
         if (self.expanded || wheel_shift.is_some())
             && let Some(work) = self.work_area(ctx)
@@ -519,7 +532,10 @@ impl Overlay {
         let docked = self.settings.pinned().is_none();
 
         // Drag to move (the flyout stays put); right-click for settings; double-click as set.
-        let background = ui.interact(full, ui.id().with("background"), Sense::click_and_drag());
+        // Moved out of the pointer's way, or sliding there or back, it ignores clicks.
+        let idle = self.dodge.idle();
+        let sense = if idle { Sense::click_and_drag() } else { Sense::hover() };
+        let background = ui.interact(full, ui.id().with("background"), sense);
         if background.secondary_clicked() {
             if self.settings_open {
                 self.settings_open = false;
@@ -659,7 +675,7 @@ impl Overlay {
                 ctx.request_repaint();
             }
         }
-        if self.settings.wheel_resize {
+        if self.settings.wheel_resize && idle {
             self.wheel.resize(ui, details, &mut self.settings);
         }
         next_frame
@@ -897,6 +913,15 @@ impl Overlay {
                     custom_target(ui, fonts, settings, browsing);
                 }
 
+                // For the panel that stays on screen, not the flyout.
+                ui.add_enabled_ui(settings.pinned().is_some(), |ui| {
+                    let about = Some("Slides away when the pointer slows down coming to it. Hold Ctrl to reach it.");
+                    let title = "Move aside for the pointer";
+                    widgets::setting(ui, fonts, icon::MOVE_ASIDE, title, about, widgets::TOGGLE_WIDTH, |ui| {
+                        widgets::toggle(ui, &mut settings.move_aside);
+                    });
+                });
+
                 let about = Some("Opens Cuota when you sign in");
                 widgets::setting(ui, fonts, icon::STARTUP, "Start with Windows", about, widgets::TOGGLE_WIDTH, |ui| {
                     let mut on = *starts_with_windows;
@@ -1097,6 +1122,17 @@ impl eframe::App for Overlay {
             }
         }
 
+        // Out of the pointer's way, while the panel sits on screen in its usual size. Hidden,
+        // expanded or being placed again, it goes straight back to its spot.
+        let settled = self.applied.as_ref().is_some_and(|(_, at)| at.elapsed() > SETTLE);
+        let placed = self.settings.pinned().is_some() && !self.hidden && !self.expanded && settled;
+        let seen = ctx.input(|i| i.viewport().outer_rect).map(|rect| rect.min + self.lift);
+        if let Some(window) = self.window
+            && let Some(at) = self.dodge.update(ctx, window, self.settings.move_aside && placed, !placed, seen)
+        {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
+        }
+
         // Sounds follow Claude's sessions, whether or not the panel shows. They're made in the
         // background as Cuota starts, or once they're turned on.
         if self.settings.sounds {
@@ -1150,8 +1186,8 @@ impl eframe::App for Overlay {
             } else if self.applied.as_ref().is_some_and(|(_, at)| at.elapsed() > SETTLE)
                 && let Some(rect) = ctx.input(|i| i.viewport().outer_rect)
             {
-                // Where it sits when not expanded, so it starts there next time.
-                let at = rect.min + self.lift;
+                // Where it sits when not expanded or moved aside, so it starts there next time.
+                let at = self.home(rect);
                 self.settings.panel_pos = Some([at.x, at.y]);
             }
         }

@@ -269,6 +269,10 @@ pub struct Settings {
     pub size: f32,
     /// Scrolling the mouse wheel over the panel steps its size up and down.
     pub wheel_resize: bool,
+    /// The panel slides out of the way of a pointer slowing down as it comes to it, to click
+    /// what's behind (see dodge.rs). Off until turned on, since the pointer then needs Ctrl
+    /// held to reach the panel, even to right-click it.
+    pub move_aside: bool,
     pub panel: View,
     pub taskbar: View,
     pub double_click: DoubleClick,
@@ -289,6 +293,7 @@ impl Default for Settings {
             opacity: 0.96,
             size: 1.0,
             wheel_resize: true,
+            move_aside: false,
             panel: View::default(),
             taskbar: View::default(),
             double_click: DoubleClick::default(),
@@ -557,5 +562,14 @@ mod tests {
         let off = Settings { wheel_resize: false, ..Settings::default() };
         let text = serde_json::to_string(&off).unwrap();
         assert!(!serde_json::from_str::<Settings>(&text).unwrap().wheel_resize);
+    }
+
+    #[test]
+    fn moving_aside_is_off_until_turned_on_even_in_older_settings() {
+        let older: Settings = serde_json::from_str(r#"{"size":1.2}"#).unwrap();
+        assert!(!older.move_aside);
+        let on = Settings { move_aside: true, ..Settings::default() };
+        let text = serde_json::to_string(&on).unwrap();
+        assert!(serde_json::from_str::<Settings>(&text).unwrap().move_aside);
     }
 }

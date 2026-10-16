@@ -31,17 +31,19 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
     GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_NODEREFERENCELINKS,
     OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
-use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, GetAsyncKeyState, VK_LBUTTON};
+use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetActiveWindow, GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+};
 use windows_sys::Win32::UI::Shell::{
     ABM_GETTASKBARPOS, APPBARDATA, DefSubclassProc, SHAppBarMessage, SetWindowSubclass, ShellExecuteW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, GetClientRect, GetCursorPos,
-    GWL_EXSTYLE, GetForegroundWindow, GetMessageW, GetWindowLongW, HWND_BOTTOM, MSG, STYLESTRUCT, SW_SHOWNORMAL,
-    SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW,
-    SetWindowPos, WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED, WM_NCCALCSIZE, WM_SIZE,
-    WM_STYLECHANGING, WS_EX_TOOLWINDOW,
+    DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, GA_ROOT, GetAncestor, GetClientRect,
+    GetCursorPos, GWL_EXSTYLE, GetForegroundWindow, GetMessageW, GetWindowLongW, GetWindowRect, HWND_BOTTOM, MSG,
+    STYLESTRUCT, SW_SHOWNORMAL, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SetWindowLongW, SetWindowPos, WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED,
+    WM_NCCALCSIZE, WM_SIZE, WM_STYLECHANGING, WS_EX_TOOLWINDOW, WindowFromPoint,
 };
 
 /// claude.ai's page of plan usage.
@@ -459,9 +461,51 @@ fn corner_insets(radius: f32) -> Vec<i32> {
         .collect()
 }
 
-fn left_button_down() -> bool {
-    let state = unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON)) };
+fn key_down(key: VIRTUAL_KEY) -> bool {
+    let state = unsafe { GetAsyncKeyState(i32::from(key)) };
     state < 0
+}
+
+fn left_button_down() -> bool {
+    key_down(VK_LBUTTON)
+}
+
+/// Either Ctrl key is held down, whichever window has the keyboard.
+pub fn ctrl_down() -> bool {
+    key_down(VK_CONTROL)
+}
+
+/// A mouse button is held down, wherever the pointer is.
+pub fn mouse_down() -> bool {
+    [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON].into_iter().any(key_down)
+}
+
+/// Where a window is on screen.
+pub fn window_rect(window: HWND) -> RECT {
+    let mut rect: RECT = unsafe { zeroed() };
+    unsafe { GetWindowRect(window, &mut rect) };
+    rect
+}
+
+/// Physical pixels per point on the window's monitor.
+pub fn window_scale(window: HWND) -> f32 {
+    match unsafe { GetDpiForWindow(window) } {
+        0 => system_scale(),
+        dpi => dpi as f32 / 96.0,
+    }
+}
+
+/// Whether `window` is what shows at a point, rather than another window over it.
+pub fn shows_at(window: HWND, x: i32, y: i32) -> bool {
+    unsafe {
+        let shown = WindowFromPoint(POINT { x, y });
+        shown != 0 && GetAncestor(shown, GA_ROOT) == window
+    }
+}
+
+/// The radius the panel's window is cut to, in physical pixels.
+pub fn corner_radius() -> f32 {
+    f32::from_bits(CORNER_RADIUS.load(Ordering::Relaxed))
 }
 
 thread_local! {

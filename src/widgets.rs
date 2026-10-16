@@ -70,6 +70,7 @@ pub mod icon {
     pub const HEAR: char = '\u{E7F6}';
     pub const LIMITS: char = '\u{E9F9}';
     pub const LOG: char = '\u{E8A5}';
+    pub const MOVE_ASIDE: char = '\u{E759}';
     pub const OPACITY: char = '\u{E793}';
     pub const PANEL: char = '\u{E737}';
     pub const PERCENT: char = '\u{E94C}';
