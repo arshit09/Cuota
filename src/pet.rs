@@ -38,11 +38,14 @@ const OFF_SCREEN: Pos2 = pos2(-8000.0, -8000.0);
 /// The size it opens at, in points, until he's laid out.
 const FIRST_SIZE: Vec2 = vec2(300.0, 200.0);
 
-/// Walking speeds, in points a second at his usual size: a scuttle, an amble, and a hurry over
-/// to the pointer.
-const WALK_SPEED: f32 = 40.0;
-const AMBLE_SPEED: f32 = 18.0;
-const VISIT_SPEED: f32 = 55.0;
+/// He walks like a character in a pixel game, in hops rather than a glide: each one pixel of
+/// his art across, down or both, which is `HOP` GIF pixels (an eye or a leg is one wide).
+const HOP: f32 = 22.0;
+/// How often he hops: at a scuttle, an amble, and a hurry over to the pointer. A hop is 6.6
+/// points at his usual size, so straight across these come to 40, 22 and 55 points a second.
+const WALK_HOP: Duration = Duration::from_millis(165);
+const AMBLE_HOP: Duration = Duration::from_millis(300);
+const VISIT_HOP: Duration = Duration::from_millis(120);
 /// How far he wanders off at a time, in points...
 const WANDER: Range<f32> = 80.0..320.0;
 /// ...and at least how far he goes to sleep somewhere else.
@@ -186,6 +189,19 @@ enum Then {
     Ask,
 }
 
+/// A walk, a hop at a time.
+#[derive(Clone, Copy, Debug)]
+struct Hops {
+    /// The walk these are for: when it began.
+    since: Instant,
+    /// Where it began, whose grid of art pixels he hops along...
+    from: Pos2,
+    /// ...and where he'd be by now if he glided, which he's always within half a hop of.
+    glide: Pos2,
+    /// When he hops next.
+    next: Instant,
+}
+
 /// Decides where Clawd goes and what he does there.
 pub struct Roam {
     rng: Rng,
@@ -194,8 +210,8 @@ pub struct Roam {
     doing: Doing,
     /// The mood he was last in.
     mood: Option<Mood>,
-    /// When he last took a step.
-    stepped: Option<Instant>,
+    /// The walk he's on, or was last on.
+    hops: Option<Hops>,
     /// Claude was waiting on you last time he looked.
     asked: bool,
 }
@@ -204,12 +220,18 @@ impl Roam {
     /// He says hi as he arrives.
     pub fn new(rng: Rng) -> Self {
         let doing = Doing::Once { act: Act::Hello, then: Then::Settle };
-        Self { rng, at: None, doing, mood: None, stepped: None, asked: false }
+        Self { rng, at: None, doing, mood: None, hops: None, asked: false }
     }
 
     /// Whether he's on his way somewhere.
     pub fn walking(&self) -> bool {
         matches!(self.doing, Doing::Walk { .. })
+    }
+
+    /// When he next hops, on his way somewhere.
+    pub fn next_hop(&self) -> Option<Instant> {
+        let Doing::Walk { since, .. } = self.doing else { return None };
+        self.hops.filter(|hops| hops.since == since).map(|hops| hops.next)
     }
 
     pub fn update(&mut self, s: &Senses) -> Plan {
@@ -227,7 +249,6 @@ impl Roam {
         if !self.walking() {
             at = clamp(at, s);
         }
-        let step_time = self.stepped.replace(now).map_or(0.0, |then| (now - then).as_secs_f32().min(0.1));
 
         if self.mood != Some(s.mood) {
             // A rest keeps going through a doze; anything else gives way to the new mood.
@@ -277,25 +298,45 @@ impl Roam {
                 }
                 doing => doing,
             };
-            if let Doing::Walk { to, act, then, .. } = self.doing {
+            if let Doing::Walk { to, act, then, since } = self.doing {
                 let target = match (to, s.pointer) {
                     (Toward::Spot(spot), _) => spot,
                     (Toward::Pointer, Some(pointer)) => self.beside(pointer, at, s),
                     (Toward::Pointer, None) => at,
                 };
-                let speed = match act {
-                    Act::Amble => AMBLE_SPEED,
-                    Act::Visit => VISIT_SPEED,
-                    _ => WALK_SPEED,
+                let every = match act {
+                    Act::Amble => AMBLE_HOP,
+                    Act::Visit => VISIT_HOP,
+                    _ => WALK_HOP,
                 };
-                let step = speed * s.scale * step_time;
-                let left = target - at;
-                if left.length() <= step.max(0.5) {
-                    at = target;
-                    self.doing = self.then(then, s);
-                } else {
-                    at += left.normalized() * step;
+                // His legs get going a beat before he does, which also keeps his first hop off
+                // the frame that loads his walking clip.
+                let mut hops = match self.hops {
+                    Some(hops) if hops.since == since => hops,
+                    _ => Hops { since, from: at, glide: at, next: now + every },
+                };
+                if now - hops.next >= every {
+                    // A frame late by a beat or more, after a hitch such as a new clip loading,
+                    // starts the beat over. A hop now would land just after the one that hitch
+                    // held up.
+                    hops.next = now + every;
+                } else if now >= hops.next {
+                    // A hop along whichever way is longer to go, and along the other as often as
+                    // keeps him on his line there, like a line of pixels.
+                    let hop = HOP * SCALE * s.scale;
+                    let left = (target - hops.glide) / hop;
+                    let longer = left.x.abs().max(left.y.abs());
+                    if longer <= 1.0 {
+                        at = target;
+                        self.doing = self.then(then, s);
+                    } else {
+                        hops.glide += left / longer * hop;
+                        // On his grid, though at the screen's edge that can be just off it.
+                        at = clamp(hops.from + ((hops.glide - hops.from) / hop).round() * hop, s);
+                    }
+                    hops.next += every;
                 }
+                self.hops = Some(hops);
             }
         }
         self.at = Some(at);
@@ -997,8 +1038,11 @@ impl Inner {
 
         // Again when he next changes, moves, or might see the pointer do something.
         let mut soon = |wait: Duration| next = Some(next.map_or(wait, |next| next.min(wait)));
-        if self.roam.walking() || self.held.is_some() || gliding || !self.placed {
+        if self.held.is_some() || gliding || !self.placed {
             soon(FRAME_TIME);
+        }
+        if let Some(hop) = self.roam.next_hop() {
+            soon(hop.saturating_duration_since(now));
         }
         if look != Look::Away || body_on_screen.expand(NEAR * ppp).contains(pointer) {
             soon(NEAR_TICK);
@@ -1107,21 +1151,22 @@ mod tests {
             self.s.at + self.s.feet
         }
 
-        /// The walks so far: their act, and how far each went.
+        /// The walks so far: their act, and how far each went, from start to finish.
         fn walks(&self) -> Vec<(Act, f32)> {
-            let mut walks: Vec<(Act, f32)> = Vec::new();
+            let walking = |act| matches!(act, Act::Walk | Act::Amble | Act::Visit);
+            let mut walks: Vec<(Act, Pos2, Pos2)> = Vec::new();
             for pair in self.plans.windows(2) {
                 let [last, plan] = [pair[0], pair[1]];
-                if !matches!(plan.act, Act::Walk | Act::Amble | Act::Visit) {
-                    continue;
-                }
-                let step = (plan.at - last.at).length();
-                match walks.last_mut() {
-                    Some((act, length)) if *act == plan.act && last.act == plan.act => *length += step,
-                    _ => walks.push((plan.act, step)),
+                // On his way, or arriving, when his last hop has him doing something else.
+                if walking(last.act) && (plan.act == last.act || !walking(plan.act)) {
+                    if let Some((_, _, to)) = walks.last_mut() {
+                        *to = plan.at;
+                    }
+                } else if walking(plan.act) {
+                    walks.push((plan.act, last.at, plan.at));
                 }
             }
-            walks
+            walks.into_iter().map(|(act, from, to)| (act, (to - from).length())).collect()
         }
     }
 
@@ -1352,6 +1397,56 @@ mod tests {
         let at = sim.plans.last().unwrap().at;
         sim.run(Duration::from_secs(WORK_SPELL.start - 1));
         assert!(sim.plans.iter().rev().take(200).all(|plan| plan.at == at && plan.act == Act::Mood));
+    }
+
+    #[test]
+    fn he_walks_like_a_pixel_game_character_a_hop_at_a_time() {
+        let mut sim = Sim::new(14, Mood::Working);
+        sim.run(Duration::from_secs(3));
+        let start = sim.plans.len();
+        let spot = pos2(1300.0, 380.0);
+        sim.roam.doing = walk(spot, Act::Walk, sim.s.now);
+        sim.run(Duration::from_secs(20));
+        let plans = &sim.plans[start..];
+        assert_eq!(plans.last().unwrap().at, spot, "he gets there");
+        // Each time he moved: on which frame, and how far.
+        let hops: Vec<(usize, Vec2)> = plans
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| pair[1].at != pair[0].at)
+            .map(|(frame, pair)| (frame, pair[1].at - pair[0].at))
+            .collect();
+        assert!(hops.len() > 50, "{} hops", hops.len());
+        let hop = HOP * SCALE;
+        let (last, on_the_way) = hops.split_last().unwrap();
+        for &(_, step) in on_the_way {
+            // A pixel of his art the longer way, and none or one the other.
+            let (long, short) = (step.x.abs().max(step.y.abs()), step.x.abs().min(step.y.abs()));
+            assert!((long - hop).abs() < 0.01, "{step:?}");
+            assert!(short < 0.01 || (short - hop).abs() < 0.01, "{step:?}");
+        }
+        assert!(on_the_way.iter().any(|(_, step)| step.x != 0.0 && step.y != 0.0), "now and then up as well as across");
+        assert!(last.1.x.abs().max(last.1.y.abs()) <= hop + 0.01, "at most a hop onto the spot: {:?}", last.1);
+        // On a beat, not every frame.
+        for pair in hops.windows(2) {
+            let gap = TICK * (pair[1].0 - pair[0].0) as u32;
+            assert!(gap + TICK > WALK_HOP, "{gap:?}");
+        }
+    }
+
+    #[test]
+    fn after_a_hitch_he_doesnt_hop_twice_in_a_row() {
+        let mut sim = Sim::new(15, Mood::Working);
+        sim.run(Duration::from_secs(3));
+        sim.roam.doing = walk(pos2(100.0, 100.0), Act::Walk, sim.s.now);
+        sim.run(Duration::from_secs(1));
+        // A frame held up half a second, as a clip loading can.
+        sim.s.now += Duration::from_millis(500);
+        let (before, late) = (sim.plans.last().unwrap().at, sim.plans.len());
+        sim.run(TICK * 4);
+        assert!(sim.plans[late..].iter().all(|plan| plan.at == before && plan.act == Act::Walk), "a beat first");
+        sim.run(TICK);
+        assert_ne!(sim.plans.last().unwrap().at, before, "then on he goes");
     }
 
     #[test]
