@@ -432,8 +432,10 @@ impl Cues {
             self.marks += 1;
             long = !self.busy.is_empty();
         }
-        let erred = state.error.is_some() && !self.erred;
-        self.erred = state.error.is_some();
+        // A rate limit passes by itself, so it's nothing to buzz about.
+        let trouble = state.error.is_some() && !state.rate_limited;
+        let erred = trouble && !self.erred;
+        self.erred = trouble;
         // Trouble is worth a buzz only while Clawd's awake.
         let awake = since(self.worked) < DOZE;
         let hushed = since(self.played) < HUSH;
@@ -926,6 +928,12 @@ mod tests {
         assert_eq!(cues.update(&state(&["a"], &[]), true, NORMAL, at(0)), Some(Sound::Start));
         assert_eq!(cues.update(&state(&[], &["a"]), true, NORMAL, at(20)), Some(Sound::Done));
         assert_eq!(cues.update(&erring(state(&[], &["a"])), true, NORMAL, at(20) + DOZE), None);
+        // A rate limit passes by itself, but trouble after it still buzzes.
+        let mut cues = Cues::new();
+        assert_eq!(cues.update(&state(&["a"], &[]), true, NORMAL, at(0)), Some(Sound::Start));
+        let limited = State { error: Some("Rate limited".into()), rate_limited: true, ..state(&["a"], &[]) };
+        assert_eq!(cues.update(&limited, true, NORMAL, at(10)), None);
+        assert_eq!(cues.update(&erring(state(&["a"], &[])), true, NORMAL, at(20)), Some(Sound::Error));
     }
 
     /// Writes each sound to a WAV file to listen to, in the folder named by `CUOTA_SOUNDS` or

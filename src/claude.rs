@@ -23,9 +23,6 @@ const QUICK_RETRIES: [Duration; 2] = [Duration::from_secs(1), Duration::from_sec
 const QUICK_FAILURE: Duration = Duration::from_secs(5);
 /// How often local files are checked. Cheap: a handful of small files and timestamps.
 const TICK: Duration = Duration::from_secs(2);
-/// Usage only moves when Claude is used, so without local activity we check occasionally
-/// (which also catches use on claude.ai or other devices).
-const IDLE_INTERVAL: TimeDelta = TimeDelta::minutes(10);
 /// Activity this close before a fetch may not be counted yet, so it earns one more fetch.
 const SETTLE: TimeDelta = TimeDelta::seconds(15);
 /// A busy session that hasn't written anything for this long has probably crashed.
@@ -265,6 +262,8 @@ pub struct State {
     pub account: Account,
     pub updated: Option<DateTime<Local>>,
     pub error: Option<String>,
+    /// The error is only the usage API asking Cuota to slow down, which passes by itself.
+    pub rate_limited: bool,
     /// Some Claude Code session on this machine is busy.
     pub working: bool,
     /// Busy ones first.
@@ -835,7 +834,8 @@ pub fn until(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
 
 /// Decides when the API is worth calling. Usage only changes when Claude is used, so it
 /// fetches about every `active_interval` while sessions are working, once more after they
-/// stop, every `IDLE_INTERVAL` otherwise, and right after a limit window resets. Usage that
+/// stop, and right after a limit window resets while they work. While Claude's idle the API
+/// is left alone, but for a first look when there's nothing to show, and Refresh. Usage that
 /// Claude Code fetched itself (its `/usage` panel) is picked up from disk for free.
 struct Poller {
     active_interval: TimeDelta,
@@ -843,6 +843,8 @@ struct Poller {
     data_time: Option<DateTime<Utc>>,
     next_reset: Option<DateTime<Utc>>,
     last_activity: Option<DateTime<Utc>>,
+    /// When the API was last asked, whether or not it answered.
+    tried_at: Option<DateTime<Utc>>,
     /// `None` until `.claude.json` has been read once.
     claude_json_modified: Option<Option<DateTime<Utc>>>,
     retry_at: Option<DateTime<Utc>>,
@@ -871,6 +873,7 @@ impl Poller {
             data_time: None,
             next_reset: None,
             last_activity: None,
+            tried_at: None,
             claude_json_modified: None,
             retry_at: None,
             backoff: TimeDelta::zero(),
@@ -917,6 +920,7 @@ impl Poller {
         // Refresh skips the usual wait, but not a rate limit's: asking again early only
         // makes it last longer.
         if (force && !self.rate_limited(now)) || self.api_due(now) {
+            self.tried_at = Some(now);
             let result = fetch();
             let mut shared = state.lock().unwrap();
             let s = Arc::make_mut(&mut shared);
@@ -935,6 +939,7 @@ impl Poller {
                     };
                     self.retry_at = Some(now + wait);
                     self.log_failure(&e, now, wait);
+                    s.rate_limited = matches!(e, Error::RateLimited(_));
                     s.error = Some(e.to_string());
                 }
             }
@@ -1001,11 +1006,15 @@ impl Poller {
             return false;
         }
         let Some(data_time) = self.data_time else { return true };
-        if self.next_reset.is_some_and(|reset| data_time < reset && now > reset + SETTLE) {
-            return true;
+        // Idle, usage holds still and windows that reset roll over on screen by themselves, so
+        // only activity the last try may have missed is worth asking about. A try that failed
+        // after Claude went idle is the last until it's used again.
+        let tried = self.tried_at.max(Some(data_time));
+        if !self.last_activity.is_some_and(|t| Some(t + SETTLE) > tried) {
+            return false;
         }
-        let used_since = self.last_activity.is_some_and(|t| t + SETTLE > data_time);
-        now - data_time >= if used_since { self.active_interval } else { IDLE_INTERVAL }
+        let reset = self.next_reset.is_some_and(|reset| data_time < reset && now > reset + SETTLE);
+        reset || now - data_time >= self.active_interval
     }
 
     fn show(&mut self, s: &mut State, usage: Usage, fetched_at: DateTime<Utc>) {
@@ -1016,6 +1025,7 @@ impl Poller {
         s.extra = usage.extra;
         s.updated = Some(fetched_at.with_timezone(&Local));
         s.error = None;
+        s.rate_limited = false;
     }
 }
 
@@ -1099,6 +1109,7 @@ pub fn demo_state() -> State {
         },
         updated: Some(Local::now()),
         error: None,
+        rate_limited: false,
         working: true,
         sessions: vec![
             session("cuota-94", "Show each session's title in the details", "Cuota", "VS Code", true, 95),
@@ -1380,19 +1391,29 @@ mod tests {
     }
 
     #[test]
-    fn fetches_often_only_after_activity() {
-        let (mut poller, now) = poller_with_data(2);
+    fn fetches_only_after_activity() {
+        assert!(Poller::new(TimeDelta::seconds(60)).api_due(Utc::now()), "nothing to show yet");
+        let (poller, now) = poller_with_data(2);
         assert!(!poller.api_due(now), "idle: 2 minute old data is fine");
+        let (mut poller, now) = poller_with_data(60);
+        assert!(!poller.api_due(now), "idle: so is an hour old");
         poller.last_activity = Some(now - TimeDelta::seconds(30));
         assert!(poller.api_due(now), "used since the fetch");
-        let (poller, now) = poller_with_data(11);
-        assert!(poller.api_due(now), "idle interval elapsed");
+        poller.tried_at = Some(now - TimeDelta::seconds(20));
+        assert!(poller.api_due(now), "a try that failed before the activity settled goes again");
+        poller.tried_at = Some(now - TimeDelta::seconds(5));
+        assert!(!poller.api_due(now), "but not one that failed after Claude went idle");
+        poller.last_activity = Some(now - TimeDelta::seconds(2));
+        assert!(poller.api_due(now), "until it's used again");
     }
 
     #[test]
     fn fetches_after_reset_and_respects_retry() {
         let (mut poller, now) = poller_with_data(2);
+        poller.active_interval = TimeDelta::minutes(5);
         poller.next_reset = Some(now - TimeDelta::minutes(1));
+        assert!(!poller.api_due(now), "idle: the window rolls over on screen without asking");
+        poller.last_activity = Some(now - TimeDelta::minutes(1));
         assert!(poller.api_due(now), "window reset since the fetch");
         poller.retry_at = Some(now + TimeDelta::seconds(30));
         assert!(!poller.api_due(now), "backing off");
