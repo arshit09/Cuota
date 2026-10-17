@@ -274,8 +274,8 @@ pub struct Overlay {
     settings_shown: bool,
     /// The size the settings window opens at, fitted to its screen.
     settings_size: Vec2,
-    /// Where on screen, in pixels, the desktop pet was when he asked for settings, so they
-    /// open on his screen rather than the panel's.
+    /// Where on screen, in pixels, the desktop pet or the tray click was when settings were
+    /// asked for, so they open on that screen rather than the panel's.
     settings_near: Option<Pos2>,
     settings_page: Page,
     /// Which of the settings' expanders are open, by page and title.
@@ -1262,10 +1262,12 @@ impl eframe::App for Overlay {
                 self.settings_requested |= settings;
                 ctx.request_repaint();
             } else if !self.settings.shows_as(Mode::Taskbar) {
-                // Only the desktop pet shows, so there's no panel to open, only settings: asked
-                // for by starting Cuota again.
-                if settings {
-                    self.open_settings(ctx);
+                // Only the desktop pet shows, so there's no panel to open: a click on the tray
+                // icon opens settings instead, as do its menu and starting Cuota again. They
+                // open by the pointer, on the taskbar's screen rather than the hidden panel's.
+                if !details {
+                    let at = win::cursor();
+                    self.open_settings_near(ctx, Some(pos2(at.x as f32, at.y as f32)));
                 }
                 ctx.request_repaint();
             } else if settings || details {

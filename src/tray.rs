@@ -1,9 +1,10 @@
 //! Native icons in the notification area. In Taskbar mode, Clawd dances while Claude works and
 //! sleeps when idle, and each limit shows its percentage as pixel digits over a bar, or as a
 //! ring; otherwise Clawd stands still there as Cuota's own icon. Hovering shows details,
-//! clicking opens the panel, and right-clicking opens a menu with details, Settings and Quit. Runs on
-//! its own thread with a hidden window, so the icons stay live while the panel is hidden, and
-//! only redraws an icon when what it shows changed.
+//! clicking opens the panel (or settings, with only the desktop pet), and right-clicking opens
+//! a menu with details, Settings and Quit. Runs on its own thread with a hidden window, so the
+//! icons stay live while the panel is hidden, and only redraws an icon when what it shows
+//! changed.
 
 use crate::claude::{self, Limit, Shared, State};
 use crate::mascot::{self, CLAUDE_ORANGE, EYE, SNORE};
@@ -62,7 +63,8 @@ pub struct TrayConfig {
 }
 
 pub enum TrayEvent {
-    /// An icon was clicked, or Cuota's name in its menu: open the panel, or hide or show it.
+    /// An icon was clicked, or Cuota's name in its menu: open the panel, or hide or show it;
+    /// with only the desktop pet showing, open settings.
     Click,
     /// Settings, picked from an icon's menu or asked for by launching Cuota again.
     Settings,
