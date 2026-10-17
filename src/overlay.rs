@@ -801,6 +801,16 @@ impl Overlay {
             .with_always_on_top()
             .with_visible(false)
             .with_icon(self.icon.clone());
+        // eframe (0.35 to 0.37) draws a hidden panel from outside winit's event handlers, where an
+        // immediate viewport can't open its window, and panics: "the user callback was never
+        // called". That's how right-clicking the desktop pet, with no panel showing, crashed
+        // Cuota. So settings first open as an empty deferred viewport, which eframe gives a
+        // window as this pass ends, whatever called it, and draw in it from the next pass.
+        if !ctx.input(|i| i.raw.viewports.contains_key(&settings_viewport())) {
+            ctx.show_viewport_deferred(settings_viewport(), builder, |_, _| {});
+            ctx.request_repaint();
+            return;
+        }
         ctx.show_viewport_immediate(settings_viewport(), builder, |ui, _| {
             let ctx = ui.ctx().clone();
             if ctx.input(|i| i.viewport().close_requested()) {
