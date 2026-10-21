@@ -1,7 +1,7 @@
 //! The window: a floating panel (Always on top), a panel behind other windows (Desktop), or a flyout
 //! opened from the tray icons (Taskbar alone). Double-clicking it expands it with usage
 //! details. It also hosts the settings window, and keeps itself sized, placed and layered for
-//! the chosen modes.
+//! the chosen modes. Picked to show on several monitors, the panel has a window on each.
 
 use crate::animations::{self, Act, Clawd};
 use crate::claude::{self, Limit, Shared, State, Step};
@@ -10,6 +10,7 @@ use crate::dodge::Dodge;
 use crate::glance;
 use crate::log;
 use crate::mascot::Mascot;
+use crate::monitors::{self, Identify, Screen};
 use crate::pet::{self, Pet};
 use crate::scripts::{self, Scripts};
 use crate::settings::{DoubleClick, Mode, SIZES, Settings, SoundMode, Style, View, size_step};
@@ -83,6 +84,11 @@ pub(crate) const FRAME_TIME: Duration = Duration::from_millis(16);
 const SETTLE: Duration = Duration::from_millis(500);
 /// A tray click this soon after the flyout closed is the click that closed it.
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
+/// How often the monitors are listed again, as they're plugged in, unplugged or rearranged.
+pub(crate) const MONITOR_CHECK: Duration = Duration::from_secs(2);
+/// How often a panel window dropped off its monitor looks again for the mouse button's release,
+/// to go back onto it.
+const RELEASE_CHECK: Duration = Duration::from_millis(100);
 
 pub(crate) const BG: Color32 = Color32::from_rgb(28, 28, 30);
 pub(crate) const BORDER: Color32 = Color32::from_rgb(56, 56, 60);
@@ -230,6 +236,92 @@ impl Wheel {
     }
 }
 
+/// A window the panel shows in: its own (the root viewport), or a copy of it on another
+/// monitor while it shows on several.
+#[derive(Default)]
+struct PanelWindow {
+    /// The native window, once it has been set up.
+    window: Option<isize>,
+    size: Vec2,
+    /// The window's actual size last frame, to notice when something else resizes it.
+    window_size: Option<Vec2>,
+    wheel: Wheel,
+    /// Slides it out of the pointer's way, when that's on.
+    dodge: Dodge,
+    /// It shows usage details under its meters.
+    expanded: bool,
+    /// How far the expanded panel moved up and left to stay on screen, to move back when it
+    /// shrinks.
+    lift: Vec2,
+    /// How tall the details were when last drawn.
+    details_height: f32,
+    /// The monitor it's kept on, by name, while the panel shows on several, or while it moves
+    /// to the one monitor picked.
+    monitor: Option<String>,
+    /// On its way to its spot on `monitor`.
+    placing: bool,
+    /// A copy is on screen, rather than hidden until it has drawn itself where it goes.
+    shown: bool,
+}
+
+impl PanelWindow {
+    /// A copy of the panel for `monitor`, which goes to its spot there.
+    fn copy(monitor: &str) -> Self {
+        Self { monitor: Some(monitor.to_owned()), placing: true, ..Self::default() }
+    }
+
+    fn set_expanded(&mut self, expanded: bool) {
+        if expanded && !self.expanded {
+            // Laid out at full height first, so the window grows once rather than twice.
+            self.details_height = DETAILS_HEIGHT;
+        }
+        self.expanded = expanded;
+    }
+
+    /// Where it sits when it isn't expanded or moved out of the pointer's way, given where its
+    /// window is.
+    fn home(&self, window: Rect) -> Pos2 {
+        self.dodge.home().unwrap_or(window.min + self.lift)
+    }
+
+    /// Moves it up or left as little as it takes for the expanded panel to stay on screen, and
+    /// back again when it shrinks. A resize by mouse wheel moves it by `wheel_shift` first, and
+    /// keeps it on screen too.
+    fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2, wheel_shift: Option<Vec2>) {
+        let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else { return };
+        // Aside for the pointer, or sliding, it's where the slide puts it.
+        if self.dodge.moving() {
+            return;
+        }
+        let mut at = self.home(rect) + wheel_shift.unwrap_or_default();
+        self.lift = Vec2::ZERO;
+        if (self.expanded || wheel_shift.is_some())
+            && let Some(work) = work_area(ctx)
+        {
+            let gap = Vec2::splat(SCREEN_GAP);
+            let fitted = at.min(work.max - size - gap).max(work.min + gap);
+            // Only the details move it back when they close; a resize stays where it landed.
+            if self.expanded {
+                self.lift = at - fitted;
+            }
+            at = fitted;
+        }
+        if at != rect.min {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at.round()));
+        }
+    }
+
+    /// Slides it out of the pointer's way while that's `wanted` and it sits on screen in its
+    /// usual size (`placed`). Otherwise it goes straight back to its spot.
+    fn dodge_pointer(&mut self, ctx: &egui::Context, wanted: bool, placed: bool) {
+        let Some(window) = self.window else { return };
+        let seen = ctx.input(|i| i.viewport().outer_rect).map(|rect| rect.min + self.lift);
+        if let Some(at) = self.dodge.update(ctx, window, wanted && placed, !placed, seen) {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
+        }
+    }
+}
+
 pub struct Overlay {
     state: Shared,
     refresh: Sender<()>,
@@ -250,16 +342,22 @@ pub struct Overlay {
     scripts: Scripts,
     icon: Arc<IconData>,
     keep_bottom: Arc<AtomicBool>,
-    /// The native window, once it has been set up and handed to the Desktop-mode keeper.
-    window: Option<isize>,
+    /// The panel's own window, the root viewport's.
+    main: PanelWindow,
+    /// Copies of it on the other monitors picked, while it shows on several.
+    copies: Vec<PanelWindow>,
+    /// The monitors, as last listed, and when.
+    screens: Vec<Screen>,
+    screens_read: Option<Instant>,
+    /// The monitor the panel's own window is on, by name.
+    here: Option<String>,
+    /// The monitors picked for the panel that were plugged in when its windows were last
+    /// arranged, if they have been.
+    arranged: Option<BTreeSet<String>>,
+    /// Each monitor's number on it, for a moment, after Identify is clicked in settings.
+    identify: Identify,
     /// The Show as choice the window was last set up for, and when.
     applied: Option<(BTreeSet<Mode>, Instant)>,
-    size: Vec2,
-    /// The window's actual size last frame, to notice when something else resizes it.
-    window_size: Option<Vec2>,
-    wheel: Wheel,
-    /// Slides the Always on top or Desktop panel out of the pointer's way, when that's on.
-    dodge: Dodge,
     flyout: Flyout,
     /// The Always on top or Desktop panel was hidden with a click on a tray icon.
     hidden: bool,
@@ -286,13 +384,6 @@ pub struct Overlay {
     claude_app_installed: bool,
     /// The Open dialog picking what a Custom double-click opens, while it's up.
     browsing: Option<Receiver<Option<String>>>,
-    /// The panel shows usage details under its meters.
-    expanded: bool,
-    /// How far the expanded panel moved up and left to stay on screen, to move back when it
-    /// shrinks.
-    lift: Vec2,
-    /// How tall the details were when last drawn.
-    details_height: f32,
     transcripts: Transcripts,
     /// When the panel last asked for Claude Code's stats.
     stats_asked: Option<Instant>,
@@ -351,12 +442,14 @@ impl Overlay {
             scripts: Scripts::default(),
             icon,
             keep_bottom: Arc::new(AtomicBool::new(false)),
-            window: None,
+            main: PanelWindow::default(),
+            copies: Vec::new(),
+            screens: monitors::list(),
+            screens_read: Some(Instant::now()),
+            here: None,
+            arranged: None,
+            identify: Identify::default(),
             applied: None,
-            size: Vec2::ZERO,
-            window_size: None,
-            wheel: Wheel::default(),
-            dodge: Dodge::new(),
             flyout: Flyout::Closed { at: None },
             hidden: false,
             shown_frame: 0,
@@ -370,9 +463,6 @@ impl Overlay {
             starts_with_windows: false,
             claude_app_installed: false,
             browsing: None,
-            expanded: false,
-            lift: Vec2::ZERO,
-            details_height: 0.0,
             transcripts,
             stats_asked: None,
         }
@@ -397,6 +487,8 @@ impl Overlay {
         {
             ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos2(x, y)));
         }
+        // On several monitors, it goes to its spot on its own.
+        self.main.placing = self.main.monitor.is_some();
         self.applied = Some((self.settings.show.clone(), Instant::now()));
     }
 
@@ -432,7 +524,7 @@ impl Overlay {
     fn close_flyout(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
         self.flyout = Flyout::Closed { at: Some(Instant::now()) };
-        self.set_expanded(false);
+        self.main.set_expanded(false);
     }
 
     fn open_flyout(&mut self, ctx: &egui::Context) {
@@ -442,15 +534,15 @@ impl Overlay {
         let click = win::cursor();
         self.flyout = Flyout::Opening(taskbar, pos2(click.x as f32, click.y as f32) / ppp);
         self.shown_frame = ctx.cumulative_frame_nr();
-        self.place_flyout(ctx);
+        self.place_flyout(ctx, self.main.size);
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
     }
 
-    /// Beside the taskbar, centered on the click.
-    fn place_flyout(&self, ctx: &egui::Context) {
+    /// Beside the taskbar, centered on the click, at `size` once that's known.
+    fn place_flyout(&self, ctx: &egui::Context, size: Vec2) {
         let (Flyout::Opening(bar, click) | Flyout::Open(bar, click)) = self.flyout else { return };
-        let size = if self.size == Vec2::ZERO { vec2(300.0, 80.0) } else { self.size };
+        let size = if size == Vec2::ZERO { vec2(300.0, 80.0) } else { size };
         let along = |click: f32, start: f32, end: f32, length: f32| {
             (click - length / 2.0).clamp(start + 8.0, (end - length - 8.0).max(start + 8.0))
         };
@@ -474,54 +566,127 @@ impl Overlay {
         }
     }
 
-    fn set_expanded(&mut self, expanded: bool) {
-        if expanded && !self.expanded {
-            // Laid out at full height first, so the window grows once rather than twice.
-            self.details_height = DETAILS_HEIGHT;
-            self.stats_asked = None;
+    /// The monitors picked for the panel that are plugged in now.
+    fn picked_screens(&self) -> Vec<&Screen> {
+        self.screens.iter().filter(|screen| self.settings.panel_monitors.contains(&screen.name)).collect()
+    }
+
+    /// The panel shows on several monitors: two or more are picked and plugged in, and Always
+    /// on top or Desktop keeps it on screen.
+    fn on_several(&self) -> bool {
+        self.settings.pinned().is_some() && self.picked_screens().len() >= 2
+    }
+
+    /// Works out the panel's windows, as monitors are picked, plugged in and unplugged: on
+    /// several monitors, its own window stays on the one it's on (or else goes to the first
+    /// picked) and a copy goes on each of the others. Down to one picked that it isn't on, it
+    /// moves there. Runs with the root viewport's `ctx`.
+    fn arrange(&mut self, ctx: &egui::Context) {
+        if self.screens_read.is_none_or(|read| read.elapsed() >= MONITOR_CHECK) {
+            self.screens = monitors::list();
+            self.screens_read = Some(Instant::now());
         }
-        self.expanded = expanded;
-    }
-
-    /// The part of the panel's monitor that the taskbar leaves free, in points.
-    fn work_area(&self, ctx: &egui::Context) -> Option<Rect> {
         let ppp = ctx.pixels_per_point();
-        let center = ctx.input(|i| i.viewport().outer_rect)?.center();
-        let work = win::work_area((center.x * ppp) as i32, (center.y * ppp) as i32)?;
-        let work = Rect::from_min_max(pos2(work.left as f32, work.top as f32), pos2(work.right as f32, work.bottom as f32));
-        Some(work / ppp)
-    }
+        // Not before it's known where the panel is.
+        let Some(center) = ctx.input(|i| i.viewport().outer_rect).map(|rect| rect.center() * ppp) else { return };
+        self.here = monitors::at(&self.screens, center).map(|screen| screen.name.clone());
 
-    /// Where the Always on top or Desktop panel sits when it isn't expanded or moved out of the
-    /// pointer's way, given where its window is.
-    fn home(&self, window: Rect) -> Pos2 {
-        self.dodge.home().unwrap_or(window.min + self.lift)
-    }
-
-    /// Moves the Always on top or Desktop panel up or left as little as it takes for the expanded panel
-    /// to stay on screen, and back again when it shrinks. A resize by mouse wheel moves it by
-    /// `wheel_shift` first, and keeps it on screen too.
-    fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2, wheel_shift: Option<Vec2>) {
-        let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else { return };
-        // Aside for the pointer, or sliding, it's where the slide puts it.
-        if self.dodge.moving() {
+        let picked: BTreeSet<String> = self.picked_screens().into_iter().map(|screen| screen.name.clone()).collect();
+        let several = self.on_several();
+        if self.arranged.as_ref() != Some(&picked) {
+            let here = self.here.clone().filter(|here| picked.contains(here));
+            let first = picked.iter().next().cloned();
+            let own = if several {
+                here.clone().or(first)
+            } else if self.arranged.is_some() && here.is_none() && picked.len() == 1 {
+                first
+            } else {
+                None
+            };
+            // On the monitor it's on already, it stays where it is.
+            self.main.placing = own.is_some() && own != here;
+            self.main.monitor = own;
+            self.arranged = Some(picked.clone());
+        }
+        if !several || self.hidden {
+            // Hidden from the tray, they close, and open again with it.
+            self.copies.clear();
             return;
         }
-        let mut at = self.home(rect) + wheel_shift.unwrap_or_default();
-        self.lift = Vec2::ZERO;
-        if (self.expanded || wheel_shift.is_some())
-            && let Some(work) = self.work_area(ctx)
-        {
-            let gap = Vec2::splat(SCREEN_GAP);
-            let fitted = at.min(work.max - size - gap).max(work.min + gap);
-            // Only the details move it back when they close; a resize stays where it landed.
-            if self.expanded {
-                self.lift = at - fitted;
+        let own = self.main.monitor.clone();
+        self.copies.retain(|copy| copy.monitor.as_ref().is_some_and(|name| picked.contains(name) && Some(name) != own.as_ref()));
+        for name in picked {
+            if Some(&name) != own.as_ref() && !self.copies.iter().any(|copy| copy.monitor.as_ref() == Some(&name)) {
+                self.first_spot(ctx, &name);
+                self.copies.push(PanelWindow::copy(&name));
             }
-            at = fitted;
         }
-        if at != rect.min {
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at.round()));
+    }
+
+    /// Where a copy goes on a monitor it hasn't been on: as far across and down it as the panel
+    /// is on its own monitor. Runs with the root viewport's `ctx`.
+    fn first_spot(&mut self, ctx: &egui::Context, name: &str) {
+        if self.settings.panel_spots.contains_key(name) {
+            return;
+        }
+        let ppp = ctx.pixels_per_point();
+        let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else { return };
+        let Some(own) = monitors::at(&self.screens, rect.center() * ppp) else { return };
+        let Some(screen) = self.screens.iter().find(|screen| screen.name == name) else { return };
+        // From the top-left of the room the panel has to move in, in pixels.
+        let room = |work: Rect, size: Vec2| (work.size() - size).max(Vec2::splat(1.0));
+        let across = ((self.main.home(rect) * ppp - own.work.min) / room(own.work, self.main.size * ppp)).clamp(Vec2::ZERO, Vec2::splat(1.0));
+        let spot = across * room(screen.work, self.main.size * screen.scale) / screen.scale;
+        self.settings.panel_spots.insert(name.to_owned(), [spot.x, spot.y]);
+    }
+
+    /// Keeps one of the panel's windows on its monitor while it shows on several: puts it on its
+    /// spot there, back on that monitor when it's dropped on another, and remembers where it's
+    /// dropped. Runs with that window's `ctx`.
+    fn keep_on_monitor(&mut self, ctx: &egui::Context, window: &mut PanelWindow) {
+        let Some(name) = window.monitor.clone() else { return };
+        if !window.placing && !self.on_several() {
+            // Moved to the one monitor picked, it goes wherever it's dragged from there.
+            window.monitor = None;
+            return;
+        }
+        let Some(screen) = self.screens.iter().find(|screen| screen.name == name) else { return };
+        let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else { return };
+        // Laid out first, so it's known how much room it takes; and left be while it slides
+        // out of the pointer's way, or expands.
+        if window.size == Vec2::ZERO || window.dodge.moving() || window.expanded {
+            return;
+        }
+        // Its monitor in this window's points, which are its monitor's own once it's there.
+        let ppp = ctx.pixels_per_point();
+        let (work, size) = (screen.work / ppp, window.size);
+        let fit = |at: Pos2| at.min(work.max - size).max(work.min);
+        let home = window.home(rect);
+        if window.placing {
+            let spot = self.settings.panel_spots.get(&name).map_or(Vec2::splat(SCREEN_GAP), |&[x, y]| vec2(x, y));
+            let to = fit(work.min + spot * screen.scale / ppp).round();
+            if (home - to).length() * ppp > 1.0 {
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(to));
+                ctx.request_repaint();
+                return;
+            }
+            window.placing = false;
+        }
+        // Dropped partly or wholly off its monitor, it comes back on. Not while a button's
+        // held, which may be dragging it.
+        let fitted = fit(home).round();
+        if (fitted - home).length() * ppp > 1.0 {
+            if win::mouse_down() {
+                repaint_after(ctx, RELEASE_CHECK);
+            } else {
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(fitted));
+            }
+            return;
+        }
+        let spot = (home - work.min) * ppp / screen.scale;
+        let saved = self.settings.panel_spots.get(&name).map(|&[x, y]| vec2(x, y));
+        if saved.is_none_or(|saved| (saved - spot).length() > 0.5) {
+            self.settings.panel_spots.insert(name, [spot.x.round(), spot.y.round()]);
         }
     }
 
@@ -538,32 +703,99 @@ impl Overlay {
         STATS_REFRESH
     }
 
-    /// Clawd beside the meters, and usage details under them when expanded, with the window
-    /// sized to fit. Returns when Clawd's next frame is due, if he animates.
-    fn panel(&mut self, ui: &mut egui::Ui, state: &State) -> Option<Duration> {
+    /// The panel in its own window, the root viewport's. Returns when Clawd's next frame is
+    /// due, if he animates.
+    fn main_panel(&mut self, ui: &mut egui::Ui, state: &State) -> Option<Duration> {
+        // Out of `self` while it's drawn, as a copy is.
+        let mut main = std::mem::take(&mut self.main);
+        self.keep_on_monitor(ui.ctx(), &mut main);
+        let next_frame = self.panel(ui, state, &mut main);
+        self.main = main;
+        next_frame
+    }
+
+    /// A copy of the panel on another monitor, in a window of its own, hidden until it has drawn
+    /// itself on its spot there. Returns when Clawd's next frame is due, if he animates.
+    fn copy_panel(&mut self, ctx: &egui::Context, state: &State, copy: &mut PanelWindow) -> Option<Duration> {
+        let name = copy.monitor.clone()?;
+        let title = format!("Cuota on {name}");
+        let level = if self.settings.pinned() == Some(Mode::Desktop) { WindowLevel::AlwaysOnBottom } else { WindowLevel::AlwaysOnTop };
+        // As the panel's own window starts out (see main.rs), but without taking the keyboard
+        // as it shows.
+        let builder = ViewportBuilder::default()
+            .with_title(&title)
+            .with_active(false)
+            .with_inner_size([300.0, 70.0])
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_resizable(false)
+            .with_taskbar(false)
+            .with_window_level(level)
+            .with_visible(false)
+            .with_icon(self.icon.clone());
+        let id = ViewportId::from_hash_of(("panel", &name));
+        show_immediate(ctx, id, builder, |ui| {
+            let ctx = ui.ctx().clone();
+            if copy.window.is_none()
+                && let Some(window) = win::own_window(&title)
+            {
+                win::set_up_panel(window);
+                win::keep_at_bottom(window, self.keep_bottom.clone());
+                copy.window = Some(window);
+            }
+            if let Some(window) = copy.window {
+                win::round_corners(window, CORNER * self.settings.size * ctx.pixels_per_point());
+            }
+            let placed = copy.shown && !copy.placing && !copy.expanded;
+            copy.dodge_pointer(&ctx, self.settings.move_aside, placed);
+            self.keep_on_monitor(&ctx, copy);
+            let next_frame = self.panel(ui, state, copy);
+            // On screen once it's on its spot at its size, already drawn there.
+            if !copy.shown && !copy.placing && copy.window_size == Some(copy.size) {
+                copy.shown = true;
+                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+            }
+            if !copy.shown {
+                ctx.request_repaint();
+            }
+            next_frame
+        })
+        .flatten()
+    }
+
+    /// Clawd beside the meters, and usage details under them when expanded, in `window`, which
+    /// is sized to fit. Returns when Clawd's next frame is due, if he animates.
+    fn panel(&mut self, ui: &mut egui::Ui, state: &State, window: &mut PanelWindow) -> Option<Duration> {
         let ctx = ui.ctx().clone();
         let full = ui.max_rect();
         let docked = self.settings.pinned().is_none();
 
         // Drag to move (the flyout stays put); right-click for settings; double-click as set.
         // Moved out of the pointer's way, or sliding there or back, it ignores clicks.
-        let idle = self.dodge.idle();
+        let idle = window.dodge.idle();
         let sense = if idle { Sense::click_and_drag() } else { Sense::hover() };
         let background = ui.interact(full, ui.id().with("background"), sense);
+        // Settings open on its screen, which for a copy isn't the panel's own.
+        let near = ctx.input(|i| i.viewport().outer_rect).map(|rect| rect.center() * ctx.pixels_per_point());
         if background.secondary_clicked() {
             if self.settings_open {
                 self.settings_open = false;
             } else {
-                self.open_settings(&ctx);
+                self.open_settings_near(&ctx, near);
             }
         }
         if background.double_clicked() {
             match self.settings.double_click {
-                DoubleClick::Details => self.set_expanded(!self.expanded),
+                DoubleClick::Details => {
+                    if !window.expanded {
+                        self.stats_asked = None;
+                    }
+                    window.set_expanded(!window.expanded);
+                }
                 DoubleClick::Website => win::open_claude(false),
                 DoubleClick::App => win::open_claude(true),
                 // Nothing picked yet: the settings are where to pick it.
-                DoubleClick::Custom if self.settings.custom_target.is_empty() => self.open_settings(&ctx),
+                DoubleClick::Custom if self.settings.custom_target.is_empty() => self.open_settings_near(&ctx, near),
                 DoubleClick::Custom => win::open_target(&self.settings.custom_target),
             }
         }
@@ -618,27 +850,25 @@ impl Overlay {
         let gap = if clawd.x > 0.0 && body.x > 0.0 { GAP * scale } else { 0.0 };
         let row = vec2(clawd.x + gap + body.x, clawd.y.max(body.y));
         // Details scroll once they'd run past DETAILS_HEIGHT or off the screen.
-        let details = self.expanded.then(|| {
-            let room = self
-                .work_area(&ctx)
-                .map_or(DETAILS_HEIGHT, |work| work.height() - row.y - 2.0 * (margin + SCREEN_GAP));
-            vec2(DETAILS_WIDTH, self.details_height.min(DETAILS_HEIGHT).min(room).max(0.0))
+        let details = window.expanded.then(|| {
+            let room = work_area(&ctx).map_or(DETAILS_HEIGHT, |work| work.height() - row.y - 2.0 * (margin + SCREEN_GAP));
+            vec2(DETAILS_WIDTH, window.details_height.min(DETAILS_HEIGHT).min(room).max(0.0))
         });
         let inner = details.map_or(row, |details| vec2(row.x.max(details.x), row.y + details.y));
         let size = (inner + Vec2::splat(2.0 * margin)).round();
-        let wheel_shift = self.wheel.shift.take();
+        let wheel_shift = window.wheel.shift.take();
         // Scripts and window managers can resize it too (one put it back to its first size,
         // cropping the panel), so a size changed to anything else is asked for again. Only
         // when it changes, so a size Windows won't allow isn't asked for every frame.
         let window_size = ctx.input(|i| i.viewport().inner_rect).map(|r| r.size().round());
-        let resized = window_size != self.window_size && window_size.is_some_and(|actual| actual != size);
-        self.window_size = window_size;
-        if size != self.size || resized {
-            self.size = size;
+        let resized = window_size != window.window_size && window_size.is_some_and(|actual| actual != size);
+        window.window_size = window_size;
+        if size != window.size || resized {
+            window.size = size;
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
-            self.place_flyout(&ctx);
+            self.place_flyout(&ctx, size);
             if !docked {
-                self.fit_on_screen(&ctx, size, wheel_shift);
+                window.fit_on_screen(&ctx, size, wheel_shift);
             }
         }
 
@@ -684,13 +914,13 @@ impl Overlay {
                     egui::Frame::new().inner_margin(lane).show(ui, |ui| details::ui(ui, &self.fonts, state, stats.as_deref()));
                 });
             let height = scroll.content_size.y.ceil();
-            if (height - self.details_height).abs() >= 1.0 {
-                self.details_height = height;
+            if (height - window.details_height).abs() >= 1.0 {
+                window.details_height = height;
                 ctx.request_repaint();
             }
         }
         if self.settings.wheel_resize && idle {
-            self.wheel.resize(ui, details, &mut self.settings);
+            window.wheel.resize(ui, details, &mut self.settings);
         }
         next_frame
     }
@@ -750,7 +980,7 @@ impl Overlay {
     /// The part of the screen settings open on that the taskbar leaves free, in points: the
     /// desktop pet's when he asked for them, the panel's otherwise.
     fn settings_screen(&self, ctx: &egui::Context) -> Option<Rect> {
-        let Some(near) = self.settings_near else { return self.work_area(ctx) };
+        let Some(near) = self.settings_near else { return work_area(ctx) };
         let work = win::work_area(near.x as i32, near.y as i32)?;
         let work = Rect::from_min_max(pos2(work.left as f32, work.top as f32), pos2(work.right as f32, work.bottom as f32));
         Some(work / ctx.pixels_per_point())
@@ -801,17 +1031,7 @@ impl Overlay {
             .with_always_on_top()
             .with_visible(false)
             .with_icon(self.icon.clone());
-        // eframe (0.35 to 0.37) draws a hidden panel from outside winit's event handlers, where an
-        // immediate viewport can't open its window, and panics: "the user callback was never
-        // called". That's how right-clicking the desktop pet, with no panel showing, crashed
-        // Cuota. So settings first open as an empty deferred viewport, which eframe gives a
-        // window as this pass ends, whatever called it, and draw in it from the next pass.
-        if !ctx.input(|i| i.raw.viewports.contains_key(&settings_viewport())) {
-            ctx.show_viewport_deferred(settings_viewport(), builder, |_, _| {});
-            ctx.request_repaint();
-            return;
-        }
-        ctx.show_viewport_immediate(settings_viewport(), builder, |ui, _| {
+        show_immediate(ctx, settings_viewport(), builder, |ui| {
             let ctx = ui.ctx().clone();
             if ctx.input(|i| i.viewport().close_requested()) {
                 self.settings_open = false;
@@ -936,8 +1156,19 @@ impl Overlay {
 
     /// The page picked in the sidebar: a card for each setting, as in Windows' Settings.
     fn settings_page(&mut self, ui: &mut egui::Ui, state: &State) {
-        let Self { settings, settings_page: page, open_expanders, fonts, starts_with_windows, claude_app_installed, browsing, .. } =
-            self;
+        let Self {
+            settings,
+            settings_page: page,
+            open_expanders,
+            fonts,
+            starts_with_windows,
+            claude_app_installed,
+            browsing,
+            screens,
+            here,
+            identify,
+            ..
+        } = self;
         let page = *page;
 
         let note = match page {
@@ -977,6 +1208,22 @@ impl Overlay {
                         if item.on_disabled_hover_text("At least one stays on").changed() {
                             settings.set_shown_as(mode, shown);
                         }
+                    }
+                });
+
+                // For the panel that stays on screen, not the flyout. Picked on fewer than two,
+                // it's the one it's on.
+                ui.add_enabled_ui(settings.pinned().is_some(), |ui| {
+                    let present = |name: &String| screens.iter().any(|screen| screen.name == *name);
+                    let mut picked: BTreeSet<String> = settings.panel_monitors.iter().filter(|name| present(name)).cloned().collect();
+                    if picked.len() < 2 {
+                        picked = here.iter().cloned().collect();
+                    }
+                    let about = "Show a copy of the panel on each monitor picked";
+                    if monitor_list(ui, fonts, open_expanders, page, about, screens, &mut picked, identify) {
+                        // Monitors unplugged now stay picked for when they're back.
+                        settings.panel_monitors.retain(|name| !present(name));
+                        settings.panel_monitors.extend(picked);
                     }
                 });
 
@@ -1129,6 +1376,22 @@ impl Overlay {
                 widgets::setting(ui, fonts, icon::REACT, "React to pointer", about, widgets::TOGGLE_WIDTH, |ui| {
                     widgets::toggle(ui, &mut pet.react);
                 });
+                let present = |name: &String| screens.iter().any(|screen| screen.name == *name);
+                let about = Some("He walks over to the monitors picked below, not just the one he's on");
+                widgets::setting(ui, fonts, icon::TRAVEL, "Travel across monitors", about, widgets::TOGGLE_WIDTH, |ui| {
+                    // At first, all of them.
+                    if widgets::toggle(ui, &mut pet.travel).changed() && pet.travel && !pet.monitors.iter().any(present) {
+                        pet.monitors.extend(screens.iter().map(|screen| screen.name.clone()));
+                    }
+                });
+                ui.add_enabled_ui(pet.travel, |ui| {
+                    let mut picked: BTreeSet<String> = pet.monitors.iter().filter(|name| present(name)).cloned().collect();
+                    let about = "The ones he walks across";
+                    if monitor_list(ui, fonts, open_expanders, page, about, screens, &mut picked, identify) {
+                        pet.monitors.retain(|name| !present(name));
+                        pet.monitors.extend(picked);
+                    }
+                });
                 let about = Some("Rest the pointer on him to see your usage beside him. Passing over him doesn't count.");
                 widgets::setting(ui, fonts, icon::HOVER_CARD, "Card on hover", about, widgets::TOGGLE_WIDTH, |ui| {
                     widgets::toggle(ui, &mut pet.hover);
@@ -1188,6 +1451,45 @@ fn style_and_limits(
     }
 }
 
+/// An expander listing the monitors by number, with their size and place, to pick by checking,
+/// and a row that shows each one's number on it. At least one stays picked. Returns whether
+/// `picked` changed.
+fn monitor_list(
+    ui: &mut egui::Ui,
+    fonts: &Fonts,
+    open_expanders: &mut HashMap<(Page, &'static str), bool>,
+    page: Page,
+    about: &str,
+    screens: &[Screen],
+    picked: &mut BTreeSet<String>,
+    identify: &mut Identify,
+) -> bool {
+    let numbers: Vec<usize> = screens.iter().filter(|screen| picked.contains(&screen.name)).map(|screen| screen.number).collect();
+    let open = open_expanders.entry((page, "Monitors")).or_default();
+    let mut changed = false;
+    widgets::expander(ui, fonts, open, icon::MONITORS, "Monitors", Some(about), &monitors::summary(&numbers), |ui| {
+        for screen in screens {
+            let mut on = picked.contains(&screen.name);
+            let last = on && picked.len() == 1;
+            let about = screen.about(screens);
+            let item = ui.add_enabled(!last, |ui: &mut egui::Ui| widgets::check_item(ui, fonts, &mut on, &screen.title(), Some(&about)));
+            if item.on_disabled_hover_text("At least one stays on").changed() {
+                if on {
+                    picked.insert(screen.name.clone());
+                } else {
+                    picked.remove(&screen.name);
+                }
+                changed = true;
+            }
+        }
+        let about = Some("Shows each monitor's number on it for a moment");
+        if widgets::action_item(ui, fonts, icon::IDENTIFY, "Identify", about).clicked() {
+            identify.start();
+        }
+    });
+    changed
+}
+
 /// The details a view can show under its meters, to pick and drag into order, in a group
 /// called `title`.
 fn details_list(
@@ -1231,17 +1533,18 @@ fn details_list(
 impl eframe::App for Overlay {
     /// Runs even while the window is hidden, so tray clicks get through.
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if self.window.is_none()
+        if self.main.window.is_none()
             && let Some(window) = native_window(frame)
         {
             win::set_up_panel(window);
             win::keep_at_bottom(window, self.keep_bottom.clone());
-            self.window = Some(window);
+            self.main.window = Some(window);
         }
-        if let Some(window) = self.window {
+        if let Some(window) = self.main.window {
             win::round_corners(window, CORNER * self.settings.size * ctx.pixels_per_point());
         }
         self.apply_modes(ctx);
+        self.arrange(ctx);
         self.sync_tray();
         while let Ok(event) = self.tray_events.try_recv() {
             let (settings, details) = match event {
@@ -1254,7 +1557,10 @@ impl eframe::App for Overlay {
                 }
             };
             if details {
-                self.set_expanded(true);
+                if !self.main.expanded {
+                    self.stats_asked = None;
+                }
+                self.main.set_expanded(true);
             }
             if self.settings.pinned().is_some() {
                 // A click hides or shows the panel; settings and details bring it back if it was hidden.
@@ -1283,15 +1589,12 @@ impl eframe::App for Overlay {
         }
 
         // Out of the pointer's way, while the panel sits on screen in its usual size. Hidden,
-        // expanded or being placed again, it goes straight back to its spot.
+        // expanded or being placed again, it goes straight back to its spot. Its copies on
+        // other monitors do the same as they're drawn.
         let settled = self.applied.as_ref().is_some_and(|(_, at)| at.elapsed() > SETTLE);
-        let placed = self.settings.pinned().is_some() && !self.hidden && !self.expanded && settled;
-        let seen = ctx.input(|i| i.viewport().outer_rect).map(|rect| rect.min + self.lift);
-        if let Some(window) = self.window
-            && let Some(at) = self.dodge.update(ctx, window, self.settings.move_aside && placed, !placed, seen)
-        {
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
-        }
+        let main = &self.main;
+        let placed = self.settings.pinned().is_some() && !self.hidden && !main.expanded && !main.placing && settled;
+        self.main.dodge_pointer(ctx, self.settings.move_aside, placed);
 
         // Sounds follow Claude's sessions, whether or not the panel shows. They're made in the
         // background as Cuota starts, or once they're turned on.
@@ -1329,12 +1632,21 @@ impl eframe::App for Overlay {
         let mut next_frame = None;
         if visible {
             // Clawd's next frame, or the next minute for the countdowns.
-            next_frame = Some(self.panel(ui, &state).unwrap_or_else(|| {
+            let mut next = self.main_panel(ui, &state);
+            for index in 0..self.copies.len() {
+                // Out of `self` while it's drawn, as the panel's own window is.
+                let mut copy = std::mem::take(&mut self.copies[index]);
+                let copy_next = self.copy_panel(&ctx, &state, &mut copy);
+                self.copies[index] = copy;
+                next = next.into_iter().chain(copy_next).min();
+            }
+            next_frame = Some(next.unwrap_or_else(|| {
                 Duration::from_millis(60_000 - Utc::now().timestamp_millis().rem_euclid(60_000) as u64)
             }));
             // Claude Code's stats, while something shows them.
             let details = &self.settings.panel.details;
-            if self.expanded || details.use_stats() || self.settings_open && self.settings_page == Page::Details {
+            let expanded = self.main.expanded || self.copies.iter().any(|copy| copy.expanded);
+            if expanded || details.use_stats() || self.settings_open && self.settings_page == Page::Details {
                 let wait = self.refresh_stats(&state);
                 next_frame = next_frame.map(|next| next.min(wait));
             }
@@ -1348,7 +1660,7 @@ impl eframe::App for Overlay {
                 && let Some(rect) = ctx.input(|i| i.viewport().outer_rect)
             {
                 // Where it sits when not expanded or moved aside, so it starts there next time.
-                let at = self.home(rect);
+                let at = self.main.home(rect);
                 self.settings.panel_pos = Some([at.x, at.y]);
             }
         }
@@ -1356,6 +1668,7 @@ impl eframe::App for Overlay {
         if self.settings_open {
             self.settings_window(&ctx, &state);
         }
+        self.identify.show(&ctx, &self.fonts);
         self.schedule(&ctx, next_frame);
     }
 
@@ -1373,6 +1686,38 @@ impl eframe::App for Overlay {
 
 fn settings_viewport() -> ViewportId {
     ViewportId::from_hash_of("settings")
+}
+
+/// Shows a window drawn by `add_contents` during this pass (an immediate viewport), as the
+/// settings, the panel's copies on other monitors and Identify's numbers are. Returns what
+/// `add_contents` does, once the window is open.
+///
+/// eframe (0.35 to 0.37) draws a hidden panel from outside winit's event handlers, where an
+/// immediate viewport can't open its window, and panics: "the user callback was never called".
+/// That's how right-clicking the desktop pet, with no panel showing, crashed Cuota. So a window
+/// first opens as an empty deferred viewport, which eframe gives a window as this pass ends,
+/// whatever called it, and is drawn in from the next pass. Open it hidden, to show once drawn.
+pub(crate) fn show_immediate<R>(
+    ctx: &egui::Context,
+    id: ViewportId,
+    builder: ViewportBuilder,
+    mut add_contents: impl FnMut(&mut egui::Ui) -> R,
+) -> Option<R> {
+    if !ctx.input(|i| i.raw.viewports.contains_key(&id)) {
+        ctx.show_viewport_deferred(id, builder, |_, _| {});
+        ctx.request_repaint();
+        return None;
+    }
+    Some(ctx.show_viewport_immediate(id, builder, |ui, _| add_contents(ui)))
+}
+
+/// The part of the monitor the window being drawn is on that the taskbar leaves free, in points.
+fn work_area(ctx: &egui::Context) -> Option<Rect> {
+    let ppp = ctx.pixels_per_point();
+    let center = ctx.input(|i| i.viewport().outer_rect)?.center();
+    let work = win::work_area((center.x * ppp) as i32, (center.y * ppp) as i32)?;
+    let work = Rect::from_min_max(pos2(work.left as f32, work.top as f32), pos2(work.right as f32, work.bottom as f32));
+    Some(work / ppp)
 }
 
 /// The Show as options: each one's mode, name and what it does.
@@ -1612,9 +1957,9 @@ mod tests {
     /// Lays the panel out in a frame, and returns the size it asks the window to be.
     fn panel_size(ctx: &egui::Context, overlay: &mut Overlay, state: &State) -> Vec2 {
         let _ = ctx.run_ui(window(vec2(1600.0, 1200.0)), |ui| {
-            overlay.panel(ui, state);
+            overlay.main_panel(ui, state);
         });
-        overlay.size
+        overlay.main.size
     }
 
     #[test]
@@ -1656,15 +2001,15 @@ mod tests {
             for details in [Details::default(), all.clone()] {
                 overlay.settings.panel.details = details;
                 let output = ctx.run_ui(window(vec2(1600.0, 1200.0)), |ui| {
-                    overlay.panel(ui, &state);
+                    overlay.main_panel(ui, &state);
                 });
                 // He's the only picture in the panel, clipped to his slot plus SPILL all round.
                 let slot = output.shapes.iter().find(|clipped| clipped.shape.texture_id() != egui::TextureId::default());
                 let slot = slot.expect("Clawd is drawn").clip_rect;
-                let middle = overlay.size.y / 2.0;
-                assert!((slot.center().y - middle).abs() <= 1.0, "at {size} he's at {slot:?} in {:?}", overlay.size);
+                let middle = overlay.main.size.y / 2.0;
+                assert!((slot.center().y - middle).abs() <= 1.0, "at {size} he's at {slot:?} in {:?}", overlay.main.size);
             }
-            assert!(overlay.size.y > (animations::SIZE.y + 2.0 * MARGIN) * size, "the details run past him at {size}");
+            assert!(overlay.main.size.y > (animations::SIZE.y + 2.0 * MARGIN) * size, "the details run past him at {size}");
         }
     }
 
@@ -1794,12 +2139,148 @@ mod tests {
         let side = crate::mascot::SPARK_PIXELS as u32;
         let icon = Arc::new(IconData { rgba: spark.clone(), width: side, height: side });
         let cc = eframe::CreationContext::_new_kittest(ctx.clone());
-        let overlay = Overlay::new(&cc, Settings::default(), TimeDelta::minutes(5), true, &spark, icon);
+        let mut overlay = Overlay::new(&cc, Settings::default(), TimeDelta::minutes(5), true, &spark, icon);
         let state = overlay.state.lock().unwrap().clone();
         assert!(!state.limits.is_empty(), "the demo's limits fill the Limits expander");
+        // Monitors of its own, not listed again while it's tested, with the panel on the first.
+        overlay.screens = test_screens();
+        overlay.screens_read = Some(Instant::now() + Duration::from_secs(3600));
+        overlay.here = Some(monitor(1));
         // The first pass loads the fonts.
         let _ = ctx.run_ui(Default::default(), |_| {});
         (ctx, overlay, state)
+    }
+
+    /// Three monitors, each with a taskbar: the main one, one lower down on its left, and one
+    /// standing on its end on its right.
+    fn test_screens() -> Vec<Screen> {
+        let screen = |number: usize, min: Pos2, size: Vec2| {
+            let area = Rect::from_min_size(min, size);
+            let work = Rect::from_min_max(area.min, area.max - vec2(0.0, 48.0));
+            Screen { name: monitor(number), number, area, work, primary: number == 1, scale: 1.0 }
+        };
+        vec![
+            screen(1, Pos2::ZERO, vec2(2560.0, 1440.0)),
+            screen(2, pos2(-1920.0, 200.0), vec2(1920.0, 1080.0)),
+            screen(3, pos2(2560.0, 0.0), vec2(1080.0, 1920.0)),
+        ]
+    }
+
+    /// Windows' name for a monitor.
+    fn monitor(number: usize) -> String {
+        format!(r"\\.\DISPLAY{number}")
+    }
+
+    /// A frame with the panel's own window at `rect`, running `run`.
+    fn panel_at(
+        ctx: &egui::Context,
+        overlay: &mut Overlay,
+        rect: Rect,
+        mut run: impl FnMut(&egui::Context, &mut Overlay),
+    ) -> egui::FullOutput {
+        let mut input = window(vec2(1600.0, 1200.0));
+        let info = egui::ViewportInfo { outer_rect: Some(rect), inner_rect: Some(rect), ..Default::default() };
+        input.viewports.insert(ViewportId::ROOT, info);
+        ctx.run_ui(input, |ui| run(ui.ctx(), overlay))
+    }
+
+    /// Where a frame sent the window being drawn.
+    fn moved_to(output: &egui::FullOutput) -> Option<Pos2> {
+        let commands = &output.viewport_output.get(&ViewportId::ROOT)?.commands;
+        commands.iter().find_map(|command| match command {
+            ViewportCommand::OuterPosition(at) => Some(*at),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn on_several_monitors_the_panel_stays_on_its_own_and_a_copy_goes_on_each_of_the_others() {
+        let (ctx, mut overlay, _) = settings_overlay();
+        overlay.main.size = vec2(300.0, 100.0);
+        // On the left monitor, a quarter of the way across the room it has to move in, at the top.
+        let rect = Rect::from_min_size(pos2(-1920.0 + 405.0, 200.0), vec2(300.0, 100.0));
+        let arrange = |overlay: &mut Overlay, picked: &[usize]| {
+            overlay.settings.panel_monitors = picked.iter().map(|&number| monitor(number)).collect();
+            panel_at(&ctx, overlay, rect, |ctx, overlay| overlay.arrange(ctx));
+            let copies: Vec<String> = overlay.copies.iter().filter_map(|copy| copy.monitor.clone()).collect();
+            (overlay.main.monitor.clone(), overlay.main.placing, copies)
+        };
+        assert_eq!(arrange(&mut overlay, &[1, 2]), (Some(monitor(2)), false, vec![monitor(1)]));
+        assert_eq!(overlay.here, Some(monitor(2)));
+        // As far across and down the main monitor as it is on its own.
+        assert_eq!(overlay.settings.panel_spots.get(&monitor(1)), Some(&[565.0, 0.0]));
+        assert_eq!(arrange(&mut overlay, &[1, 2, 3]), (Some(monitor(2)), false, vec![monitor(1), monitor(3)]));
+        // Its own monitor unpicked, it moves to the first of the others, and that copy goes.
+        assert_eq!(arrange(&mut overlay, &[1, 3]), (Some(monitor(1)), true, vec![monitor(3)]));
+        // Down to one, it moves there, on its own.
+        assert_eq!(arrange(&mut overlay, &[3]), (Some(monitor(3)), true, vec![]));
+        // Hidden from the tray, the copies close too.
+        arrange(&mut overlay, &[1, 2]);
+        overlay.hidden = true;
+        assert_eq!(arrange(&mut overlay, &[1, 2]).2, Vec::<String>::new());
+
+        // One picked that it isn't on, from before it started: it stays where it was left.
+        let (ctx, mut overlay, _) = settings_overlay();
+        overlay.settings.panel_monitors = [monitor(1)].into();
+        panel_at(&ctx, &mut overlay, rect, |ctx, overlay| overlay.arrange(ctx));
+        assert_eq!((overlay.main.monitor.clone(), overlay.copies.len()), (None, 0));
+    }
+
+    #[test]
+    fn each_window_goes_to_its_spot_on_its_monitor_and_keeps_where_its_dragged() {
+        let (ctx, mut overlay, _) = settings_overlay();
+        overlay.settings.panel_monitors = [monitor(1), monitor(2)].into();
+        overlay.settings.panel_spots.insert(monitor(1), [100.0, 50.0]);
+        let mut copy = PanelWindow { size: vec2(300.0, 100.0), ..PanelWindow::copy(&monitor(1)) };
+        let mut frame = |overlay: &mut Overlay, at: Pos2| {
+            let rect = Rect::from_min_size(at, vec2(300.0, 100.0));
+            moved_to(&panel_at(&ctx, overlay, rect, |ctx, overlay| overlay.keep_on_monitor(ctx, &mut copy)))
+        };
+        // Opened elsewhere, it's sent there, and once there it stays.
+        assert_eq!(frame(&mut overlay, pos2(-1000.0, 400.0)), Some(pos2(100.0, 50.0)));
+        assert_eq!(frame(&mut overlay, pos2(100.0, 50.0)), None);
+        // Dragged somewhere else on its monitor, that's its spot from then on.
+        assert_eq!(frame(&mut overlay, pos2(700.0, 300.0)), None);
+        assert_eq!(overlay.settings.panel_spots.get(&monitor(1)), Some(&[700.0, 300.0]));
+        assert!(!copy.placing);
+    }
+
+    #[test]
+    fn picking_a_second_monitor_adds_it_to_the_one_the_panel_is_on_and_one_stays_picked() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        overlay.open_expanders.insert((Page::General, "Monitors"), true);
+        // One picked before, now unplugged.
+        overlay.settings.panel_monitors = [monitor(9)].into();
+        let mut time = 0.0;
+        let mut click = |overlay: &mut Overlay, text: &str| {
+            let mut frame = |overlay: &mut Overlay, events: Vec<egui::Event>| {
+                time += 0.05;
+                // Tall enough for the whole page, so nothing's scrolled out of reach.
+                let input = egui::RawInput { events, time: Some(time), ..window(vec2(800.0, 1400.0)) };
+                ctx.run_ui(input, |ui| {
+                    overlay.settings_ui(ui, &state);
+                })
+            };
+            let at = drawn(&frame(overlay, vec![]), text).center();
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(overlay, vec![egui::Event::PointerMoved(at)]);
+            frame(overlay, vec![button(true)]);
+            frame(overlay, vec![button(false)]);
+        };
+        let picked = |overlay: &Overlay| overlay.settings.panel_monitors.iter().cloned().collect::<Vec<_>>();
+        click(&mut overlay, "Monitor 2");
+        assert_eq!(picked(&overlay), [monitor(1), monitor(2), monitor(9)]);
+        click(&mut overlay, "Monitor 1");
+        assert_eq!(picked(&overlay), [monitor(2), monitor(9)]);
+        // Once the panel has moved there, that one stays picked.
+        overlay.here = Some(monitor(2));
+        click(&mut overlay, "Monitor 2");
+        assert_eq!(picked(&overlay), [monitor(2), monitor(9)]);
     }
 
     fn window(size: Vec2) -> egui::RawInput {
@@ -1848,7 +2329,7 @@ mod tests {
                 overlay.settings = settings;
                 for page in Page::ALL {
                     overlay.settings_page = page;
-                    for title in ["Show as", "Limits", "Hear the sounds"] {
+                    for title in ["Show as", "Monitors", "Limits", "Hear the sounds"] {
                         overlay.open_expanders.insert((page, title), true);
                     }
                     let output = ctx.run_ui(window(size), |ui| {

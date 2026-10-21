@@ -70,8 +70,12 @@ pub mod icon {
     pub const HEAR: char = '\u{E7F6}';
     /// A card with a picture and lines.
     pub const HOVER_CARD: char = '\u{E8A1}';
+    /// An eye: see which monitor is which.
+    pub const IDENTIFY: char = '\u{E7B3}';
     pub const LIMITS: char = '\u{E9F9}';
     pub const LOG: char = '\u{E8A5}';
+    /// Two screens side by side.
+    pub const MONITORS: char = '\u{EBC6}';
     pub const MOVE_ASIDE: char = '\u{E759}';
     pub const OPACITY: char = '\u{E793}';
     pub const PANEL: char = '\u{E737}';
@@ -95,6 +99,8 @@ pub mod icon {
     pub const STYLE: char = '\u{EB05}';
     pub const TASKBAR: char = '\u{E75B}';
     pub const TIME_LEFT: char = '\u{E916}';
+    /// Arrows either way: off to another monitor and back.
+    pub const TRAVEL: char = '\u{E8AB}';
     pub const WHEEL: char = '\u{ECE7}';
 }
 

@@ -5,7 +5,8 @@
 //! nothing on he sleeps, and every so often wakes, wanders off and sleeps somewhere else. With
 //! React to pointer on, his eyes follow the pointer, and now and then he comes over to say hi,
 //! keep it company or nap beside it. Resting the pointer on him, rather than passing over him,
-//! shows a card of usage beside him.
+//! shows a card of usage beside him. With Travel across monitors on, he walks over to the
+//! monitors picked too, crossing where they meet.
 //!
 //! [`Roam`] decides where he goes and what he does, and [`Hover`] whether the pointer means to
 //! look at him: both plain logic, tested on their own. [`Pet`] is his window, which the panel
@@ -14,7 +15,8 @@
 use crate::animations::{Act, BODY, Clawd, FRAME, Mood, Rng, SCALE};
 use crate::claude::{Limit, State};
 use crate::glance;
-use crate::overlay::{BG, BORDER, CORNER, FRAME_TIME, GLANCE_GAP, MARGIN, NOTE_WIDTH, note, repaint_after};
+use crate::monitors::{self, Screen};
+use crate::overlay::{BG, BORDER, CORNER, FRAME_TIME, GLANCE_GAP, MARGIN, MONITOR_CHECK, NOTE_WIDTH, note, repaint_after};
 use crate::settings::{self, DoubleClick, View};
 use crate::stats::Stats;
 use crate::status::Status;
@@ -65,6 +67,8 @@ const WANDER_ODDS: f32 = 0.5;
 const VISIT_ODDS: f32 = 0.4;
 /// Odds that a visit starts with a hello, rather than just hanging around (or, asleep, a nap).
 const HELLO_ODDS: f32 = 0.6;
+/// Travelling across monitors, odds that he goes to sleep on another one when he moves off.
+const TRAVEL_ODDS: f32 = 0.5;
 /// Beside the pointer, his feet are this far to its side and below it, in points.
 const BESIDE: Vec2 = vec2(70.0, 40.0);
 /// He gives up on reaching the pointer after this long.
@@ -127,10 +131,14 @@ pub struct Senses {
     pub played: bool,
     /// Where he is.
     pub at: Pos2,
-    /// The pointer, when it's on his screen.
+    /// The pointer, when it's on his screen or one of `rooms`.
     pub pointer: Option<Pos2>,
-    /// What the taskbar leaves of his screen.
+    /// His screen, and what the taskbar leaves of it.
+    pub area: Rect,
     pub work: Rect,
+    /// The monitors he travels across that he can walk to from here, his own among them if
+    /// it's one. Empty unless he travels.
+    pub rooms: Vec<Room>,
     /// What has to stay on `work`, from `at`: him and his status.
     pub footprint: Rect,
     /// From `at` to his feet.
@@ -145,6 +153,90 @@ pub struct Senses {
     pub poked: bool,
     /// A session is waiting on you: a question, or a permission to give.
     pub asking: bool,
+}
+
+/// A monitor he can walk about: all of it, and what the taskbar leaves of it, in pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Room {
+    pub area: Rect,
+    pub work: Rect,
+}
+
+/// Where two monitors meet, and he crosses from one to the other: a spot in the first with his
+/// footprint at its edge, the spot in the second just across, and the band he keeps to between
+/// them. Spots are his frame's top-left, as in [`Senses`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Doorway {
+    near: Pos2,
+    far: Pos2,
+    band: Rect,
+}
+
+/// The way from `from` to `to`, when they meet along an edge with room for his `footprint`
+/// along it on both, level with `at` as far as it can be.
+fn doorway(from: Room, to: Room, at: Pos2, footprint: Rect) -> Option<Doorway> {
+    // Side by side, or the same turned on its side for one above the other.
+    let flip = |p: Pos2| pos2(p.y, p.x);
+    let flip_rect = |r: Rect| Rect::from_min_max(flip(r.min), flip(r.max));
+    let flip_room = |r: Room| Room { area: flip_rect(r.area), work: flip_rect(r.work) };
+    let unflip = |door: Doorway| Doorway { near: flip(door.near), far: flip(door.far), band: flip_rect(door.band) };
+    beside(from, to, at, footprint)
+        .or_else(|| beside(flip_room(from), flip_room(to), flip(at), flip_rect(footprint)).map(unflip))
+}
+
+/// [`doorway`] for monitors side by side.
+fn beside(from: Room, to: Room, at: Pos2, footprint: Rect) -> Option<Doorway> {
+    let rightward = (from.area.right() - to.area.left()).abs() <= 1.0;
+    if !rightward && (from.area.left() - to.area.right()).abs() > 1.0 {
+        return None;
+    }
+    // Clear of either taskbar, which he crosses only when it's between them.
+    let top = from.work.top().max(to.work.top());
+    let bottom = from.work.bottom().min(to.work.bottom());
+    if bottom - top < footprint.height() {
+        return None;
+    }
+    let y = at.y.clamp(top - footprint.top(), bottom - footprint.bottom());
+    let (near, far) = if rightward {
+        (from.work.right() - footprint.right(), to.work.left() - footprint.left())
+    } else {
+        (from.work.left() - footprint.left(), to.work.right() - footprint.right())
+    };
+    let across = from.work.left().min(to.work.left())..=from.work.right().max(to.work.right());
+    Some(Doorway { near: pos2(near, y), far: pos2(far, y), band: Rect::from_x_y_ranges(across, top..=bottom) })
+}
+
+/// The way from `here` to `to` through `rooms`, a monitor at a time, not counting `here`.
+/// `None` when there isn't one.
+fn route(here: Room, to: Room, rooms: &[Room], footprint: Rect) -> Option<Vec<Room>> {
+    // Nearest first, each monitor with the one it's reached from.
+    let mut reached: Vec<(Room, usize)> = vec![(here, 0)];
+    let mut next = 0;
+    while let Some(&(room, _)) = reached.get(next) {
+        if room.area == to.area {
+            let mut way = Vec::new();
+            let mut step = next;
+            while step != 0 {
+                way.push(reached[step].0);
+                step = reached[step].1;
+            }
+            way.reverse();
+            return Some(way);
+        }
+        for &other in rooms {
+            let new = !reached.iter().any(|(seen, _)| seen.area == other.area);
+            if new && doorway(room, other, Pos2::ZERO, footprint).is_some() {
+                reached.push((other, next));
+            }
+        }
+        next += 1;
+    }
+    None
+}
+
+/// Which of `rooms` he can walk to from `here`, through the others.
+pub fn reachable(here: Room, rooms: &[Room], footprint: Rect) -> Vec<Room> {
+    rooms.iter().copied().filter(|&room| room.area == here.area || route(here, room, rooms, footprint).is_some()).collect()
 }
 
 /// Where he goes this frame, and what he plays.
@@ -324,15 +416,20 @@ impl Roam {
                     // A hop along whichever way is longer to go, and along the other as often as
                     // keeps him on his line there, like a line of pixels.
                     let hop = HOP * SCALE * s.scale;
-                    let left = (target - hops.glide) / hop;
+                    let (aim, within, doorway) = waypoint(at, target, s);
+                    let left = (aim - hops.glide) / hop;
                     let longer = left.x.abs().max(left.y.abs());
-                    if longer <= 1.0 {
-                        at = target;
-                        self.doing = self.then(then, s);
-                    } else {
+                    if longer > 1.0 {
                         hops.glide += left / longer * hop;
                         // On his grid, though at the screen's edge that can be just off it.
-                        at = clamp(hops.from + ((hops.glide - hops.from) / hop).round() * hop, s);
+                        at = fit(hops.from + ((hops.glide - hops.from) / hop).round() * hop, within, s);
+                    } else if doorway {
+                        // On through it, on a grid from there.
+                        at = aim;
+                        (hops.from, hops.glide) = (aim, aim);
+                    } else {
+                        at = aim;
+                        self.doing = self.then(then, s);
                     }
                     hops.next += every;
                 }
@@ -436,7 +533,9 @@ impl Roam {
     /// screen would put him on top of it.
     fn beside(&self, pointer: Pos2, at: Pos2, s: &Senses) -> Pos2 {
         let side = if at.x + s.feet.x <= pointer.x { -1.0 } else { 1.0 };
-        let place = |side: f32| clamp(pointer + vec2(side * BESIDE.x, BESIDE.y) * s.scale - s.feet, s);
+        // On the pointer's screen, which can be another he walks to.
+        let work = s.rooms.iter().find(|room| room.area.contains(pointer)).map_or(s.work, |room| room.work);
+        let place = |side: f32| fit(pointer + vec2(side * BESIDE.x, BESIDE.y) * s.scale - s.feet, work, s);
         let spot = place(side);
         if s.footprint.translate(spot.to_vec2()).contains(pointer) { place(-side) } else { spot }
     }
@@ -455,8 +554,17 @@ impl Roam {
         spot
     }
 
-    /// Anywhere on his screen, well away from where he is.
+    /// Anywhere on his screen, well away from where he is, or, now and then when he travels,
+    /// anywhere on another. Always another when his own isn't one he travels across.
     fn far_spot(&mut self, at: Pos2, s: &Senses) -> Pos2 {
+        let others: Vec<Room> = s.rooms.iter().copied().filter(|room| room.area != s.area).collect();
+        let leaving = others.len() == s.rooms.len();
+        if !others.is_empty() && (leaving || self.rng.chance(TRAVEL_ODDS)) {
+            let room = others[self.rng.below(others.len())];
+            let (low, high) = (fit(room.work.min, room.work, s), fit(room.work.max, room.work, s));
+            let x = self.rng.between(low.x..high.x.max(low.x + 1.0));
+            return pos2(x, self.rng.between(low.y..high.y.max(low.y + 1.0)));
+        }
         let (low, high) = (clamp(s.work.min, s), clamp(s.work.max, s));
         for _ in 0..8 {
             let x = self.rng.between(low.x..high.x.max(low.x + 1.0));
@@ -476,9 +584,43 @@ fn walk(spot: Pos2, act: Act, now: Instant) -> Doing {
 
 /// `at`, moved as little as it takes for his footprint to be on the screen.
 fn clamp(at: Pos2, s: &Senses) -> Pos2 {
-    let low = s.work.min - s.footprint.min.to_vec2();
-    let high = s.work.max - s.footprint.max.to_vec2();
+    fit(at, s.work, s)
+}
+
+/// `at`, moved as little as it takes for his footprint to be within `within`.
+fn fit(at: Pos2, within: Rect, s: &Senses) -> Pos2 {
+    let low = within.min - s.footprint.min.to_vec2();
+    let high = within.max - s.footprint.max.to_vec2();
     pos2(at.x.clamp(low.x, high.x.max(low.x)), at.y.clamp(low.y, high.y.max(low.y)))
+}
+
+/// Where he heads next on his way to `target`, what he keeps within on the way there, and
+/// whether that's a doorway he goes on through: straight there on his own screen, or through
+/// the doorway into the next monitor toward one he travels to. Somewhere he can't walk to, he
+/// goes as near as his own screen takes him.
+fn waypoint(at: Pos2, target: Pos2, s: &Senses) -> (Pos2, Rect, bool) {
+    let middle = target + s.footprint.center().to_vec2();
+    let here = Room { area: s.area, work: s.work };
+    let goal = s.rooms.iter().copied().find(|room| room.area.contains(middle) && room.area != s.area);
+    let next = goal.and_then(|goal| route(here, goal, &s.rooms, s.footprint)?.first().copied());
+    let door = next.and_then(|next| doorway(here, next, at, s.footprint));
+    // In the doorway already, he goes on across.
+    if let Some(door) = door
+        && Rect::from_two_pos(door.near, door.far).expand(0.5).contains(at)
+    {
+        return (door.far, door.band, true);
+    }
+    // Still stepping onto his screen from another, he gets all the way onto it before he
+    // turns, so no part of him goes where neither monitor is.
+    let on = clamp(at, s);
+    if (on - at).length() > 0.5 {
+        return (on, s.work.union(s.footprint.translate(at.to_vec2())), true);
+    }
+    match door {
+        Some(door) => (door.near, s.work, true),
+        None if s.area.contains(middle) => (target, s.work, false),
+        None => (clamp(target, s), s.work, false),
+    }
 }
 
 /// What the pointer's doing with him.
@@ -680,6 +822,9 @@ struct Inner {
     /// Being carried: from the pointer to his frame's top-left, in pixels.
     held: Option<Vec2>,
     poked: bool,
+    /// The monitors, as last listed, and when.
+    screens: Vec<Screen>,
+    screens_read: Option<Instant>,
     /// A full-screen app is running, as last checked then.
     full_screen: bool,
     screen_checked: Option<Instant>,
@@ -717,6 +862,8 @@ impl Pet {
             card_rect: None,
             held: None,
             poked: false,
+            screens: Vec::new(),
+            screens_read: None,
             full_screen: false,
             screen_checked: None,
             told: Some(home),
@@ -821,11 +968,31 @@ impl Inner {
             let band = (status.top() - self.origin.y) * ppp..=(status.bottom() - self.origin.y) * ppp;
             footprint = footprint.union(Rect::from_x_y_ranges(body.x_range(), band));
         }
-        let work = win::work_area(at.x as i32 + body.center().x as i32, at.y as i32 + body.center().y as i32)
-            .map_or(Rect::EVERYTHING, to_rect);
+        // His monitor, and the ones he can walk to when he travels.
+        if self.screens_read.is_none_or(|read| now - read >= MONITOR_CHECK) {
+            self.screens = monitors::list();
+            self.screens_read = Some(now);
+        }
+        let room = |screen: &Screen| Room { area: screen.area, work: screen.work };
+        let middle = at + body.center().to_vec2();
+        let here = monitors::at(&self.screens, middle).map_or_else(
+            || {
+                let work = win::work_area(middle.x as i32, middle.y as i32).map_or(Rect::EVERYTHING, to_rect);
+                Room { area: work, work }
+            },
+            room,
+        );
+        let work = here.work;
+        let rooms = if pet.travel {
+            let picked: Vec<Room> = self.screens.iter().filter(|screen| pet.monitors.contains(&screen.name)).map(room).collect();
+            reachable(here, &picked, footprint)
+        } else {
+            Vec::new()
+        };
         let cursor = win::cursor();
         let pointer = pos2(cursor.x as f32, cursor.y as f32);
-        let pointer_work = win::work_area(cursor.x, cursor.y).map(to_rect);
+        let near = |screen: &Screen| screen.area == here.area || rooms.iter().any(|room| room.area == screen.area);
+        let pointer_near = monitors::at(&self.screens, pointer).is_none_or(near);
         let body_on_screen = body.translate(at.to_vec2());
         let card_on_screen = self.card_rect.map(|card| (card * ppp).translate(window_at.to_vec2()));
 
@@ -854,8 +1021,10 @@ impl Inner {
             mood: self.clawd.feeling(&state),
             played: self.clawd.played(),
             at,
-            pointer: (pointer_work == Some(work)).then_some(pointer),
+            pointer: pointer_near.then_some(pointer),
+            area: here.area,
             work,
+            rooms,
             footprint,
             feet: BODY.center_bottom().to_vec2() * zoom * ppp,
             scale: ppp * size,
@@ -1111,6 +1280,9 @@ mod tests {
         s: Senses,
         acting: Duration,
         plans: Vec<Plan>,
+        /// The monitors he travels across, which he finds himself on as he moves, as on
+        /// screen. None unless he travels.
+        monitors: Vec<Room>,
     }
 
     impl Sim {
@@ -1121,7 +1293,9 @@ mod tests {
                 played: false,
                 at: pos2(800.0, 600.0),
                 pointer: None,
+                area: Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1080.0)),
                 work: Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1040.0)),
+                rooms: Vec::new(),
                 footprint: BODY * SCALE,
                 feet: BODY.center_bottom().to_vec2() * SCALE,
                 scale: 1.0,
@@ -1130,21 +1304,54 @@ mod tests {
                 poked: false,
                 asking: false,
             };
-            Self { roam: Roam::new(Rng::seeded(seed)), s, acting: Duration::ZERO, plans: Vec::new() }
+            Self { roam: Roam::new(Rng::seeded(seed)), s, acting: Duration::ZERO, plans: Vec::new(), monitors: Vec::new() }
+        }
+
+        /// He travels across `monitors`, starting on the first.
+        fn travelling(mut self, monitors: &[Room]) -> Self {
+            self.monitors = monitors.to_vec();
+            self.s.at = monitors[0].work.center() - self.s.footprint.center().to_vec2();
+            self.find_monitor();
+            self
+        }
+
+        /// As his window does: his monitor is the one his middle's on.
+        fn find_monitor(&mut self) {
+            let middle = self.s.at + self.s.footprint.center().to_vec2();
+            let off = |room: &&Room| room.area.distance_sq_to_pos(middle);
+            let here = *self.monitors.iter().min_by(|a, b| off(a).total_cmp(&off(b))).unwrap();
+            (self.s.area, self.s.work) = (here.area, here.work);
+            self.s.rooms = reachable(here, &self.monitors, self.s.footprint);
         }
 
         fn run(&mut self, time: Duration) {
             for _ in 0..time.as_millis() / TICK.as_millis() {
                 let plan = self.roam.update(&self.s);
                 let footprint = self.s.footprint.translate(plan.at.to_vec2());
-                assert!(self.s.work.expand(0.5).contains_rect(footprint), "off the screen at {:?}", plan.at);
+                if self.monitors.is_empty() {
+                    assert!(self.s.work.expand(0.5).contains_rect(footprint), "off the screen at {:?}", plan.at);
+                } else {
+                    // Crossing over, he can be on two at once, but no part of him is off them all.
+                    let on = |corner: Pos2| self.monitors.iter().any(|room| room.area.expand(0.5).contains(corner));
+                    let corners = [footprint.left_top(), footprint.right_top(), footprint.left_bottom(), footprint.right_bottom()];
+                    assert!(corners.into_iter().all(on), "off the monitors at {:?}", plan.at);
+                }
                 self.acting = if matches!(plan.act, Act::Hello | Act::Wake) { self.acting + TICK } else { Duration::ZERO };
                 self.s.played = self.acting >= ONCE;
                 self.s.at = plan.at.round();
                 self.s.now += TICK;
                 self.s.poked = false;
                 self.plans.push(plan);
+                if !self.monitors.is_empty() {
+                    self.find_monitor();
+                }
             }
+        }
+
+        /// Which of his monitors his middle is on, as of his last plan.
+        fn monitor(&self) -> usize {
+            let middle = self.s.at + self.s.footprint.center().to_vec2();
+            self.monitors.iter().position(|room| room.area.contains(middle)).expect("he's on a monitor")
         }
 
         fn feet(&self) -> Pos2 {
@@ -1459,6 +1666,89 @@ mod tests {
         let spot = sim.roam.beside(pointer, pos2(0.0, 500.0), s);
         assert!(spot.x + s.feet.x > pointer.x);
         assert!(!s.footprint.translate(spot.to_vec2()).contains(pointer));
+    }
+
+    /// A monitor at `min`, `size` big, with a taskbar along its bottom when `taskbar`.
+    fn room(min: Pos2, size: Vec2, taskbar: bool) -> Room {
+        let area = Rect::from_min_size(min, size);
+        let work = if taskbar { Rect::from_min_max(area.min, area.max - vec2(0.0, 40.0)) } else { area };
+        Room { area, work }
+    }
+
+    /// The main monitor, with its taskbar, and a smaller one lower down on its right.
+    fn two_monitors() -> [Room; 2] {
+        [room(Pos2::ZERO, vec2(1920.0, 1080.0), true), room(pos2(1920.0, 300.0), vec2(1280.0, 1024.0), false)]
+    }
+
+    #[test]
+    fn monitors_that_meet_with_room_for_him_join_and_he_finds_his_way_through_them() {
+        let footprint = BODY * SCALE;
+        let [main, right] = two_monitors();
+        // Above it, one that meets it only past its taskbar, and one off on its own.
+        let above = room(pos2(200.0, -1080.0), vec2(1920.0, 1080.0), false);
+        let corner = room(pos2(-1280.0, 1060.0), vec2(1280.0, 1024.0), false);
+        let apart = room(pos2(4000.0, 0.0), vec2(1920.0, 1080.0), false);
+        let all = [main, right, above, corner, apart];
+        assert_eq!(reachable(main, &all, footprint), [main, right, above]);
+        assert_eq!(route(above, right, &all, footprint), Some(vec![main, right]));
+        assert_eq!(route(main, main, &all, footprint), Some(vec![]));
+        // Picked without the one between, the far one is out of reach.
+        assert_eq!(reachable(above, &[above, right], footprint), [above]);
+
+        // Into the one on the right, level with him...
+        let door = doorway(main, right, pos2(1000.0, 500.0), footprint).unwrap();
+        assert_eq!(door.near, pos2(1920.0 - footprint.right(), 500.0));
+        assert_eq!(door.far, pos2(1920.0 - footprint.left(), 500.0));
+        // ...or, higher up than it goes, as near as can be.
+        assert_eq!(doorway(main, right, pos2(1000.0, 0.0), footprint).unwrap().near.y, 300.0 - footprint.top());
+        // Back, and up through the top.
+        assert_eq!(doorway(right, main, pos2(2500.0, 500.0), footprint).unwrap().far.x, 1920.0 - footprint.right());
+        let up = doorway(main, above, pos2(1000.0, 500.0), footprint).unwrap();
+        assert_eq!((up.near, up.far), (pos2(1000.0, -footprint.top()), pos2(1000.0, -footprint.bottom())));
+        assert_eq!(doorway(main, corner, Pos2::ZERO, footprint), None);
+    }
+
+    #[test]
+    fn travelling_he_sleeps_on_either_monitor_and_no_part_of_him_is_ever_off_them() {
+        let mut sim = Sim::new(21, Mood::Asleep).travelling(&two_monitors());
+        let mut napped = [Duration::ZERO; 2];
+        for _ in 0..90 * 6 {
+            sim.run(Duration::from_secs(10));
+            if sim.plans.last().unwrap().act == Act::Mood {
+                napped[sim.monitor()] += Duration::from_secs(10);
+            }
+        }
+        assert!(napped.iter().all(|&time| time >= minutes(5)), "{napped:?}");
+        let walks = sim.walks();
+        assert!(walks.len() >= 6 && walks.iter().any(|&(_, length)| length > 1000.0), "{walks:?}");
+        let walking = sim.plans.iter().filter(|plan| plan.act == Act::Amble).count();
+        assert!(walking < sim.plans.len() / 2, "he gets where he's going");
+    }
+
+    #[test]
+    fn travelling_he_comes_to_the_pointer_on_the_other_monitor_when_claude_needs_you() {
+        let mut sim = Sim::new(22, Mood::Waiting).travelling(&two_monitors());
+        sim.s.react = true;
+        sim.s.at = pos2(1500.0, 600.0);
+        sim.find_monitor();
+        let pointer = pos2(2300.0, 700.0);
+        sim.s.pointer = Some(pointer);
+        sim.run(Duration::from_secs(3));
+        sim.s.asking = true;
+        sim.run(Duration::from_secs(25));
+        let plan = *sim.plans.last().unwrap();
+        assert_eq!(plan.act, Act::Ask);
+        assert_eq!(sim.monitor(), 1);
+        assert!(((plan.at + sim.s.feet - pointer).length() - BESIDE.length()).abs() < 3.0, "he's at {:?}", plan.at);
+    }
+
+    #[test]
+    fn not_travelling_he_keeps_to_his_own_monitor() {
+        let mut sim = Sim::new(23, Mood::Asleep);
+        sim.s.area = two_monitors()[0].area;
+        sim.run(minutes(60));
+        // Sim::run checks he's on his own screen every frame.
+        assert!(sim.walks().len() >= 6);
     }
 
     /// The pointer over him, a frame at a time: when, and where.

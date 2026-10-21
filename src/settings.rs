@@ -2,7 +2,7 @@
 
 use crate::log;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -284,6 +284,10 @@ pub struct Pet {
     /// Where he last settled, so he's there next time: the top-left of his frame (see
     /// `animations::FRAME`), in pixels.
     pub pos: Option<[f32; 2]>,
+    /// He walks over to the monitors in `monitors` too, rather than keeping to the one he's on.
+    pub travel: bool,
+    /// The monitors he travels across, by Windows' name for them, like `\\.\DISPLAY2`.
+    pub monitors: BTreeSet<String>,
 }
 
 impl Default for Pet {
@@ -297,6 +301,8 @@ impl Default for Pet {
             hover: true,
             card: View { details, ..View::default() },
             pos: None,
+            travel: false,
+            monitors: BTreeSet::new(),
         }
     }
 }
@@ -327,6 +333,13 @@ pub struct Settings {
     pub custom_target: String,
     /// Top-left of the panel in Always on top and Desktop modes, in points.
     pub panel_pos: Option<[f32; 2]>,
+    /// The monitors that each show a copy of the panel in Always on top and Desktop modes, by
+    /// Windows' name for them, like `\\.\DISPLAY2`. With fewer than two of them plugged in,
+    /// there's just the one panel, wherever it's dragged.
+    pub panel_monitors: BTreeSet<String>,
+    /// Where the panel sits on each monitor while it shows on several: its top-left from the
+    /// top-left of what the taskbar leaves of that monitor, in points.
+    pub panel_spots: BTreeMap<String, [f32; 2]>,
 }
 
 impl Default for Settings {
@@ -346,6 +359,8 @@ impl Default for Settings {
             double_click: DoubleClick::default(),
             custom_target: String::new(),
             panel_pos: None,
+            panel_monitors: BTreeSet::new(),
+            panel_spots: BTreeMap::new(),
         }
     }
 }
@@ -638,6 +653,21 @@ mod tests {
         let text = serde_json::to_string(&Settings { pet: none.clone(), ..Settings::default() }).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().pet, none);
         assert_eq!(SIZES[size_step(1.43)], 1.4);
+    }
+
+    #[test]
+    fn the_panel_and_the_pet_keep_to_one_monitor_until_more_are_picked_even_in_older_settings() {
+        let older: Settings = serde_json::from_str(r#"{"panel_pos":[10.0,20.0],"pet":{"react":false}}"#).unwrap();
+        assert!(older.panel_monitors.is_empty() && older.panel_spots.is_empty());
+        assert!(!older.pet.travel && older.pet.monitors.is_empty() && !older.pet.react);
+        let mut picked = older;
+        picked.panel_monitors = BTreeSet::from([r"\\.\DISPLAY1".to_owned(), r"\\.\DISPLAY2".to_owned()]);
+        picked.panel_spots.insert(r"\\.\DISPLAY2".to_owned(), [40.0, 12.5]);
+        picked.pet.travel = true;
+        picked.pet.monitors = BTreeSet::from([r"\\.\DISPLAY2".to_owned()]);
+        let text = serde_json::to_string(&picked).unwrap();
+        assert!(text.contains(r#""panel_monitors":["\\\\.\\DISPLAY1","\\\\.\\DISPLAY2"]"#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), picked);
     }
 
     #[test]

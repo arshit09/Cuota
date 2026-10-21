@@ -226,6 +226,8 @@ struct Shared {
     armed: bool,
     /// The watcher's latest plan for it.
     aside: Option<Aside>,
+    /// The panel's window is gone (a copy on another monitor closed), so the watcher ends.
+    gone: bool,
 }
 
 fn to_rect(rect: windows_sys::Win32::Foundation::RECT) -> Rect {
@@ -264,7 +266,14 @@ fn sample(window: isize) -> Sample {
 fn watch(window: isize, shared: Arc<Mutex<Shared>>, ctx: egui::Context) {
     let mut planner = Planner::default();
     loop {
-        if !shared.lock().unwrap().armed {
+        let (armed, gone) = {
+            let shared = shared.lock().unwrap();
+            (shared.armed, shared.gone)
+        };
+        if gone {
+            return;
+        }
+        if !armed {
             planner = Planner::default();
             std::thread::park();
             continue;
@@ -296,6 +305,11 @@ struct Glide {
 }
 
 impl Glide {
+    /// On its spot, going nowhere.
+    fn new() -> Self {
+        Self { home: None, offset: Vec2::ZERO, from: Vec2::ZERO, to: Vec2::ZERO, start: Instant::now(), back_at: None }
+    }
+
     /// Heads for `to` from wherever it is, unless it's already heading there.
     fn aim(&mut self, to: Vec2, now: Instant) {
         if to != self.to {
@@ -349,15 +363,7 @@ pub struct Dodge {
 
 impl Dodge {
     pub fn new() -> Self {
-        let glide = Glide {
-            home: None,
-            offset: Vec2::ZERO,
-            from: Vec2::ZERO,
-            to: Vec2::ZERO,
-            start: Instant::now(),
-            back_at: None,
-        };
-        Self { shared: Arc::default(), watcher: None, glide, recalled: false, sent: None }
+        Self { shared: Arc::default(), watcher: None, glide: Glide::new(), recalled: false, sent: None }
     }
 
     /// Where the panel sits when it isn't moved aside, while a move aside is under way.
@@ -448,6 +454,21 @@ impl Dodge {
             self.sent = Some(pixels);
             at
         })
+    }
+}
+
+impl Default for Dodge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Dodge {
+    fn drop(&mut self) {
+        self.shared.lock().unwrap().gone = true;
+        if let Some(watcher) = &self.watcher {
+            watcher.unpark();
+        }
     }
 }
 
@@ -680,7 +701,7 @@ mod tests {
     #[test]
     fn the_slide_eases_out_to_its_place_and_turns_back_from_wherever_it_got_to() {
         let start = Instant::now();
-        let mut glide = Dodge::new().glide;
+        let mut glide = Glide::new();
         glide.aim(vec2(0.0, -120.0), start);
         let mut last = 0.0;
         for i in 1..=20 {
@@ -691,7 +712,7 @@ mod tests {
         }
         assert_eq!(glide.offset, vec2(0.0, -120.0));
         // Fast at first: past halfway in a quarter of the time.
-        let mut glide = Dodge::new().glide;
+        let mut glide = Glide::new();
         glide.aim(vec2(0.0, -120.0), start);
         let midway = start + OUT_TIME / 4;
         glide.step(midway);

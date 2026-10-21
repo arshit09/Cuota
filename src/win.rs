@@ -5,17 +5,17 @@ use std::ffi::c_void;
 use std::mem::{size_of, transmute, zeroed};
 use std::path::Path;
 use std::ptr::{null, null_mut};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HWND, LPARAM,
+    BOOL, CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HWND, LPARAM,
     LRESULT, POINT, RECT, STILL_ACTIVE, WPARAM,
 };
 use windows_sys::Win32::Graphics::Dwm::{DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DwmEnableBlurBehindWindow};
 use windows_sys::Win32::Graphics::Gdi::{
-    CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO,
-    MonitorFromPoint, MonitorFromWindow, RGN_OR, SetWindowRgn,
+    CombineRgn, CreateRectRgn, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST,
+    MONITOR_DEFAULTTONULL, MONITORINFO, MONITORINFOEXW, MonitorFromPoint, MonitorFromWindow, RGN_OR, SetWindowRgn,
 };
 use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -31,7 +31,7 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
     GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_NODEREFERENCELINKS,
     OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
-use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
+use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForSystem, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetActiveWindow, GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
 };
@@ -41,8 +41,8 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, EnumThreadWindows, GA_ROOT, GetAncestor,
     GetClassNameW, GetClientRect, GetCursorPos, GWL_EXSTYLE, GetForegroundWindow, GetMessageW, GetWindowLongW,
-    GetWindowRect, GetWindowTextW, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, IsZoomed, MA_NOACTIVATE, MSG,
-    STYLESTRUCT, SW_SHOWNORMAL,
+    GetWindowRect, GetWindowTextW, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, IsWindow, IsZoomed, MA_NOACTIVATE,
+    MONITORINFOF_PRIMARY, MSG, STYLESTRUCT, SW_SHOWNORMAL,
     SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW,
     SetWindowPos, WINDOWPOS, WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED, WM_MOUSEACTIVATE,
     WM_NCCALCSIZE, WM_SIZE, WM_STYLECHANGING, WM_WINDOWPOSCHANGED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WindowFromPoint,
@@ -330,6 +330,53 @@ pub fn on_screen(x: i32, y: i32) -> bool {
     unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL) != 0 }
 }
 
+/// A monitor as Windows lays them out now.
+#[derive(Clone)]
+pub struct Monitor {
+    /// Windows' name for it, like `\\.\DISPLAY2`.
+    pub name: String,
+    /// All of it, and the part the taskbar leaves free.
+    pub area: RECT,
+    pub work: RECT,
+    /// The main display, where the taskbar's clock is.
+    pub primary: bool,
+    /// Physical pixels per point on it.
+    pub scale: f32,
+}
+
+/// The monitors plugged in and on, in the order of the numbers Windows ends their names with.
+pub fn monitors() -> Vec<Monitor> {
+    unsafe extern "system" fn add(monitor: HMONITOR, _: HDC, _: *mut RECT, found: LPARAM) -> BOOL {
+        let found = unsafe { &mut *(found as *mut Vec<Monitor>) };
+        let mut info: MONITORINFOEXW = unsafe { zeroed() };
+        info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+        if unsafe { GetMonitorInfoW(monitor, (&mut info as *mut MONITORINFOEXW).cast()) } != 0 {
+            let length = info.szDevice.iter().position(|&c| c == 0).unwrap_or(info.szDevice.len());
+            let (mut dpi, mut unused) = (0, 0);
+            let read = unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut unused) } >= 0;
+            found.push(Monitor {
+                name: String::from_utf16_lossy(&info.szDevice[..length]),
+                area: info.monitorInfo.rcMonitor,
+                work: info.monitorInfo.rcWork,
+                primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+                scale: if read && dpi > 0 { dpi as f32 / 96.0 } else { system_scale() },
+            });
+        }
+        1
+    }
+    let mut found: Vec<Monitor> = Vec::new();
+    unsafe { EnumDisplayMonitors(0, null(), Some(add), &mut found as *mut _ as LPARAM) };
+    found.sort_by_cached_key(|monitor| display_number(&monitor.name));
+    found
+}
+
+/// The number Windows ends a monitor's name with, 2 for `\\.\DISPLAY2`, to put them in order by.
+/// Names without one go last.
+fn display_number(name: &str) -> (u32, String) {
+    let digits = name.len() - name.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+    (name[name.len() - digits..].parse().unwrap_or(u32::MAX), name.to_owned())
+}
+
 /// The part of the monitor nearest a point that the taskbar leaves free.
 pub fn work_area(x: i32, y: i32) -> Option<RECT> {
     unsafe {
@@ -346,8 +393,13 @@ pub fn system_scale() -> f32 {
     dpi as f32 / 96.0
 }
 
-/// The panel's corner radius in physical pixels (as f32 bits), which its window is cut to.
+/// The panel's corner radius in physical pixels (as f32 bits), which its windows are cut to.
 static CORNER_RADIUS: AtomicU32 = AtomicU32::new(0);
+
+thread_local! {
+    /// Each panel window, and the radius (as f32 bits) it was last cut to.
+    static CUT: RefCell<Vec<(HWND, u32)>> = const { RefCell::new(Vec::new()) };
+}
 
 unsafe extern "system" fn panel_window(
     window: HWND,
@@ -415,11 +467,23 @@ fn see_through(window: HWND) {
     }
 }
 
-/// Cuts the panel's window to rounded corners of `radius` physical pixels, now and whenever it
+/// Cuts a panel window to rounded corners of `radius` physical pixels, now and whenever it
 /// resizes, so the corners stay clear even if Windows stops showing the desktop through it.
-/// Only acts when the radius changes, so it can be called every frame.
+/// Only acts when that window's radius changes, so it can be called every frame.
 pub fn round_corners(window: HWND, radius: f32) {
-    if CORNER_RADIUS.swap(radius.to_bits(), Ordering::Relaxed) != radius.to_bits() {
+    CORNER_RADIUS.store(radius.to_bits(), Ordering::Relaxed);
+    let changed = CUT.with_borrow_mut(|cut| {
+        // Copies of the panel on other monitors come and go.
+        cut.retain(|&(window, _)| unsafe { IsWindow(window) } != 0);
+        match cut.iter_mut().find(|(cut, _)| *cut == window) {
+            Some((_, bits)) => std::mem::replace(bits, radius.to_bits()) != radius.to_bits(),
+            None => {
+                cut.push((window, radius.to_bits()));
+                true
+            }
+        }
+    });
+    if changed {
         let mut client: RECT = unsafe { zeroed() };
         unsafe { GetClientRect(window, &mut client) };
         cut_corners(window, client.right, client.bottom);
@@ -557,7 +621,8 @@ unsafe extern "system" fn pet_window(
 
 /// Sets up the desktop pet's borderless window as [`set_up_panel`] does the panel's, except
 /// that it takes clicks without taking the keyboard from the window you're typing in, and its
-/// shape comes from [`shape_window`] rather than rounded corners.
+/// shape comes from [`shape_window`] rather than rounded corners. Identify's numbers, which
+/// show on each monitor for a moment, get the same.
 pub fn set_up_pet(window: HWND) {
     unsafe {
         SetWindowSubclass(window, Some(pet_window), 2, 0);
@@ -659,29 +724,33 @@ pub fn full_screen_at(x: i32, y: i32) -> bool {
     }
 }
 
-thread_local! {
-    static BOTTOM: RefCell<Option<(HWND, Arc<AtomicBool>)>> = const { RefCell::new(None) };
-}
+/// The panel's windows (one on each monitor it shows on) kept behind the others while their
+/// flag is set.
+static BOTTOM: Mutex<Vec<(HWND, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
 
 unsafe extern "system" fn on_window_event(_: HWINEVENTHOOK, _: u32, _: HWND, _: i32, _: i32, _: u32, _: u32) {
-    let Some((window, active)) = BOTTOM.with_borrow(Clone::clone) else { return };
-    if active.load(Ordering::Relaxed) && unsafe { GetForegroundWindow() } == window {
+    let front = unsafe { GetForegroundWindow() };
+    let kept = BOTTOM.lock().unwrap().iter().any(|(window, active)| *window == front && active.load(Ordering::Relaxed));
+    if kept {
         // Clicked or being dragged: drop back behind other windows once the mouse is released.
         while left_button_down() {
             std::thread::sleep(Duration::from_millis(50));
         }
         let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS;
-        unsafe { SetWindowPos(window, HWND_BOTTOM, 0, 0, 0, 0, flags) };
+        unsafe { SetWindowPos(front, HWND_BOTTOM, 0, 0, 0, 0, flags) };
     }
 }
 
 /// Desktop mode: Windows raises a window when it's clicked, so this sends it back behind the
 /// others afterwards, while `active` is set. Event-driven (activation and finished drags in
-/// this process), so it costs nothing while idle.
+/// this process, watched by one thread for all the windows), so it costs nothing while idle.
 pub fn keep_at_bottom(window: HWND, active: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
-        BOTTOM.set(Some((window, active)));
-        unsafe {
+    let mut kept = BOTTOM.lock().unwrap();
+    kept.retain(|&(window, _)| unsafe { IsWindow(window) } != 0);
+    kept.push((window, active));
+    static WATCH: Once = Once::new();
+    WATCH.call_once(|| {
+        std::thread::spawn(|| unsafe {
             for event in [EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND] {
                 SetWinEventHook(event, event, 0, Some(on_window_event), std::process::id(), 0, WINEVENT_OUTOFCONTEXT);
             }
@@ -689,7 +758,7 @@ pub fn keep_at_bottom(window: HWND, active: Arc<AtomicBool>) {
             while GetMessageW(&mut message, 0, 0, 0) > 0 {
                 DispatchMessageW(&message);
             }
-        }
+        });
     });
 }
 
@@ -702,6 +771,17 @@ mod tests {
         assert_eq!(folder_of(r"C:\Tools\notes.bat").as_deref(), Some(r"C:\Tools"));
         assert_eq!(folder_of("notes.bat"), None);
         assert_eq!(folder_of(""), None);
+    }
+
+    #[test]
+    fn monitors_go_in_the_order_of_their_numbers() {
+        let mut names = [r"\\.\DISPLAY10", r"\\.\DISPLAY2", "Elsewhere", r"\\.\DISPLAY1"];
+        names.sort_by_cached_key(|name| display_number(name));
+        assert_eq!(names, [r"\\.\DISPLAY1", r"\\.\DISPLAY2", r"\\.\DISPLAY10", "Elsewhere"]);
+        // This PC's own, whatever they are.
+        let monitors = monitors();
+        assert!(!monitors.is_empty() && monitors.iter().filter(|monitor| monitor.primary).count() == 1);
+        assert!(monitors.iter().all(|monitor| monitor.scale >= 1.0 && monitor.work.right > monitor.work.left));
     }
 
     #[test]

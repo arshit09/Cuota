@@ -8,6 +8,7 @@ mod dodge;
 mod glance;
 mod log;
 mod mascot;
+mod monitors;
 mod overlay;
 mod pet;
 mod scripts;

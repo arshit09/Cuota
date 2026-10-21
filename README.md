@@ -117,16 +117,19 @@ To keep some of them in view, pick them on the **Details** page of settings: the
 
 Drag the panel to move it. Always on top and Desktop are the same panel, so only one can be on.
 
+**Monitors** (in General): pick two or more monitors to put a copy of the panel on each. Each copy stays on its own monitor wherever you drag it there, and comes back to that spot next time. With one picked, there's just the panel, on that monitor, and you can drag it anywhere. **Identify**, at the foot of the list, shows each monitor's number on it for a moment, as Windows' display settings do, so you know which is which.
+
 **Desktop pet**: Clawd walks about the screen on his own, legs going, and does what Claude's doing. At work he acts out a task and now and then scuttles somewhere new; with nothing going on he falls asleep, and every few minutes wakes up, ambles off and sleeps somewhere else. When Claude stops to ask you something, he tells you it's your turn until you answer. There's nothing around him: clicks anywhere but on Clawd himself reach whatever is behind him. His status line, like *Percolating…*, sits under him. Drag him anywhere, click him and he says hi, and right-click him for settings. He steps behind a full-screen game, video or presentation until it's done. On the **Desktop pet** page of settings:
 
 - **Size**: ten steps, like the panel's.
 - **Status**: the line under him, on or off.
 - **React to pointer**: his eyes follow the pointer, and he walks over to it when Claude needs you. Now and then he comes to say hi, keeps it company (following when it moves off), or naps beside it.
+- **Travel across monitors**: off at first, he keeps to the monitor he's on. Turn it on and pick monitors under **Monitors** (with **Identify**, as for the panel), and he walks over to them too, crossing where they meet: now and then he goes off to sleep on another one, and he comes to the pointer on any of them.
 - **Card on hover**: rest the pointer on him to see a card of usage beside him. A pointer just passing over him, or him walking under a still one, doesn't count. Pick the card's style, limits and details on the same page, and drag the details into order. Double-click him to show it straight away.
 
 **Move aside for the pointer** (in General, off at first): to click something behind the panel, just head for it. When the pointer slows down coming toward the panel, as it does before a click, the panel slides out of the way, and it slides back once the pointer has left its spot. Passing quickly over it, or idling beside it, leaves it where it is. To use the panel itself, hold **Ctrl** as you point at it; it then stays put until the pointer leaves it.
 
-Settings has a page for each part, picked in its sidebar: **General** (Show as, Double-click, Move aside for the pointer, Start with Windows), **Appearance** (the panel's size and opacity, Clawd's animation, and 8-bit sound effects: Normal plays only what matters, like work starting, Claude asking you something and work finishing, while Lively adds a sound for each kind of step; a list plays each one so you can learn them), **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel, and **Desktop pet** (above). **View on GitHub**, at the foot of the sidebar, opens this repository.
+Settings has a page for each part, picked in its sidebar: **General** (Show as, Monitors, Double-click, Move aside for the pointer, Start with Windows), **Appearance** (the panel's size and opacity, Clawd's animation, and 8-bit sound effects: Normal plays only what matters, like work starting, Claude asking you something and work finishing, while Lively adds a sound for each kind of step; a list plays each one so you can learn them), **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel, and **Desktop pet** (above). **View on GitHub**, at the foot of the sidebar, opens this repository.
 
 Tips:
 
