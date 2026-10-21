@@ -56,18 +56,23 @@ const ON_ACCENT: Color32 = Color32::BLACK;
 pub mod icon {
     pub const ANIMATE: char = '\u{E768}';
     pub const APPEARANCE: char = '\u{E771}';
+    /// A pulse on a chart: what tasks take on average.
+    pub const AVERAGE: char = '\u{E9D9}';
     pub const BROWSE: char = '\u{E8E5}';
     pub const CHECK: char = '\u{E73E}';
     pub const CHECKLIST: char = '\u{E9D5}';
     pub const CHEVRON_DOWN: char = '\u{E70D}';
     pub const CHEVRON_UP: char = '\u{E70E}';
     pub const CLAWD: char = '\u{E76E}';
+    pub const CLEAR: char = '\u{E74D}';
     pub const DETAILS: char = '\u{E9D2}';
     pub const DOUBLE_CLICK: char = '\u{E962}';
     /// Leads out of the app, as to a web page.
     pub const EXTERNAL: char = '\u{E8A7}';
     pub const FOLDER: char = '\u{E838}';
     pub const HEAR: char = '\u{E7F6}';
+    /// A clock with an arrow round it: what's been.
+    pub const HISTORY: char = '\u{E81C}';
     /// A card with a picture and lines.
     pub const HOVER_CARD: char = '\u{E8A1}';
     /// An eye: see which monitor is which.
@@ -534,6 +539,36 @@ pub fn action_item(ui: &mut Ui, fonts: &Fonts, glyph: char, title: &str, descrip
     }
     focus_ring(ui, &response, button, 4.0);
     response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// One of a [`group`]'s rows that only tells something: a title and an optional description,
+/// with `value` on the right, like a number to read at a glance.
+pub fn info_item(ui: &mut Ui, fonts: &Fonts, title: &str, description: Option<&str>, value: &str) -> Response {
+    let width = ui.available_width();
+    let text_left = CARD_PADDING + fonts.indent();
+    let painter = ui.painter().clone();
+    let value = painter.layout_no_wrap(value.to_owned(), FontId::new(BODY, fonts.strong.clone()), PRIMARY);
+    let wrap = (width - text_left - CONTROL_GAP - value.size().x - CARD_PADDING).max(60.0);
+    let title_galley = painter.layout(title.to_owned(), FontId::proportional(BODY), PRIMARY, wrap);
+    let description = description.map(|d| painter.layout(d.to_owned(), FontId::proportional(CAPTION), SECONDARY, wrap));
+    let text_height = title_galley.size().y + description.as_ref().map_or(0.0, |d| 1.0 + d.size().y);
+    let height = (text_height + 2.0 * CARD_PADDING_Y).max(48.0);
+
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), title));
+    // A line along the top, as between check items.
+    painter.hline(rect.x_range(), rect.top() - 0.5, Stroke::new(1.0, SETTING_EDGE));
+    let mut at = pos2(rect.left() + text_left, rect.center().y - text_height / 2.0);
+    let first_line = at.y + title_galley.rows[0].height() / 2.0;
+    let value_at = pos2(rect.right() - CARD_PADDING - value.size().x, first_line - value.size().y / 2.0);
+    painter.galley(value_at, value, PRIMARY);
+    let title_height = title_galley.size().y;
+    painter.galley(at, title_galley, PRIMARY);
+    if let Some(description) = description {
+        at.y += title_height + 1.0;
+        painter.galley(at, description, SECONDARY);
+    }
+    response
 }
 
 /// A row of a [`sortable`] list.

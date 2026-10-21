@@ -340,6 +340,8 @@ pub struct Settings {
     /// Where the panel sits on each monitor while it shows on several: its top-left from the
     /// top-left of what the taskbar leaves of that monitor, in points.
     pub panel_spots: BTreeMap<String, [f32; 2]>,
+    /// Notes how much of each limit Claude Code's tasks use (see usage.rs).
+    pub track_usage: bool,
 }
 
 impl Default for Settings {
@@ -361,6 +363,7 @@ impl Default for Settings {
             panel_pos: None,
             panel_monitors: BTreeSet::new(),
             panel_spots: BTreeMap::new(),
+            track_usage: true,
         }
     }
 }
@@ -489,6 +492,15 @@ mod tests {
         let off = Settings { sounds: false, ..Settings::default() };
         let text = serde_json::to_string(&off).unwrap();
         assert!(!serde_json::from_str::<Settings>(&text).unwrap().sounds);
+    }
+
+    #[test]
+    fn usage_is_tracked_unless_turned_off_even_in_older_settings() {
+        let older: Settings = serde_json::from_str(r#"{"animate":false}"#).unwrap();
+        assert!(older.track_usage);
+        let off = Settings { track_usage: false, ..Settings::default() };
+        let text = serde_json::to_string(&off).unwrap();
+        assert!(!serde_json::from_str::<Settings>(&text).unwrap().track_usage);
     }
 
     #[test]

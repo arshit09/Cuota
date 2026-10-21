@@ -9,7 +9,7 @@ repository = "https://github.com/arshit09/Cuota"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-chrono = "0.4.45"
+chrono = { version = "0.4.45", features = ["serde"] }
 # glow (OpenGL) renders transparent windows reliably on Windows. Fonts come from Windows
 # itself, so egui's bundled fonts are left out.
 eframe = { version = "0.35.0", default-features = false, features = ["glow"] }

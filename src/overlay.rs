@@ -18,6 +18,7 @@ use crate::sound::{self, Cues};
 use crate::stats::Transcripts;
 use crate::status::Status;
 use crate::tray::{Tray, TrayConfig, TrayEvent};
+use crate::usage::{self, History, Task};
 use crate::view::{self, AMBER, DIM, TEXT};
 use crate::widgets::{self, Fonts, NavIcon, SortRow, Sorted, icon, single_line};
 use crate::win;
@@ -50,7 +51,7 @@ pub(crate) const GLANCE_GAP: f32 = 6.0;
 /// screen has room, and resizable down to `SETTINGS_MIN`. A sidebar lists the pages, and the
 /// one shown runs no wider than `PAGE_WIDTH`.
 const SETTINGS_SIZE: Vec2 = vec2(800.0, 600.0);
-const SETTINGS_MIN: Vec2 = vec2(640.0, 500.0);
+const SETTINGS_MIN: Vec2 = vec2(640.0, 540.0);
 const SIDEBAR_WIDTH: f32 = 248.0;
 const PAGE_WIDTH: f32 = 760.0;
 /// The page's title, above what scrolls, and the room either side of the page.
@@ -72,6 +73,8 @@ const TITLE_BAR: Vec2 = vec2(16.0, 39.0);
 const SCROLL_LANE: f32 = 10.0;
 const DETAILS_WIDTH: f32 = 348.0 + SCROLL_LANE;
 const DETAILS_HEIGHT: f32 = 520.0;
+/// The most tasks the Usage page lists. More are kept, and count in the averages.
+const SHOWN_TASKS: usize = 100;
 /// How often the panel reads what Claude Code has done since it last looked, while it shows
 /// any of it.
 const STATS_REFRESH: Duration = Duration::from_secs(15);
@@ -152,11 +155,21 @@ enum Page {
     Taskbar,
     /// Clawd on his own on the desktop, and the card he shows.
     Pet,
+    /// How much of the limits each of Claude Code's tasks took, and on average.
+    Usage,
 }
 
 impl Page {
-    const ALL: [Self; 7] =
-        [Self::General, Self::Appearance, Self::Sounds, Self::Panel, Self::Details, Self::Taskbar, Self::Pet];
+    const ALL: [Self; 8] = [
+        Self::General,
+        Self::Appearance,
+        Self::Sounds,
+        Self::Panel,
+        Self::Details,
+        Self::Taskbar,
+        Self::Pet,
+        Self::Usage,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -167,6 +180,7 @@ impl Page {
             Self::Details => "Details",
             Self::Taskbar => "Taskbar",
             Self::Pet => "Desktop pet",
+            Self::Usage => "Usage",
         }
     }
 
@@ -179,6 +193,7 @@ impl Page {
             Self::Details => icon::DETAILS.into(),
             Self::Taskbar => icon::TASKBAR.into(),
             Self::Pet => widgets::clawd_mark(ctx).into(),
+            Self::Usage => icon::HISTORY.into(),
         }
     }
 }
@@ -392,6 +407,10 @@ pub struct Overlay {
     transcripts: Transcripts,
     /// When the panel last asked for Claude Code's stats.
     stats_asked: Option<Instant>,
+    /// How much of the limits Claude Code's tasks took.
+    history: History,
+    /// Clear history was clicked once, and waits for a second click to be sure.
+    clearing: bool,
 }
 
 impl Overlay {
@@ -470,6 +489,8 @@ impl Overlay {
             browsing: None,
             transcripts,
             stats_asked: None,
+            history: if demo { History::demo() } else { History::load() },
+            clearing: false,
         }
     }
 
@@ -1172,6 +1193,8 @@ impl Overlay {
             screens,
             here,
             identify,
+            history,
+            clearing,
             ..
         } = self;
         let page = *page;
@@ -1420,8 +1443,112 @@ impl Overlay {
                     details_list(ui, fonts, card, state, stats.as_deref(), "Also in the card", about);
                 });
             }
+            Page::Usage => {
+                let about = Some("Notes your limits as a Claude Code session starts a task, and again once it's done");
+                widgets::setting(ui, fonts, icon::HISTORY, "Track usage per task", about, widgets::TOGGLE_WIDTH, |ui| {
+                    widgets::toggle(ui, &mut settings.track_usage);
+                });
+                if !settings.track_usage {
+                    ui.add_space(8.0);
+                    let note = "Turn on tracking to see how much of your limits each task takes. Nothing is noted while it's off.";
+                    widgets::info_bar(ui, fonts, note);
+                } else if history.tasks.is_empty() {
+                    ui.add_space(8.0);
+                    let note = "No tasks yet. Each one shows up here once a Claude Code session finishes it and Cuota has fetched usage after it.";
+                    widgets::info_bar(ui, fonts, note);
+                } else {
+                    usage_history(ui, fonts, history, clearing);
+                }
+            }
         }
     }
+}
+
+/// What tasks took on average on each plan, the tasks themselves, newest first, and a button
+/// to clear them.
+fn usage_history(ui: &mut egui::Ui, fonts: &Fonts, history: &mut History, clearing: &mut bool) {
+    let tasks = |count: usize| if count == 1 { "1 task".to_owned() } else { format!("{count} tasks") };
+    let averages = history.averages();
+    if !averages.is_empty() {
+        let about = Some("By plan, since a bigger plan's limits go further. Tasks run alongside other sessions are left out.");
+        let plans = if averages.len() == 1 { "1 plan".to_owned() } else { format!("{} plans", averages.len()) };
+        widgets::group(ui, fonts, icon::AVERAGE, "Average task", about, &plans, |ui| {
+            for average in &averages {
+                let used: Vec<String> =
+                    average.used.iter().map(|(label, used)| format!("{label} {}", usage::used_text(*used))).collect();
+                let epoch = chrono::DateTime::UNIX_EPOCH;
+                let length = claude::until(epoch + average.duration, epoch);
+                let description = format!("{} \u{B7} {length} each\n{}", tasks(average.tasks), used.join(" \u{B7} "));
+                let value = average.used.first().map_or_else(String::new, |(_, used)| usage::used_text(*used));
+                widgets::info_item(ui, fonts, &average.plan, Some(&description), &value);
+            }
+        });
+    }
+
+    let about = Some("Newest first, with how much of each limit they took");
+    widgets::group(ui, fonts, icon::HISTORY, "Tasks", about, &tasks(history.tasks.len()), |ui| {
+        let today = chrono::Local::now().date_naive();
+        for task in history.tasks.iter().take(SHOWN_TASKS) {
+            let value = task.headline().map_or_else(String::new, |change| usage::used_text(change.used()));
+            widgets::info_item(ui, fonts, &task.session, Some(&task_about(task, today)), &value);
+        }
+    });
+
+    let count = tasks(history.tasks.len());
+    let (about, label) = if *clearing {
+        (format!("Click again to delete all {count}"), "Yes, clear")
+    } else {
+        (format!("Deletes the {count} noted so far"), "Clear")
+    };
+    let width = widgets::button_width(ui, fonts, "Yes, clear");
+    widgets::setting(ui, fonts, icon::CLEAR, "Clear history", Some(&about), width, |ui| {
+        if widgets::button(ui, fonts, icon::CLEAR, label).clicked() {
+            if *clearing {
+                history.clear();
+            }
+            *clearing = !*clearing;
+        }
+    });
+    if let Some(path) = History::path().filter(|path| path.exists()) {
+        let about = Some("Where the tasks are kept, as JSON");
+        let width = widgets::button_width(ui, fonts, "Open folder");
+        widgets::setting(ui, fonts, icon::LOG, "History file", about, width, |ui| {
+            let button = widgets::button(ui, fonts, icon::FOLDER, "Open folder");
+            if button.on_hover_text(path.display().to_string()).clicked() {
+                win::show_in_folder(&path);
+            }
+        });
+    }
+}
+
+/// When a task ran and where, then what it took of each limit.
+fn task_about(task: &Task, today: chrono::NaiveDate) -> String {
+    let started = task.started.with_timezone(&chrono::Local);
+    let day = match (today - started.date_naive()).num_days() {
+        0 => "Today".to_owned(),
+        1 => "Yesterday".to_owned(),
+        _ => started.format("%b %-d").to_string(),
+    };
+    let mut about = vec![format!("{day} {}", started.format("%H:%M")), claude::until(task.ended, task.started)];
+    about.extend(task.project.clone());
+    about.push(task.app.clone());
+    about.extend(task.plan.clone());
+    let changes: Vec<String> = task
+        .changes
+        .iter()
+        .map(|c| {
+            if c.reset {
+                format!("{} reset, then {:.0}%", c.label, c.after)
+            } else {
+                format!("{} {:.0}% \u{2192} {:.0}%", c.label, c.before, c.after)
+            }
+        })
+        .collect();
+    let mut text = format!("{}\n{}", about.join(" \u{B7} "), changes.join(" \u{B7} "));
+    if task.shared {
+        text.push_str("\nRan alongside other sessions, so this counts their usage too");
+    }
+    text
 }
 
 /// How a view's limits are drawn, and which ones it shows.
@@ -1618,9 +1745,16 @@ impl eframe::App for Overlay {
         }
         self.keep_pet(ctx, &state);
 
+        // Like the sounds, tasks are followed whether or not anything shows them.
+        if self.history.update(&state, self.settings.track_usage, Utc::now()) && self.settings_open {
+            ctx.request_repaint();
+        }
+
         // Titles, folders and the account come in whatever script they were written in.
         let stats = self.transcripts.latest();
         let sessions = state.sessions.iter().flat_map(|s| [s.title.as_deref(), Some(&*s.name), s.project.as_deref()]);
+        let tasks = self.history.tasks.iter().take(SHOWN_TASKS).flat_map(|t| [Some(&*t.session), t.project.as_deref()]);
+        let sessions = sessions.chain(tasks);
         let account = [state.account.email.as_deref(), state.account.organization.as_deref(), state.error.as_deref()];
         let projects = stats.iter().flat_map(|stats| stats.projects.iter().map(|(name, _)| Some(name.as_str())));
         let custom = Some(self.settings.custom_target.as_str());
@@ -2317,8 +2451,8 @@ mod tests {
             let show = settings.show.clone();
             overlay.settings = settings;
             // Details is a list of everything the panel can show, which scrolls like any long
-            // list, and Desktop pet has that list for his card.
-            for page in Page::ALL.into_iter().filter(|&page| ![Page::Details, Page::Pet].contains(&page)) {
+            // list, Desktop pet has that list for his card, and Usage lists tasks.
+            for page in Page::ALL.into_iter().filter(|&page| ![Page::Details, Page::Pet, Page::Usage].contains(&page)) {
                 overlay.settings_page = page;
                 let mut height = 0.0;
                 let _ = ctx.run_ui(window(SETTINGS_SIZE), |ui| height = overlay.settings_ui(ui, &state));

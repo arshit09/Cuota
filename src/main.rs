@@ -17,6 +17,7 @@ mod sound;
 mod stats;
 mod status;
 mod tray;
+mod usage;
 mod vector;
 mod view;
 mod widgets;
