@@ -80,13 +80,10 @@
     ontop: ["#########", "#########", "#.......#", "#...#...#", "#..###..#", "#.#.#.#.#", "#...#...#", "#.......#", "#########"],
     desktop: ["#########", "#.....###", "#.....###", "#.......#", "#.......#", "#########", "....#....", "..#####.."],
     taskbar: ["#########", "#.......#", "#.......#", "#.......#", "#########", "#.#.#.###", "#########"],
-    pointer: ["#......", "##.....", "#.#....", "#..#...", "#...#..", "#....#.", "#..####", "#.#.#..", "##..#..", "#....#.", ".....#."],
     play: ["#......", "###....", "#####..", "#######", "#####..", "###....", "#......"],
-    cursor: ["#...", "##..", "###.", "####", "###.", "##..", "#..."],
     check: ["........#", ".......##", "#.....##.", "##...##..", ".##.##...", "..###....", "...#....."],
     file: ["#####...", "#...##..", "#...#.#.", "#...####", "#......#", "#......#", "#......#", "########"],
     key: [".###.....", "#...#....", "#...#####", "#...#.#.#", ".###..#.."],
-    heart: [".##.##.", "#######", "#######", ".#####.", "..###..", "...#..."],
   };
 
   // A grid's cells matching `match`, as one SVG path of unit squares, runs merged along rows.
@@ -659,12 +656,10 @@
 
   /* ---------- Sounds, from src/sound.rs ---------- */
 
-  // NES-style channels: a pulse wave's duty as a number, or the triangle or noise channel.
+  // NES-style channels: a pulse wave's duty as a number, or the triangle channel.
   const SQUARE = 0.5;
   const PULSE = 0.25;
-  const THIN = 0.125;
   const TRIANGLE = "triangle";
-  const NOISE_WAVE = "noise";
 
   const RATE = 44100;
   const ATTACK = 0.003;
@@ -674,21 +669,14 @@
   const TAIL = 0.03;
   const TAU = Math.PI * 2;
 
-  const E3 = 164.81, F3 = 174.61, B3 = 246.94, C4 = 261.63, G4 = 392.0, A4 = 440.0, B4 = 493.88, C5 = 523.25;
-  const A5 = 880.0, B5 = 987.77, C6 = 1046.5, D6 = 1174.66, E6 = 1318.51, G6 = 1567.98, A6 = 1760.0, B6 = 1975.53;
-  const C7 = 2093.0;
+  const E3 = 164.81, F3 = 174.61, B3 = 246.94, C5 = 523.25, A5 = 880.0, C6 = 1046.5, E6 = 1318.51, G6 = 1567.98;
+  const A6 = 1760.0, C7 = 2093.0;
 
   const note = (wave, hz, at, length, { slide = hz, level = 1, vibrato = 0 } = {}) =>
     ({ wave, from: hz, to: slide, at, length, level, vibrato });
 
   const TUNES = {
     start: { peak: 0.13, notes: [note(PULSE, C6, 0, 0.05, { slide: E6 }), note(PULSE, G6, 0.055, 0.1)] },
-    think: [
-      { peak: 0.1, notes: [note(TRIANGLE, E6, 0, 0.045), note(TRIANGLE, A5, 0.065, 0.06)] },
-      { peak: 0.1, notes: [note(TRIANGLE, A5, 0, 0.035), note(TRIANGLE, D6, 0.05, 0.035), note(TRIANGLE, A5, 0.1, 0.05)] },
-      { peak: 0.1, notes: [note(TRIANGLE, C6, 0, 0.04), note(TRIANGLE, E6, 0.055, 0.04), note(TRIANGLE, D6, 0.11, 0.055)] },
-      { peak: 0.1, notes: [note(TRIANGLE, G6, 0, 0.035), note(TRIANGLE, D6, 0.055, 0.06)] },
-    ],
     done: {
       peak: 0.14,
       notes: [
@@ -704,52 +692,10 @@
       peak: 0.13,
       notes: [note(PULSE, A5, 0, 0.05), note(PULSE, A5, 0.09, 0.05), note(SQUARE, E6, 0.2, 0.18, { slide: A6, level: 0.8 })],
     },
-    long: {
-      peak: 0.09,
-      notes: [note(THIN, E6, 0, 0.025), note(TRIANGLE, B4, 0.17, 0.04), note(THIN, E6, 0.34, 0.025), note(TRIANGLE, B4, 0.51, 0.04)],
-    },
-    look: { peak: 0.07, notes: [note(THIN, E6, 0, 0.03), note(THIN, G6, 0.045, 0.03), note(THIN, B6, 0.09, 0.04)] },
-    edit: {
-      peak: 0.08,
-      notes: [
-        note(NOISE_WAVE, 5000, 0, 0.018),
-        note(NOISE_WAVE, 3500, 0.07, 0.018),
-        note(NOISE_WAVE, 5000, 0.14, 0.018),
-        note(TRIANGLE, C7, 0.2, 0.14, { level: 0.8 }),
-      ],
-    },
-    run: { peak: 0.08, notes: [note(NOISE_WAVE, 1500, 0, 0.14, { slide: 9000, level: 0.6 }), note(SQUARE, A4, 0.13, 0.07)] },
-    web: {
-      peak: 0.07,
-      notes: [
-        note(TRIANGLE, E6, 0, 0.035),
-        note(TRIANGLE, B6, 0.035, 0.035),
-        note(TRIANGLE, E6, 0.07, 0.035),
-        note(TRIANGLE, B6, 0.105, 0.035),
-        note(TRIANGLE, E6, 0.14, 0.035),
-        note(TRIANGLE, B6, 0.175, 0.05),
-      ],
-    },
-    delegate: {
-      peak: 0.08,
-      notes: [
-        note(PULSE, B5, 0, 0.05),
-        note(PULSE, E6, 0.06, 0.07),
-        note(PULSE, B5, 0.17, 0.05, { level: 0.4 }),
-        note(PULSE, E6, 0.23, 0.07, { level: 0.4 }),
-      ],
-    },
-    plan: { peak: 0.07, notes: [note(SQUARE, D6, 0, 0.04), note(SQUARE, G6, 0.05, 0.09, { level: 0.8 })] },
-    fail: { peak: 0.09, notes: [note(TRIANGLE, G4, 0, 0.14, { slide: C4 }), note(NOISE_WAVE, 800, 0, 0.03, { level: 0.5 })] },
-    compact: { peak: 0.07, notes: [note(PULSE, C6, 0, 0.3, { slide: C5, vibrato: 0.01 }), note(TRIANGLE, C4, 0.28, 0.08)] },
   };
 
-  // A wave's level at `phase` (0 to 1) through its `cycle`th cycle.
-  function waveAt(wave, phase, cycle) {
-    if (wave === NOISE_WAVE) {
-      const hash = (Math.imul(cycle, 0x9e3779b9) ^ (cycle >>> 7)) >>> 0;
-      return (hash & 0x1000) === 0 ? 1 : -1;
-    }
+  // A wave's level at `phase`, from 0 to 1 through a cycle.
+  function waveAt(wave, phase) {
     if (wave === TRIANGLE) {
       // Down from 15 to 0 and back up, in 32 steps a cycle.
       const step = Math.floor(phase * 32);
@@ -771,17 +717,14 @@
     const mix = new Float32Array(Math.ceil(end * RATE));
     for (const n of tune.notes) {
       let phase = 0;
-      let cycle = 0;
       const start = Math.floor(n.at * RATE);
       const count = Math.min(Math.floor(n.length * RATE), mix.length - start);
       for (let i = 0; i < count; i++) {
         const t = i / RATE;
         const wobble = 1 + n.vibrato * Math.sin(TAU * VIBRATO_HZ * t);
         const hz = n.from * Math.pow(n.to / n.from, t / n.length) * wobble;
-        mix[start + i] += n.level * envelope(t, n.length) * waveAt(n.wave, phase, cycle);
-        const next = phase + hz / RATE;
-        cycle = (cycle + Math.floor(next)) >>> 0;
-        phase = next - Math.floor(next);
+        mix[start + i] += n.level * envelope(t, n.length) * waveAt(n.wave, phase);
+        phase = (phase + hz / RATE) % 1;
       }
     }
     // Softened above SOFTEN_HZ, as by a TV's speaker, then scaled to the tune's peak.
@@ -819,15 +762,11 @@
   }
 
   function sounds() {
-    const grid = $("#sfx-grid");
-    if (!grid) return;
-    $$(".sfx", grid).forEach((button) => {
+    $$(".sfx").forEach((button) => {
       button.addEventListener("click", () => {
-        const name = button.dataset.sound;
-        const tune = name === "think" ? pick(TUNES.think) : TUNES[name];
         let ms = 300;
         try {
-          ms = play(tune);
+          ms = play(TUNES[button.dataset.sound]);
         } catch {
           return;
         }
@@ -836,63 +775,9 @@
         button.playing = setTimeout(() => button.classList.remove("playing"), Math.max(ms, 240));
       });
     });
-    const modes = $$("[data-sound-mode]");
-    modes.forEach((button) => {
-      button.addEventListener("click", () => {
-        modes.forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
-        grid.classList.toggle("mode-normal", button.dataset.soundMode === "normal");
-      });
-    });
   }
 
   /* ---------- The rest of the page ---------- */
-
-  function meterLab() {
-    const range = $("#lab-range");
-    const meter = $("#lab-meter");
-    const note = $("#lab-note");
-    if (!range || !meter) return;
-    const bar = $(".m-bar i", meter);
-    const pct = $(".m-pct", meter);
-    const update = () => {
-      const value = Number(range.value);
-      bar.style.setProperty("--p", value);
-      pct.textContent = `${value}%`;
-      meter.classList.toggle("warn", value >= 75 && value < 90);
-      meter.classList.toggle("crit", value >= 90);
-      note.textContent =
-        value >= 100 ? "Out. Clawd waits with you until it resets."
-        : value >= 90 ? "Red: past 90%. Nearly out."
-        : value >= 75 ? "Amber: past 75%. Time to pace yourself."
-        : "Plenty left.";
-    };
-    range.addEventListener("input", update);
-    update();
-  }
-
-  function tabs() {
-    const list = $('[role="tablist"]');
-    if (!list) return;
-    const all = $$('[role="tab"]', list);
-    const select = (tab, focus) => {
-      all.forEach((t) => {
-        const on = t === tab;
-        t.setAttribute("aria-selected", String(on));
-        t.tabIndex = on ? 0 : -1;
-        document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
-      });
-      if (focus) tab.focus();
-    };
-    all.forEach((tab, i) => {
-      tab.addEventListener("click", () => select(tab, false));
-      tab.addEventListener("keydown", (e) => {
-        const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: all.length - 1 }[e.key];
-        if (to === undefined) return;
-        e.preventDefault();
-        select(all[(to + all.length) % all.length], true);
-      });
-    });
-  }
 
   function navMenu() {
     const nav = $(".nav");
@@ -916,11 +801,13 @@
       return;
     }
     const seen = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
-        entry.target.classList.add("in");
-        seen.unobserve(entry.target);
-      });
+      entries
+        .filter((entry) => entry.isIntersecting)
+        .forEach((entry, i) => {
+          entry.target.style.transitionDelay = `${i * 90}ms`;
+          entry.target.classList.add("in");
+          seen.unobserve(entry.target);
+        });
     }, { rootMargin: "0px 0px -8% 0px" });
     items.forEach((el) => seen.observe(el));
   }
@@ -946,22 +833,7 @@
     track.append(...[...track.children].map((child) => child.cloneNode(true)));
   }
 
-  function copyButtons() {
-    $$("[data-copy]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const text = $(button.dataset.copy).textContent.replace(/^> /gm, "");
-        try {
-          await navigator.clipboard.writeText(text);
-          button.textContent = "Copied!";
-        } catch {
-          button.textContent = "Select it";
-        }
-        setTimeout(() => (button.textContent = "Copy"), 1600);
-      });
-    });
-  }
-
-  // The newest release's version, size and date, from GitHub. The page shows v1.1.0 until then.
+  // The newest release's version and size, from GitHub. The page shows v1.1.0 until then.
   async function release() {
     try {
       const response = await fetch("https://api.github.com/repos/arshit09/Cuota/releases/latest", {
@@ -975,22 +847,15 @@
         const size = `${(exe.size / 1048576).toFixed(1)} MB`;
         $$("[data-release-size]").forEach((el) => (el.textContent = size));
       }
-      if (latest.published_at) {
-        const date = new Date(latest.published_at).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" });
-        $$("[data-release-date]").forEach((el) => (el.textContent = `, released ${date}`));
-      }
     } catch {}
   }
 
   heroPanel();
   sitePet();
   sounds();
-  meterLab();
-  tabs();
   navMenu();
   reveals();
   wave();
   ticker();
-  copyButtons();
   release();
 })();

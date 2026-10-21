@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cuota · Your Claude limits, at a glance</title>
-  <meta name="description" content="Cuota is a tiny Windows widget that shows your Claude plan usage: session, weekly and per-model limits. Clawd acts out what Claude is doing while you work. Free and open source.">
+  <meta name="description" content="A tiny Windows widget that shows your Claude plan usage, with Clawd keeping you company while Claude works. Free and open source.">
   <meta name="theme-color" content="#141413">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Cuota · Your Claude limits, at a glance">
-  <meta property="og:description" content="A tiny Windows widget that shows your Claude plan usage, with Clawd acting out what Claude is doing.">
+  <meta property="og:description" content="A tiny Windows widget that shows your Claude plan usage.">
   <meta name="twitter:card" content="summary">
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
@@ -26,11 +26,10 @@
         <span class="brand-name">Cuota</span>
       </a>
       <nav class="nav-links" id="nav-links" aria-label="Sections">
-        <a href="#limits">Meters</a>
+        <a href="#limits">Features</a>
         <a href="#clawd">Clawd</a>
         <a href="#pet">Pet</a>
         <a href="#sounds">Sounds</a>
-        <a href="#settings">Settings</a>
         <a href="#install">Install</a>
         <a href="#faq">FAQ</a>
       </nav>
@@ -47,26 +46,25 @@
   </header>
 
   <main id="main">
-    <!-- Hero -->
     <section class="hero" id="top">
       <div class="wrap hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow"><span class="blink" aria-hidden="true">▶</span> Free · Open source · Windows&nbsp;10&nbsp;&amp;&nbsp;11</p>
+          <p class="eyebrow">Free · Open source · Windows</p>
           <h1>Your Claude limits, <span class="hl">at a glance.</span></h1>
-          <p class="lede">Cuota is a tiny Windows widget that shows your Claude plan's usage: the 5-hour session, the week, and each model's own limit. Same numbers as Claude Code's <strong>Account &amp; Usage</strong> panel. And while Claude works, Clawd acts it out.</p>
+          <p class="lede">A tiny widget that shows how much of your Claude plan you've used. Clawd keeps you company while Claude works.</p>
           <div class="cta-row">
             <a class="btn btn-primary" href="https://github.com/arshit09/Cuota/releases/latest/download/Cuota.exe" data-download>
               <span class="px-icon" data-icon="download"></span>Download for Windows
             </a>
             <a class="btn btn-ghost" href="https://github.com/arshit09/Cuota">
-              <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><use href="#gh-mark"/></svg>View on GitHub
+              <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><use href="#gh-mark"/></svg>GitHub
             </a>
           </div>
-          <p class="fineprint"><span data-release-version>v1.1.0</span> · Cuota.exe · <span data-release-size>12.1 MB</span> · One portable file, nothing to install</p>
+          <p class="fineprint"><span data-release-version>v1.1.0</span> · <span data-release-size>12.1 MB</span> · No install</p>
         </div>
 
         <div class="hero-demo">
-          <p class="demo-tag"><span class="rec" aria-hidden="true"></span>Live demo · made-up usage</p>
+          <p class="demo-tag"><span class="rec" aria-hidden="true"></span>Live demo</p>
           <div class="cuota-panel" id="hero-panel" role="img" aria-label="Cuota's panel: Clawd at work, and the Session, Weekly and Fable meters at 15, 49 and 92 percent">
             <div class="clawd-slot"><canvas></canvas></div>
             <div class="panel-body">
@@ -78,16 +76,9 @@
               </div>
             </div>
           </div>
-          <p class="demo-caption">Clawd's own animations and words from the app, sped up. The usage is made up, like Cuota's <code>--demo</code>.</p>
+          <p class="demo-caption">Real animations, made-up usage.</p>
         </div>
       </div>
-
-      <ul class="wrap chips" aria-label="At a glance">
-        <li><span class="px-icon" data-icon="file"></span>One portable .exe</li>
-        <li><span class="px-icon" data-icon="key"></span>Reuses your Claude Code login</li>
-        <li><span class="px-icon" data-icon="check"></span>Pro &amp; Max plans</li>
-        <li><span class="px-icon" data-icon="heart"></span>GPL-3.0, free forever</li>
-      </ul>
     </section>
 
     <div class="ticker" aria-hidden="true">
@@ -96,351 +87,204 @@
       </div>
     </div>
 
-    <!-- 01 Meters -->
     <section class="section" id="limits">
       <div class="wrap">
         <header class="section-head reveal">
-          <p class="kicker">01 · The meters</p>
-          <h2>Know where you stand before Claude says stop.</h2>
-          <p>Cuota reads the same usage Claude Code's Account &amp; Usage panel shows and keeps it on your screen, with the time left until each limit resets.</p>
+          <p class="kicker">What it shows</p>
+          <h2>Every limit in one place.</h2>
+          <p>With the time left until each one resets.</p>
         </header>
 
         <div class="grid-3">
           <article class="card reveal">
             <span class="card-icon px-icon" data-icon="clock"></span>
             <h3>Session</h3>
-            <p>Your 5-hour window: how much of it you've used, and how long until it resets.</p>
+            <p>Your 5-hour window.</p>
           </article>
           <article class="card reveal">
             <span class="card-icon px-icon" data-icon="calendar"></span>
             <h3>Weekly</h3>
-            <p>Everything you've used this week, across Claude Code, chats and Cowork.</p>
+            <p>Your usage this week.</p>
           </article>
           <article class="card reveal">
             <span class="card-icon px-icon" data-icon="chip"></span>
             <h3>Per model</h3>
-            <p>Some models have a weekly cap of their own, like Fable here. Each gets its own meter.</p>
+            <p>Caps for models like Fable.</p>
           </article>
         </div>
 
-        <div class="meter-lab card reveal">
-          <div class="lab-copy">
-            <h3>Try a meter</h3>
-            <p>Meters turn <span class="t-amber">amber at 75%</span> and <span class="t-red">red at 90%</span>, so you see trouble coming. In Cuota, hover one for its exact reset time.</p>
-          </div>
-          <div class="lab-play">
-            <div class="meter lab-meter" id="lab-meter"><span class="m-label">Weekly</span><span class="m-bar"><i style="--p:49"></i></span><b class="m-pct">49%</b><span class="m-left">1d 3h</span></div>
-            <label class="range-label" for="lab-range">Drag to use some more</label>
-            <input class="px-range" id="lab-range" type="range" min="0" max="100" value="49">
-            <p class="lab-note" id="lab-note" aria-live="polite">Plenty left.</p>
-          </div>
-        </div>
+        <p class="note-line reveal">Bars turn <span class="t-amber">amber at 75%</span> and <span class="t-red">red at 90%</span>.</p>
       </div>
     </section>
 
-    <!-- 02 Clawd -->
     <section class="section band" id="clawd">
       <div class="wrap">
         <header class="section-head reveal">
-          <p class="kicker">02 · Meet Clawd</p>
-          <h2>He does what Claude's doing.</h2>
-          <p>Clawd, the Claude Code mascot, acts out a random activity while Claude works: a new one whenever a session starts working, and another every so often. He greets you as work starts and celebrates when it's done, waits around for a minute after, then falls asleep until there's work again.</p>
+          <p class="kicker">Meet Clawd</p>
+          <h2>He works when Claude works.</h2>
+          <p>He acts out what Claude is doing, then naps when it's quiet.</p>
         </header>
 
         <div class="moods">
           <figure class="mood card reveal">
-            <img src="assets/screenshots/mood-working.png" width="383" height="120" alt="Clawd running commands in sunglasses, with Wrangling… above the Session, Weekly and Fable bars" loading="lazy">
-            <figcaption><b>Working</b> Running commands in sunglasses. One of 62 animations.</figcaption>
+            <img src="assets/screenshots/mood-working.png" width="383" height="120" alt="Clawd running commands in sunglasses, with Wrangling… above the meters" loading="lazy">
+            <figcaption>Working</figcaption>
           </figure>
           <figure class="mood card reveal">
-            <img src="assets/screenshots/mood-waiting.png" width="383" height="120" alt="Clawd drinking coffee, with Lollygagging… above the bars" loading="lazy">
-            <figcaption><b>Waiting</b> A coffee for the minute after a session goes idle.</figcaption>
+            <img src="assets/screenshots/mood-waiting.png" width="383" height="120" alt="Clawd drinking coffee, with Lollygagging… above the meters" loading="lazy">
+            <figcaption>Waiting</figcaption>
           </figure>
           <figure class="mood card reveal">
-            <img src="assets/screenshots/mood-asleep.png" width="383" height="120" alt="Clawd asleep in a nightcap, with Snoozing… above the bars" loading="lazy">
-            <figcaption><b>Asleep</b> Nightcap on once nothing's happening.</figcaption>
+            <img src="assets/screenshots/mood-asleep.png" width="383" height="120" alt="Clawd asleep in a nightcap, with Snoozing… above the meters" loading="lazy">
+            <figcaption>Asleep</figcaption>
           </figure>
           <figure class="mood card reveal">
-            <img src="assets/screenshots/mood-done.png" width="383" height="120" alt="Clawd celebrating under confetti, with Nailed it! above the bars" loading="lazy">
-            <figcaption><b>Done</b> Confetti when the work is finished.</figcaption>
-          </figure>
-        </div>
-
-        <div class="split spinner-split">
-          <div class="reveal">
-            <h3 class="h3-lg">A status line, like Claude Code's spinner</h3>
-            <p>Above the meters, a line says what he's up to: a turning star, then <em>Percolating…</em>, <em>Spelunking…</em>, <em>Flibbertigibbeting…</em>, each new word typing itself over the last.</p>
-            <ul class="stats">
-              <li><b>62</b><span>animations</span></li>
-              <li><b>100+</b><span>things to be up to</span></li>
-              <li><b>4</b><span>moods</span></li>
-            </ul>
-            <p class="credit">The animations come from <a href="https://github.com/Harriszed/mascot-studio">Mascot Studio</a> by Harriszed.</p>
-          </div>
-          <figure class="shot reveal">
-            <img src="assets/screenshots/clawd-at-work.png" width="383" height="120" alt="Cuota's panel: Clawd in a wizard hat, and the status line typing out a new word above the Session, Weekly and Fable bars" loading="lazy">
+            <img src="assets/screenshots/mood-done.png" width="383" height="120" alt="Clawd celebrating under confetti, with Nailed it! above the meters" loading="lazy">
+            <figcaption>Done</figcaption>
           </figure>
         </div>
       </div>
     </section>
 
-    <!-- 03 Show as -->
     <section class="section" id="show">
       <div class="wrap">
         <header class="section-head reveal">
-          <p class="kicker">03 · Make it yours</p>
-          <h2>Put it where you'll see it.</h2>
-          <p>Under <strong>Show as</strong>, pick one or more. Always on top and Desktop are the same panel, so only one of those two can be on.</p>
+          <p class="kicker">Make it yours</p>
+          <h2>Show it your way.</h2>
+          <p>Pick one or more. Right-click the panel for settings.</p>
         </header>
 
         <div class="grid-4">
           <article class="card option reveal">
             <span class="card-icon px-icon" data-icon="ontop"></span>
             <h3>Always on top</h3>
-            <p>Floats above all windows. Drag it to move it.</p>
+            <p>Floats above your windows.</p>
           </article>
           <article class="card option reveal">
             <span class="card-icon px-icon" data-icon="desktop"></span>
             <h3>Desktop</h3>
-            <p>Sits behind your windows, like a desktop widget.</p>
+            <p>Sits behind them, like a widget.</p>
           </article>
           <article class="card option reveal">
             <span class="card-icon px-icon" data-icon="taskbar"></span>
             <h3>Taskbar</h3>
-            <p>Clawd and each limit as icons by the clock. Click one for the panel.</p>
+            <p>Tiny icons by the clock.</p>
           </article>
           <article class="card option reveal">
             <span class="card-icon sprite" data-sprite="stand" data-unit="4"></span>
             <h3>Desktop pet</h3>
-            <p>Just Clawd, out on your screen with no panel around him.</p>
+            <p>Just Clawd, roaming free.</p>
           </article>
         </div>
 
         <div class="styles reveal">
           <figure class="shot">
-            <img src="assets/screenshots/panel-pie.png" width="286" height="120" alt="The panel with a ring per limit, showing its percentage inside and the time left underneath" loading="lazy">
-            <figcaption>Rings instead of bars</figcaption>
+            <img src="assets/screenshots/panel-pie.png" width="286" height="120" alt="The panel with a ring per limit" loading="lazy">
+            <figcaption>Rings</figcaption>
           </figure>
           <figure class="shot">
-            <img src="assets/screenshots/panel-no-status.png" width="383" height="120" alt="The panel with Clawd searching the web and no status line above the bars" loading="lazy">
-            <figcaption>Clawd without his status line</figcaption>
+            <img src="assets/screenshots/panel-no-status.png" width="383" height="120" alt="The panel with Clawd and no status line" loading="lazy">
+            <figcaption>No status line</figcaption>
           </figure>
           <figure class="shot">
-            <img src="assets/screenshots/panel-no-clawd.png" width="259" height="78" alt="The panel with only the limit bars, percentages and time left" loading="lazy">
+            <img src="assets/screenshots/panel-no-clawd.png" width="259" height="78" alt="The panel with only the meters" loading="lazy">
             <figcaption>Just the meters</figcaption>
           </figure>
         </div>
-
-        <div class="stack">
-          <div class="reveal">
-            <h3 class="h3-lg">Any size</h3>
-            <p>Ten steps from 70% to 160%. Pick one in settings, or turn the mouse wheel over the panel. Opacity is yours to set too.</p>
-          </div>
-          <figure class="shot shot-wide reveal">
-            <img src="assets/screenshots/sizes.png" width="1173" height="156" alt="The panel at 70%, 100% and 130% of its normal size" loading="lazy">
-          </figure>
-        </div>
-
-        <div class="split">
-          <figure class="shot shot-taskbar reveal">
-            <img src="assets/screenshots/taskbar.png" width="208" height="138" alt="Taskbar icons: Clawd dancing, then 15, 49 and 92 percent as numbers over bars, and again inside rings" loading="lazy">
-          </figure>
-          <div class="reveal">
-            <h3 class="h3-lg">By the clock</h3>
-            <p>With Show as set to Taskbar, Clawd dances by the clock while Claude works, and each limit gets an icon, as Bars or Pie (enlarged here). Right-click any of Cuota's icons for its menu: <strong>Usage details</strong>, <strong>Settings</strong> and <strong>Quit</strong>.</p>
-          </div>
-        </div>
-
-        <aside class="note card reveal">
-          <span class="card-icon px-icon" data-icon="pointer"></span>
-          <div>
-            <h3>Move aside for the pointer</h3>
-            <p>Need to click something behind the panel? Just head for it. When the pointer slows down coming toward the panel, as it does before a click, the panel slides out of the way and comes back once the pointer has left. To use the panel itself, hold <kbd>Ctrl</kbd> as you point at it. Off until you turn it on in General.</p>
-          </div>
-        </aside>
       </div>
     </section>
 
-    <!-- 04 Desktop pet -->
     <section class="section band" id="pet">
-      <div class="wrap">
-        <div class="split split-top">
-          <div>
-            <header class="section-head reveal">
-              <p class="kicker">04 · Desktop pet</p>
-              <h2>Let him loose on your desktop.</h2>
-              <p>Just Clawd, out on your screen with nothing around him, walking about and doing what Claude's doing, with what he's up to under him.</p>
-            </header>
-            <ul class="px-list reveal">
-              <li>Walks about on his own in little hops, and scuttles somewhere new now and then while he works.</li>
-              <li>When Claude stops to ask you something, he tells you it's your turn until you answer.</li>
-              <li>With nothing going on he falls asleep, and every few minutes wakes up, ambles off and sleeps somewhere else.</li>
-              <li>Clicks anywhere but on Clawd himself reach whatever is behind him.</li>
-              <li>Rest the pointer on him for a card of your usage, or double-click him to show it straight away.</li>
-              <li>Drag him anywhere, click him and he says hi, right-click him for settings.</li>
-              <li>Steps behind a full-screen game, video or presentation until it's done.</li>
-            </ul>
-          </div>
-          <div class="pet-shots">
-            <figure class="shot reveal">
-              <img src="assets/screenshots/desktop-pet.png" width="230" height="71" alt="Clawd walking to the right and back on his own, his eyes looking the way he goes, with ✻ Percolating… under him" loading="lazy">
-              <figcaption>Out for a walk</figcaption>
-            </figure>
-            <figure class="shot reveal">
-              <img src="assets/screenshots/desktop-pet-card.png" width="355" height="121" alt="The pointer resting on Clawd, and a card beside him with the Session, Weekly and Fable bars, 2 sessions running with 1 working, and when usage was updated" loading="lazy">
-              <figcaption>Rest the pointer on him for your usage</figcaption>
-            </figure>
-            <div class="psst card reveal">
-              <span class="sprite" data-sprite="stand" data-unit="3"></span>
-              <p><b>Psst.</b> He's loose on this page too. Look at the bottom of your screen.</p>
-              <button class="btn btn-sm btn-ghost" type="button" data-pet-toggle>Let Clawd out</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 05 Details -->
-    <section class="section" id="details">
       <div class="wrap split split-top">
-        <figure class="shot shot-details reveal">
-          <img src="assets/screenshots/panel-details.png" width="288" height="480" alt="The expanded panel: each limit's reset time and pace, and what the week's usage went to by app" loading="lazy">
-        </figure>
         <div>
           <header class="section-head reveal">
-            <p class="kicker">05 · Usage details</p>
-            <h2>Double-click for the whole story.</h2>
-            <p>Double-click the panel to expand it, and again to shrink it. The details show:</p>
+            <p class="kicker">Desktop pet</p>
+            <h2>A pet for your desktop.</h2>
+            <p>Clawd walks your screen and shows what Claude is up to.</p>
           </header>
           <ul class="px-list reveal">
-            <li>Each limit's reset time, and where it's headed at your current pace</li>
-            <li>What your week went to: Claude Code, chats, Cowork</li>
-            <li>Your subscription and extra usage</li>
-            <li>The Claude Code sessions running now</li>
-            <li>Claude Code's replies, tool calls and tokens this week, by day, model and project, on this PC</li>
+            <li>Naps when nothing's happening</li>
+            <li>Lets you know when Claude needs you</li>
+            <li>Hover him to see your usage</li>
           </ul>
-          <p class="reveal">Want some always in view? Pick them on the <strong>Details</strong> page of settings: they show under the meters all the time, in the order you drag them into. Double-click can also open your usage page on claude.ai, the Claude app, or any file, program or script you pick.</p>
+          <div class="psst reveal">
+            <span class="sprite" data-sprite="stand" data-unit="3"></span>
+            <p>He's on this page too.</p>
+            <button class="btn btn-sm btn-ghost" type="button" data-pet-toggle>Let Clawd out</button>
+          </div>
+        </div>
+        <div class="pet-shots">
+          <figure class="shot reveal">
+            <img src="assets/screenshots/desktop-pet.png" width="230" height="71" alt="Clawd walking on the desktop, with Percolating… under him" loading="lazy">
+          </figure>
+          <figure class="shot reveal">
+            <img src="assets/screenshots/desktop-pet-card.png" width="355" height="121" alt="The pointer resting on Clawd, and a card of usage beside him" loading="lazy">
+          </figure>
         </div>
       </div>
     </section>
 
-    <!-- 06 Sounds -->
+    <section class="section" id="details">
+      <div class="wrap split">
+        <figure class="shot shot-details reveal">
+          <img src="assets/screenshots/panel-details.png" width="288" height="480" alt="The expanded panel: each limit's reset time and pace, and the week's usage by app" loading="lazy">
+        </figure>
+        <header class="section-head reveal">
+          <p class="kicker">Details</p>
+          <h2>Double-click for more.</h2>
+          <p>Reset times, your pace, and where your week went.</p>
+        </header>
+      </div>
+    </section>
+
     <section class="section band" id="sounds">
       <div class="wrap">
         <header class="section-head reveal">
-          <p class="kicker">06 · 8-bit sounds</p>
-          <h2>Hear Claude work.</h2>
-          <p>Little 8-bit tunes, made in code like an old console's pulse, triangle and noise channels. <strong>Normal</strong> plays only what matters. <strong>Lively</strong> adds a sound for each kind of step Claude takes. They keep quiet while the screen is locked, a game runs full screen or you're presenting.</p>
+          <p class="kicker">Sounds</p>
+          <h2>Little 8-bit sounds.</h2>
+          <p>So you know when work starts, ends, or needs you. Tap to listen.</p>
         </header>
 
-        <div class="sound-bar reveal">
-          <div class="segmented" role="group" aria-label="Sound mode">
-            <button type="button" data-sound-mode="normal" aria-pressed="true">Normal</button>
-            <button type="button" data-sound-mode="lively" aria-pressed="false">Lively</button>
-          </div>
-          <p class="sound-hint">The real sounds, ported from Cuota's own code. Normal plays the first four; Lively plays them all. Press one to hear it.</p>
-        </div>
-
-        <div class="sfx-grid mode-normal" id="sfx-grid">
-          <button class="sfx" type="button" data-sound="start"><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Work starts</b><span>A quick chirp up</span></span></button>
-          <button class="sfx" type="button" data-sound="ask"><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Claude needs you</b><span>Knock knock, then a rising note: a permission or a question</span></span></button>
-          <button class="sfx" type="button" data-sound="done"><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Work's done</b><span>A little fanfare, once work that took a while ends</span></span></button>
-          <button class="sfx" type="button" data-sound="error"><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Usage can't be read</b><span>A low buzz</span></span></button>
-          <button class="sfx" type="button" data-sound="think" data-lively><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Thinking</b><span>Soft notes as it thinks, and now and then while it works</span></span></button>
-          <button class="sfx" type="button" data-sound="look" data-lively><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Reading or searching</b><span>Quick blips, like eyes running down a page</span></span></button>
-          <button class="sfx" type="button" data-sound="edit" data-lively><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Editing a file</b><span>Typewriter keys, then the bell</span></span></button>
-          <button class="sfx" type="button" data-sound="run" data-lively><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Running a command</b><span>A whoosh and a thunk, like a launch</span></span></button>
-          <button class="sfx" type="button" data-sound="web" data-lively><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Going online</b><span>A warbling signal</span></span></button>
-          <button class="sfx" type="button" data-sound="delegate" data-lively><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Handing off to an agent</b><span>A call, and its echo</span></span></button>
-          <button class="sfx" type="button" data-sound="plan" data-lively><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Planning</b><span>Two bright notes, like ticking a box</span></span></button>
-          <button class="sfx" type="button" data-sound="fail" data-lively><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>A step failed</b><span>A bonk, when a step fails or is turned down</span></span></button>
-          <button class="sfx" type="button" data-sound="compact" data-lively><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Making room</b><span>A long slide down as it sums up the conversation</span></span></button>
-          <button class="sfx" type="button" data-sound="long" data-lively><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><span class="sfx-text"><b>Taking a while</b><span>A ticking clock, 2 and 5 minutes in, then every 10</span></span></button>
+        <div class="sfx-grid reveal">
+          <button class="sfx" type="button" data-sound="start"><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><b>Work starts</b></button>
+          <button class="sfx" type="button" data-sound="ask"><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><b>Claude needs you</b></button>
+          <button class="sfx" type="button" data-sound="done"><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><b>Work's done</b></button>
+          <button class="sfx" type="button" data-sound="error"><span class="sfx-play"><span class="px-icon" data-icon="play"></span></span><b>Can't read usage</b></button>
         </div>
       </div>
     </section>
 
-    <!-- 07 Settings -->
-    <section class="section" id="settings">
+    <section class="section" id="privacy">
       <div class="wrap">
         <header class="section-head reveal">
-          <p class="kicker">07 · Settings</p>
-          <h2>Everything in one place.</h2>
-          <p>Right-click the panel, or Clawd. Like Windows 11's Settings, it has a page for each part.</p>
+          <p class="kicker">Privacy</p>
+          <h2>Your data stays yours.</h2>
         </header>
 
-        <div class="tabs reveal">
-          <div class="tablist" role="tablist" aria-label="Settings pages">
-            <button role="tab" type="button" id="tab-general" aria-controls="panel-general" aria-selected="true">General</button>
-            <button role="tab" type="button" id="tab-appearance" aria-controls="panel-appearance" aria-selected="false" tabindex="-1">Appearance</button>
-            <button role="tab" type="button" id="tab-panel" aria-controls="panel-panel" aria-selected="false" tabindex="-1">Panel</button>
-            <button role="tab" type="button" id="tab-taskbar" aria-controls="panel-taskbar" aria-selected="false" tabindex="-1">Taskbar</button>
-            <button role="tab" type="button" id="tab-pet" aria-controls="panel-pet" aria-selected="false" tabindex="-1">Desktop pet</button>
-          </div>
-          <div class="tabpanel" role="tabpanel" id="panel-general" aria-labelledby="tab-general">
-            <p>Show as, what a double-click does, Move aside for the pointer, and Start with Windows.</p>
-            <figure class="shot shot-settings"><img src="assets/screenshots/settings-general.png" width="800" height="600" alt="Settings, General page: Show as open, with Always on top, Taskbar and Desktop pet checked and Desktop not, Double-click set to Show details, and Move aside for the pointer off" loading="lazy"></figure>
-          </div>
-          <div class="tabpanel" role="tabpanel" id="panel-appearance" aria-labelledby="tab-appearance" hidden>
-            <p>The panel's size and opacity, Clawd's animation, and the 8-bit sound effects, with a list that plays each one so you can learn them.</p>
-            <figure class="shot shot-settings"><img src="assets/screenshots/settings-appearance.png" width="800" height="600" alt="Settings, Appearance page: Size at 100%, Resize with mouse wheel on, Opacity at 96%, Animate Clawd and Sound effects on, Sound mode set to Normal, and Hear the sounds" loading="lazy"></figure>
-          </div>
-          <div class="tabpanel" role="tabpanel" id="panel-panel" aria-labelledby="tab-panel" hidden>
-            <p>What the panel shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line.</p>
-            <figure class="shot shot-settings"><img src="assets/screenshots/settings-panel.png" width="800" height="600" alt="Settings, Panel page: Style set to Bars, Limits showing Session, Weekly and Fable, and Percentage, Time left, Clawd and Status all on" loading="lazy"></figure>
-          </div>
-          <div class="tabpanel" role="tabpanel" id="panel-taskbar" aria-labelledby="tab-taskbar" hidden>
-            <p>The same choices for the icons by the clock: Bars or Pie, which limits, percentage, time left and Clawd.</p>
-            <figure class="shot shot-settings"><img src="assets/screenshots/settings-taskbar.png" width="800" height="600" alt="Settings, Taskbar page: Style set to Bars, Limits open with Session, Weekly and Fable checked, and Percentage, Time left and Clawd on" loading="lazy"></figure>
-          </div>
-          <div class="tabpanel" role="tabpanel" id="panel-pet" aria-labelledby="tab-pet" hidden>
-            <p>His size, his status line, React to pointer, and the card that shows when you rest the pointer on him.</p>
-            <figure class="shot shot-settings"><img src="assets/screenshots/settings-pet.png" width="800" height="600" alt="Settings, Desktop pet page: Size at 100%, Status, React to pointer and Card on hover on, then the card's Style set to Bars, its Limits, and Percentage and Time left on" loading="lazy"></figure>
-          </div>
-        </div>
-
-        <ul class="tips reveal">
-          <li><span class="px-icon" data-icon="cursor"></span>Hover a meter for its exact reset time.</li>
-          <li><span class="px-icon" data-icon="cursor"></span>Turn off <em>Animate Clawd</em> to use almost no CPU.</li>
-          <li><span class="px-icon" data-icon="cursor"></span>Only one Cuota runs at a time: launching it again opens the running one's settings.</li>
-        </ul>
-      </div>
-    </section>
-
-    <!-- 08 How it works -->
-    <section class="section band" id="privacy">
-      <div class="wrap split split-top">
-        <div>
-          <header class="section-head reveal">
-            <p class="kicker">08 · How it works</p>
-            <h2>Your token goes only to Anthropic.</h2>
-            <p>Cuota reuses the login Claude Code already has, asks Anthropic for your usage, and keeps everything else on your PC.</p>
-          </header>
-          <div class="callout reveal">
-            <p><b>Easy on the API.</b> About one call a minute while Claude is working, one more when it stops, and none while it's idle. The Refresh button still asks. It also reuses usage Claude Code already fetched.</p>
-          </div>
-          <div class="callout callout-warn reveal">
-            <p><b>Heads up.</b> The usage endpoint is undocumented, so a Claude update could break it.</p>
-          </div>
-        </div>
-        <div class="term reveal" role="group" aria-label="What Cuota reads and writes">
-          <div class="term-bar"><span></span><span></span><span></span><b>how-cuota-works.txt</b></div>
-          <ol class="term-body">
-            <li>Reads Claude Code's login token from <code>%USERPROFILE%\.claude\.credentials.json</code> (or <code>CLAUDE_CONFIG_DIR</code>, or <code>CLAUDE_CODE_OAUTH_TOKEN</code>).</li>
-            <li>Calls <code>api.anthropic.com/api/oauth/usage</code>, the same endpoint Claude Code uses. The token goes only to Anthropic.</li>
-            <li>For usage details, reads Claude Code's session transcripts in <code>%USERPROFILE%\.claude\projects</code>, only while they're showing. They stay on your PC.</li>
-            <li>Never writes to Claude's files. Its own settings live in <code>%APPDATA%\Cuota\settings.json</code>.</li>
-            <li>Logs problems to <code>%LOCALAPPDATA%\Cuota\Logs\cuota.log</code>, kept under 1 MB, leaving out your email and what your sessions are about.</li>
-          </ol>
+        <div class="grid-3">
+          <article class="card reveal">
+            <span class="card-icon px-icon" data-icon="key"></span>
+            <h3>Your Claude Code login</h3>
+            <p>Nothing new to sign in to.</p>
+          </article>
+          <article class="card reveal">
+            <span class="card-icon px-icon" data-icon="check"></span>
+            <h3>Only to Anthropic</h3>
+            <p>Your token goes nowhere else.</p>
+          </article>
+          <article class="card reveal">
+            <span class="card-icon px-icon" data-icon="file"></span>
+            <h3>On your PC</h3>
+            <p>Everything else stays local.</p>
+          </article>
         </div>
       </div>
     </section>
 
-    <!-- 09 Install -->
-    <section class="section" id="install">
+    <section class="section band" id="install">
       <div class="wrap">
         <header class="section-head reveal">
-          <p class="kicker">09 · Get it</p>
+          <p class="kicker">Get started</p>
           <h2>Up and running in a minute.</h2>
         </header>
 
@@ -448,17 +292,17 @@
           <li class="card reveal">
             <span class="step-n">1</span>
             <h3>Download</h3>
-            <p>Grab <strong>Cuota.exe</strong> from the <a href="https://github.com/arshit09/Cuota/releases/latest">latest release</a>. There's nothing to install, so keep it anywhere.</p>
+            <p>Get Cuota.exe. No install needed.</p>
           </li>
           <li class="card reveal">
             <span class="step-n">2</span>
             <h3>Run it</h3>
-            <p>It's unsigned, so if Windows says it protected your PC, click <kbd>More info</kbd>, then <kbd>Run anyway</kbd>.</p>
+            <p>If Windows warns you, click <kbd>More info</kbd>, then <kbd>Run anyway</kbd>.</p>
           </li>
           <li class="card reveal">
             <span class="step-n">3</span>
-            <h3>Be signed in</h3>
-            <p>Have <a href="https://claude.com/claude-code">Claude Code</a> logged in with Pro or Max. Cuota reuses that login, so there's nothing to set up.</p>
+            <h3>Sign in</h3>
+            <p>Use <a href="https://claude.com/claude-code">Claude Code</a> with a Pro or Max plan.</p>
           </li>
         </ol>
 
@@ -466,99 +310,46 @@
           <a class="btn btn-primary" href="https://github.com/arshit09/Cuota/releases/latest/download/Cuota.exe" data-download>
             <span class="px-icon" data-icon="download"></span>Download Cuota.exe
           </a>
-          <p class="fineprint"><span data-release-version>v1.1.0</span><span data-release-date></span> · Windows 10 &amp; 11 · <a href="https://github.com/arshit09/Cuota/releases">All releases</a></p>
-        </div>
-
-        <div class="grid-2">
-          <div class="card reveal">
-            <h3>Good to know</h3>
-            <ul class="px-list">
-              <li>To start it when you sign in, turn on <strong>Start with Windows</strong> in its settings.</li>
-              <li>To update, quit Cuota from its tray menu and replace the file. Your settings are kept.</li>
-              <li>It always has an icon in the tray by the clock. Right-click it for <strong>Usage details</strong>, <strong>Settings</strong> and <strong>Quit</strong>.</li>
-            </ul>
-          </div>
-          <div class="card reveal">
-            <h3>Build it yourself</h3>
-            <p>You'll need <a href="https://rustup.rs">Rust</a>. The exe is self-contained, so copy it anywhere.</p>
-            <div class="code">
-              <pre id="build-cmd"><span class="pr">&gt;</span> git clone https://github.com/arshit09/Cuota
-<span class="pr">&gt;</span> cd Cuota
-<span class="pr">&gt;</span> cargo build --release
-<span class="pr">&gt;</span> .\target\release\cuota.exe</pre>
-              <button class="copy" type="button" data-copy="#build-cmd">Copy</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="card flags reveal">
-          <h3>Command-line flags</h3>
-          <table>
-            <thead><tr><th scope="col">Flag</th><th scope="col">Does</th></tr></thead>
-            <tbody>
-              <tr><td><code>--interval 120</code></td><td>Refresh every 120 s while Claude is in use (default 60, min 30)</td></tr>
-              <tr><td><code>--demo</code></td><td>Show made-up data, like the screenshots on this page</td></tr>
-              <tr><td><code>--once</code></td><td>Print usage to the terminal and exit</td></tr>
-            </tbody>
-          </table>
+          <p class="fineprint"><span data-release-version>v1.1.0</span> · Windows 10 &amp; 11 · <a href="https://github.com/arshit09/Cuota/releases">All releases</a></p>
         </div>
       </div>
     </section>
 
-    <!-- 10 FAQ -->
-    <section class="section band" id="faq">
+    <section class="section" id="faq">
       <div class="wrap faq-wrap">
         <header class="section-head reveal">
-          <p class="kicker">10 · Questions</p>
-          <h2>FAQ &amp; troubleshooting</h2>
+          <p class="kicker">FAQ</p>
+          <h2>Questions</h2>
         </header>
         <div class="faq reveal">
           <details>
-            <summary>Is Cuota made by Anthropic?</summary>
-            <p>No. Cuota is an unofficial project. It isn't made, endorsed or supported by Anthropic, and has no affiliation with Anthropic.</p>
-          </details>
-          <details>
-            <summary>Does it cost anything?</summary>
-            <p>No. Cuota's code is free software under the GNU GPL v3.0 or later: you can use it, change it, share it and even sell it, as long as you share the source code too.</p>
-          </details>
-          <details>
-            <summary>Does it send anything to Claude?</summary>
-            <p>It only asks Anthropic's usage endpoint for your numbers. It never sends messages to Claude, and your session transcripts never leave your PC.</p>
+            <summary>Is it made by Anthropic?</summary>
+            <p>No. It's an unofficial, free and open-source project.</p>
           </details>
           <details>
             <summary>Does it work on Mac or Linux?</summary>
-            <p>No, Cuota is for Windows 10 and 11.</p>
+            <p>No, it's for Windows 10 and 11.</p>
           </details>
           <details>
-            <summary>It says “Login token expired”.</summary>
-            <p>Send a message in Claude Code. Cuota picks up the new token within 15 seconds.</p>
-          </details>
-          <details>
-            <summary>It says “No Claude login found” or “Login rejected”.</summary>
-            <p>Run <code>claude</code>, then <code>/login</code>.</p>
-          </details>
-          <details>
-            <summary>It says “Rate limited”.</summary>
-            <p>Cuota backs off on its own. If it keeps happening, try a longer <code>--interval</code>.</p>
+            <summary>It says my login expired.</summary>
+            <p>Send a message in Claude Code. Cuota picks up the new login within 15 seconds.</p>
           </details>
           <details>
             <summary>The taskbar icons are missing.</summary>
-            <p>New icons start in the overflow. Click <kbd>^</kbd> by the clock and drag the Cuota icons onto the taskbar.</p>
+            <p>Click <kbd>^</kbd> by the clock and drag them onto the taskbar.</p>
           </details>
           <details>
             <summary>Something else went wrong.</summary>
-            <p>Open <strong>Settings › General › Log file</strong> to see what Cuota ran into, and attach <code>cuota.log</code> to an <a href="https://github.com/arshit09/Cuota/issues">issue</a>.</p>
+            <p><a href="https://github.com/arshit09/Cuota/issues">Open an issue</a> and attach the log from Settings › General › Log file.</p>
           </details>
         </div>
       </div>
     </section>
 
-    <!-- Final call -->
     <section class="section final">
       <div class="wrap final-inner reveal">
         <span class="sprite final-clawd" data-sprite="leftArmUp" data-unit="8"></span>
         <h2>Ready when Claude is.</h2>
-        <p>One small file. Your limits, always in view.</p>
         <div class="cta-row">
           <a class="btn btn-primary" href="https://github.com/arshit09/Cuota/releases/latest/download/Cuota.exe" data-download>
             <span class="px-icon" data-icon="download"></span>Download for Windows
@@ -575,24 +366,23 @@
     <div class="wrap footer-grid">
       <div class="footer-brand">
         <a class="brand" href="#top"><span class="sprite" data-sprite="stand" data-unit="3"></span><span class="brand-name">Cuota</span></a>
-        <p>Your Claude limits, at a glance. Made by <a href="https://arshitvaghasiya.com">Arshit</a>.</p>
+        <p>Made by <a href="https://arshitvaghasiya.com">Arshit</a>.</p>
         <button class="btn btn-sm btn-ghost" type="button" data-pet-toggle>Let Clawd out</button>
       </div>
       <nav class="footer-links" aria-label="Project">
         <a href="https://github.com/arshit09/Cuota">GitHub</a>
         <a href="https://github.com/arshit09/Cuota/releases">Releases</a>
         <a href="https://github.com/arshit09/Cuota/issues">Report an issue</a>
-        <a href="https://github.com/arshit09/Cuota/blob/main/LICENSE">License (GPL-3.0)</a>
-        <a href="https://arshitvaghasiya.com">More projects by Arshit</a>
+        <a href="https://github.com/arshit09/Cuota/blob/main/LICENSE">License</a>
+        <a href="https://arshitvaghasiya.com">More by Arshit</a>
       </nav>
       <div class="legal">
-        <p>Cuota is an unofficial project. It isn't made, endorsed or supported by Anthropic, and has no affiliation with Anthropic. Claude, Claude Code and Anthropic are trademarks of Anthropic PBC. Clawd, the Claude Code mascot, is Anthropic's too; the pixel Clawd on this page is drawn from Claude Code's own artwork.</p>
-        <p>Clawd's animations, in the live panel and the screenshots, come from <a href="https://github.com/Harriszed/mascot-studio">Mascot Studio</a>, an unofficial community project by Harriszed, built on <a href="https://ayotomcs.me/claude-mascot">Ayotomiwa Wale-Durojaye's reference animation</a>. They aren't covered by Cuota's license. If you own any of this and want it taken down, <a href="https://github.com/arshit09/Cuota/issues">open an issue</a>.</p>
+        <p>Unofficial. Not affiliated with Anthropic. Claude, Claude Code and Clawd belong to Anthropic.</p>
+        <p>Clawd's animations: <a href="https://github.com/Harriszed/mascot-studio">Mascot Studio</a> by Harriszed, based on <a href="https://ayotomcs.me/claude-mascot">Ayotomiwa Wale-Durojaye's work</a>. Not covered by Cuota's license. Own something here? <a href="https://github.com/arshit09/Cuota/issues">Ask for removal</a>.</p>
       </div>
     </div>
   </footer>
 
-  <!-- Clawd, loose on the page -->
   <div class="site-pet" id="site-pet" hidden>
     <p class="pet-bubble" hidden></p>
     <span class="pet-fx" aria-hidden="true"></span>
