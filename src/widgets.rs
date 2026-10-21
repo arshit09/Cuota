@@ -3,7 +3,7 @@
 //! control), expanders that open onto more settings, and the controls themselves. The expanded
 //! panel's details share the section headings, cards and rules.
 
-use crate::mascot::CLAUDE_ORANGE;
+use crate::mascot::{self, CLAUDE_ORANGE};
 use crate::vector;
 use crate::view::DIM;
 use eframe::egui::{
@@ -80,8 +80,6 @@ pub mod icon {
     pub const OPACITY: char = '\u{E793}';
     pub const PANEL: char = '\u{E737}';
     pub const PERCENT: char = '\u{E94C}';
-    /// Someone walking: Clawd out on the desktop.
-    pub const PET: char = '\u{E805}';
     pub const PLAY: char = '\u{E768}';
     /// A pointer, touched.
     pub const REACT: char = '\u{E7C9}';
@@ -94,7 +92,8 @@ pub mod icon {
     pub const SIZE: char = '\u{E740}';
     pub const SOUND: char = '\u{E767}';
     pub const SOUND_MODE: char = '\u{E9E9}';
-    pub const STARTUP: char = '\u{EC4A}';
+    /// A window coming up: Cuota opening by itself as Windows starts.
+    pub const STARTUP: char = '\u{E78B}';
     pub const STATUS: char = '\u{E8BD}';
     pub const STYLE: char = '\u{EB05}';
     pub const TASKBAR: char = '\u{E75B}';
@@ -195,7 +194,7 @@ pub fn rule(ui: &mut Ui) {
 pub enum NavIcon {
     /// A glyph of the icon font.
     Glyph(char),
-    /// A white image as many pixels across as the glyphs, such as [`github_mark`], drawn in
+    /// A white image as many pixels across as the glyphs, such as [`github_mark`] or [`clawd_mark`], drawn in
     /// their color.
     Image(TextureId),
 }
@@ -279,20 +278,54 @@ fn nav_icon_pixels(pixels_per_point: f32) -> usize {
 /// GitHub's mark: `mark-github` from GitHub's Primer Octicons (MIT), on a 16 x 16 viewBox.
 pub const GITHUB_MARK: &str = "M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656";
 
-/// GitHub's mark as a [`NavIcon::Image`]. It's rasterized for the window's scale, and again
-/// whenever that changes, so it's as sharp as the glyphs beside it.
+/// GitHub's mark as a [`NavIcon::Image`].
 pub fn github_mark(ctx: &Context) -> TextureId {
+    nav_image(ctx, "github-mark", |pixels| vector::mask(GITHUB_MARK, 16.0, pixels))
+}
+
+/// Clawd standing, as a [`NavIcon::Image`]: the desktop pet's own picture.
+pub fn clawd_mark(ctx: &Context) -> TextureId {
+    nav_image(ctx, "clawd-mark", clawd_mask)
+}
+
+/// A [`NavIcon::Image`] from `mask`'s alpha for a square so many pixels across. It's drawn for
+/// the window's scale, and again whenever that changes, so it's as sharp as the glyphs beside it.
+fn nav_image(ctx: &Context, name: &'static str, mask: impl FnOnce(usize) -> Vec<u8>) -> TextureId {
     let pixels = nav_icon_pixels(ctx.pixels_per_point());
-    let id = Id::new("github-mark");
+    let id = Id::new(name);
     let cached = ctx.data(|data| data.get_temp::<(usize, TextureHandle)>(id));
     if let Some((_, texture)) = cached.filter(|(size, _)| *size == pixels) {
         return texture.id();
     }
-    let mask = vector::mask(GITHUB_MARK, 16.0, pixels);
-    let image = ColorImage::new([pixels; 2], mask.into_iter().map(Color32::from_white_alpha).collect());
-    let texture = ctx.load_texture("github-mark", image, TextureOptions::LINEAR);
+    let image = ColorImage::new([pixels; 2], mask(pixels).into_iter().map(Color32::from_white_alpha).collect());
+    let texture = ctx.load_texture(name, image, TextureOptions::LINEAR);
     ctx.data_mut(|data| data.insert_temp(id, (pixels, texture.clone())));
     texture.id()
+}
+
+/// Clawd's sprite filling a square `pixels` across about as wide as the glyphs do, his eyes
+/// cut out. Each cell of the sprite takes whole pixels, as nearest-neighbor scaling does, so
+/// he stays crisp at any scale (and symmetric, as cells round outward from his middle alike).
+fn clawd_mask(pixels: usize) -> Vec<u8> {
+    let sprite = &mascot::STAND;
+    let (columns, rows) = (sprite[0].len(), sprite.len());
+    // A pixel either side at 100%, as the glyphs leave, and the same either side so he's centered.
+    let left = (pixels as f32 / 32.0).round() as usize;
+    let width = pixels - 2 * left;
+    let height = (width as f32 * rows as f32 / columns as f32).round() as usize;
+    let top = (pixels - height) / 2;
+    // Where cell `i` of `cells` starts along a span.
+    let edge = |i: usize, cells: usize, span: usize| (i as f32 * span as f32 / cells as f32).round() as usize;
+    let mut mask = vec![0; pixels * pixels];
+    for (row, line) in sprite.iter().enumerate() {
+        for (column, _) in line.bytes().enumerate().filter(|&(_, cell)| cell == b'#') {
+            let (x0, x1) = (left + edge(column, columns, width), left + edge(column + 1, columns, width));
+            for y in top + edge(row, rows, height)..top + edge(row + 1, rows, height) {
+                mask[y * pixels + x0..y * pixels + x1].fill(255);
+            }
+        }
+    }
+    mask
 }
 
 /// A note at the top of a page, like Windows' info bars.
@@ -1069,5 +1102,25 @@ fn focus_ring(ui: &Ui, response: &Response, rect: Rect, radius: f32) {
         let painter = ui.painter();
         painter.rect_stroke(rect.expand(1.0), radius + 1.0, Stroke::new(1.0, Color32::BLACK), StrokeKind::Outside);
         painter.rect_stroke(rect.expand(2.0), radius + 2.0, Stroke::new(2.0, Color32::WHITE), StrokeKind::Outside);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clawd_mark_is_symmetric_and_as_wide_as_the_glyphs() {
+        // From 100% to 300% scaling.
+        for pixels in 16..=48 {
+            let mask = clawd_mask(pixels);
+            assert_eq!(mask.len(), pixels * pixels);
+            for row in mask.chunks(pixels) {
+                assert!(row.iter().eq(row.iter().rev()), "lopsided at {pixels} pixels");
+            }
+            let lit = |x: usize| mask.chunks(pixels).any(|row| row[x] > 0);
+            let width = (0..pixels).filter(|&x| lit(x)).count();
+            assert!(width + 4 >= pixels && width < pixels, "{width} of {pixels} pixels wide");
+        }
     }
 }

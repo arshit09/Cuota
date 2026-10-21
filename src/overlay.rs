@@ -19,7 +19,7 @@ use crate::stats::Transcripts;
 use crate::status::Status;
 use crate::tray::{Tray, TrayConfig, TrayEvent};
 use crate::view::{self, AMBER, DIM, TEXT};
-use crate::widgets::{self, Fonts, SortRow, Sorted, icon, single_line};
+use crate::widgets::{self, Fonts, NavIcon, SortRow, Sorted, icon, single_line};
 use crate::win;
 use chrono::{TimeDelta, Utc};
 use eframe::egui::{
@@ -170,15 +170,15 @@ impl Page {
         }
     }
 
-    fn glyph(self) -> char {
+    fn icon(self, ctx: &egui::Context) -> NavIcon {
         match self {
-            Self::General => icon::SETTINGS,
-            Self::Appearance => icon::APPEARANCE,
-            Self::Sounds => icon::SOUND,
-            Self::Panel => icon::PANEL,
-            Self::Details => icon::DETAILS,
-            Self::Taskbar => icon::TASKBAR,
-            Self::Pet => icon::PET,
+            Self::General => icon::SETTINGS.into(),
+            Self::Appearance => icon::APPEARANCE.into(),
+            Self::Sounds => icon::SOUND.into(),
+            Self::Panel => icon::PANEL.into(),
+            Self::Details => icon::DETAILS.into(),
+            Self::Taskbar => icon::TASKBAR.into(),
+            Self::Pet => widgets::clawd_mark(ctx).into(),
         }
     }
 }
@@ -1030,7 +1030,7 @@ impl Overlay {
         let panel_screen =
             if self.settings_shown { None } else { self.settings_screen(ctx).map(|work| work * ctx.pixels_per_point()) };
         let builder = ViewportBuilder::default()
-            .with_title("Cuota settings")
+            .with_title("Cuota Settings")
             .with_inner_size(self.settings_size)
             .with_min_inner_size(SETTINGS_MIN)
             .with_always_on_top()
@@ -1098,7 +1098,7 @@ impl Overlay {
         ui.add_space(20.0);
         ui.spacing_mut().item_spacing.y = 4.0;
         for page in Page::ALL {
-            if widgets::nav_item(ui, &self.fonts, page.glyph(), page.name(), self.settings_page == page).clicked() {
+            if widgets::nav_item(ui, &self.fonts, page.icon(ui.ctx()), page.name(), self.settings_page == page).clicked() {
                 self.settings_page = page;
             }
         }
