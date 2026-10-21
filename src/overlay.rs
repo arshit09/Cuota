@@ -9,7 +9,7 @@ use crate::details;
 use crate::dodge::Dodge;
 use crate::glance;
 use crate::log;
-use crate::mascot::Mascot;
+use crate::mascot::{CLAUDE_ORANGE, Mascot};
 use crate::monitors::{self, Identify, Screen};
 use crate::pet::{self, Pet};
 use crate::scripts::{self, Scripts};
@@ -18,6 +18,7 @@ use crate::sound::{self, Cues};
 use crate::stats::Transcripts;
 use crate::status::Status;
 use crate::tray::{Tray, TrayConfig, TrayEvent};
+use crate::update::{self, Updater};
 use crate::usage::{self, History, Task};
 use crate::view::{self, AMBER, DIM, TEXT};
 use crate::widgets::{self, Fonts, NavIcon, SortRow, Sorted, icon, single_line};
@@ -51,7 +52,7 @@ pub(crate) const GLANCE_GAP: f32 = 6.0;
 /// screen has room, and resizable down to `SETTINGS_MIN`. A sidebar lists the pages, and the
 /// one shown runs no wider than `PAGE_WIDTH`.
 const SETTINGS_SIZE: Vec2 = vec2(800.0, 600.0);
-const SETTINGS_MIN: Vec2 = vec2(640.0, 540.0);
+const SETTINGS_MIN: Vec2 = vec2(640.0, 580.0);
 const SIDEBAR_WIDTH: f32 = 248.0;
 const PAGE_WIDTH: f32 = 760.0;
 /// The page's title, above what scrolls, and the room either side of the page.
@@ -137,6 +138,90 @@ fn custom_target(
         card.on_hover_text(&settings.custom_target);
     }
 }
+/// The Updates page, like Windows Update's: whether a new Cuota is out, with a button to look
+/// now or to update to it, then whether Cuota looks by itself, and every release's notes.
+fn update_cards(ui: &mut egui::Ui, fonts: &Fonts, settings: &mut Settings, updater: &mut Updater) {
+    use update::Status;
+    let current = env!("CARGO_PKG_VERSION");
+    let checked = |at: &chrono::DateTime<chrono::Local>| {
+        let today = at.date_naive() == chrono::Local::now().date_naive();
+        at.format(if today { "today at %H:%M" } else { "%b %-d at %H:%M" }).to_string()
+    };
+    let status = updater.status();
+    let (title, about) = match &status {
+        Status::Unchecked => (format!("Cuota {current}"), "Looks on GitHub for a newer release".to_owned()),
+        Status::Checking => (format!("Cuota {current}"), "Checking for updates…".to_owned()),
+        Status::UpToDate(at) => ("You're up to date".to_owned(), format!("Cuota {current}, last checked {}", checked(at))),
+        Status::Available(release) if release.installable() => (
+            format!("Cuota {} is out", release.version),
+            format!("You have {current}. Cuota restarts to update, and keeps your settings."),
+        ),
+        Status::Available(release) => {
+            (format!("Cuota {} is out", release.version), format!("You have {current}. Download it from its page."))
+        }
+        Status::Downloading(release, done) => {
+            (format!("Downloading Cuota {}", release.version), format!("{:.0}%", done * 100.0))
+        }
+        Status::Restarting(release) => (format!("Starting Cuota {}", release.version), "Just a moment".to_owned()),
+        Status::Failed { error, release: Some(release) } => (format!("Couldn't update to Cuota {}", release.version), error.clone()),
+        Status::Failed { error, release: None } => ("Couldn't check for updates".to_owned(), error.clone()),
+    };
+
+    // What the button does, and the release whose page it can also open.
+    let (install, release) = match &status {
+        Status::Available(release) | Status::Failed { release: Some(release), .. } => (release.installable(), Some(release)),
+        _ => (false, None),
+    };
+    let (glyph, label) = match (&status, install, release) {
+        (Status::Failed { .. }, true, _) => (icon::DOWNLOAD, "Try again"),
+        (_, true, _) => (icon::DOWNLOAD, "Update now"),
+        (_, false, Some(_)) => (icon::EXTERNAL, "Open release page"),
+        _ => (icon::REFRESH, "Check now"),
+    };
+    let link = install && release.is_some();
+    let link_width = if link { 28.0 + ui.spacing().item_spacing.x } else { 0.0 };
+    let width = widgets::button_width(ui, fonts, label) + link_width;
+    let busy = matches!(status, Status::Checking | Status::Downloading(..) | Status::Restarting(_));
+    widgets::setting(ui, fonts, icon::UPDATE, &title, Some(&about), width, |ui| {
+        let clicked = ui
+            .add_enabled_ui(!busy, |ui| {
+                if install && !matches!(status, Status::Failed { .. }) {
+                    widgets::accent_button(ui, fonts, glyph, label)
+                } else {
+                    widgets::button(ui, fonts, glyph, label)
+                }
+            })
+            .inner
+            .clicked();
+        if clicked {
+            match release {
+                Some(_) if install => updater.install(ui.ctx()),
+                Some(release) => win::open_page(&release.page),
+                None => updater.check(ui.ctx()),
+            }
+        }
+        if let Some(release) = release.filter(|_| link) {
+            let notes = widgets::icon_button(ui, fonts, icon::EXTERNAL, "What's new");
+            if notes.on_hover_text("What's new").clicked() {
+                win::open_page(&release.page);
+            }
+        }
+    });
+
+    let about = Some("Looks on GitHub for a new release once a day");
+    widgets::setting(ui, fonts, icon::REFRESH, "Check for updates automatically", about, widgets::TOGGLE_WIDTH, |ui| {
+        widgets::toggle(ui, &mut settings.check_updates);
+    });
+
+    let about = Some("What changed in each version");
+    let width = widgets::button_width(ui, fonts, "Open");
+    widgets::setting(ui, fonts, icon::LOG, "Release notes", about, width, |ui| {
+        let releases = format!("{REPOSITORY}/releases");
+        if widgets::button(ui, fonts, icon::EXTERNAL, "Open").on_hover_text(&releases).clicked() {
+            win::open_page(&releases);
+        }
+    });
+}
 
 /// A page of the settings window, picked in its sidebar.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -157,10 +242,12 @@ enum Page {
     Pet,
     /// How much of the limits each of Claude Code's tasks took, and on average.
     Usage,
+    /// Whether a new Cuota is out on GitHub, and updating to it.
+    Updates,
 }
 
 impl Page {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::General,
         Self::Appearance,
         Self::Sounds,
@@ -169,6 +256,7 @@ impl Page {
         Self::Taskbar,
         Self::Pet,
         Self::Usage,
+        Self::Updates,
     ];
 
     fn name(self) -> &'static str {
@@ -181,6 +269,7 @@ impl Page {
             Self::Taskbar => "Taskbar",
             Self::Pet => "Desktop pet",
             Self::Usage => "Usage",
+            Self::Updates => "Updates",
         }
     }
 
@@ -194,6 +283,7 @@ impl Page {
             Self::Taskbar => icon::TASKBAR.into(),
             Self::Pet => widgets::clawd_mark(ctx).into(),
             Self::Usage => icon::HISTORY.into(),
+            Self::Updates => icon::UPDATE.into(),
         }
     }
 }
@@ -411,6 +501,8 @@ pub struct Overlay {
     history: History,
     /// Clear history was clicked once, and waits for a second click to be sure.
     clearing: bool,
+    /// Looks for new releases of Cuota, and puts one in place.
+    updater: Updater,
 }
 
 impl Overlay {
@@ -491,6 +583,7 @@ impl Overlay {
             stats_asked: None,
             history: if demo { History::demo() } else { History::load() },
             clearing: false,
+            updater: Updater::new(!demo),
         }
     }
 
@@ -1136,9 +1229,23 @@ impl Overlay {
         if widgets::button(&mut slot, &self.fonts, icon::QUIT, "Quit Cuota").clicked() {
             ui.ctx().send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
-        let version = concat!("Cuota v", env!("CARGO_PKG_VERSION"));
         let font = FontId::proportional(12.0);
-        ui.painter().text(footer.right_center(), Align2::RIGHT_CENTER, version, font, widgets::SECONDARY);
+        // Once a new release is out, it says so, and a click goes to where it's installed.
+        let update = match self.updater.status() {
+            update::Status::Available(release) => Some(release.version),
+            _ => None,
+        };
+        let Some(update) = update else {
+            let version = concat!("Cuota v", env!("CARGO_PKG_VERSION"));
+            ui.painter().text(footer.right_center(), Align2::RIGHT_CENTER, version, font, widgets::SECONDARY);
+            return;
+        };
+        let text = format!("Update to v{update}");
+        let rect = ui.painter().text(footer.right_center(), Align2::RIGHT_CENTER, text, font, CLAUDE_ORANGE);
+        let response = ui.interact(rect.expand(4.0), ui.id().with("update"), Sense::click());
+        if response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Go to Updates").clicked() {
+            self.settings_page = Page::Updates;
+        }
     }
 
     /// The Claude spark and the account, with when usage was last fetched and a button to
@@ -1195,6 +1302,7 @@ impl Overlay {
             identify,
             history,
             clearing,
+            updater,
             ..
         } = self;
         let page = *page;
@@ -1460,6 +1568,7 @@ impl Overlay {
                     usage_history(ui, fonts, history, clearing);
                 }
             }
+            Page::Updates => update_cards(ui, fonts, settings, updater),
         }
     }
 }
@@ -1748,6 +1857,14 @@ impl eframe::App for Overlay {
         // Like the sounds, tasks are followed whether or not anything shows them.
         if self.history.update(&state, self.settings.track_usage, Utc::now()) && self.settings_open {
             ctx.request_repaint();
+        }
+
+        if let Some(due) = self.updater.tick(ctx, self.settings.check_updates) {
+            repaint_after(ctx, due);
+        }
+        // The new copy waits for this one to quit before it shows.
+        if matches!(self.updater.status(), update::Status::Restarting(_)) {
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
 
         // Titles, folders and the account come in whatever script they were written in.

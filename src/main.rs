@@ -17,6 +17,7 @@ mod sound;
 mod stats;
 mod status;
 mod tray;
+mod update;
 mod usage;
 mod vector;
 mod view;
@@ -27,12 +28,14 @@ use chrono::TimeDelta;
 use eframe::egui::{IconData, ViewportBuilder, WindowLevel};
 use settings::{Mode, Settings};
 use std::sync::Arc;
+use std::time::Duration;
 
 const USAGE: &str = "\
 Usage: cuota [--interval <seconds>] [--once] [--demo]
   --interval <s>  How often to refresh usage while Claude is in use (default 60, minimum 30)
   --once          Print usage to stdout and exit
-  --demo          Show the overlay with fake data";
+  --demo          Show the overlay with fake data
+  --updated       Wait for the Cuota this one replaced to quit (an update starts it so)";
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -55,11 +58,16 @@ fn main() -> eframe::Result {
         print_once();
         return Ok(());
     }
-    if !win::first_instance() {
+    // Started by an update, it takes over once the copy it replaces has quit.
+    let updated = flag(update::UPDATED);
+    if !win::first_instance(if updated { update::HANDOVER } else { Duration::ZERO }) {
         // Already running, say from startup: show that one's settings instead of a second copy.
         log::info!("Cuota was already running, so this copy opened its settings and quit");
         tray::open_running_settings();
         return Ok(());
+    }
+    if updated {
+        update::clean_up();
     }
     let interval = args
         .iter()

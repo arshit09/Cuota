@@ -342,6 +342,8 @@ pub struct Settings {
     pub panel_spots: BTreeMap<String, [f32; 2]>,
     /// Notes how much of each limit Claude Code's tasks use (see usage.rs).
     pub track_usage: bool,
+    /// Looks on GitHub for a new release of Cuota once a day (see update.rs).
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -364,6 +366,7 @@ impl Default for Settings {
             panel_monitors: BTreeSet::new(),
             panel_spots: BTreeMap::new(),
             track_usage: true,
+            check_updates: true,
         }
     }
 }

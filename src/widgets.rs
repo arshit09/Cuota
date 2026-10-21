@@ -67,6 +67,7 @@ pub mod icon {
     pub const CLEAR: char = '\u{E74D}';
     pub const DETAILS: char = '\u{E9D2}';
     pub const DOUBLE_CLICK: char = '\u{E962}';
+    pub const DOWNLOAD: char = '\u{E896}';
     /// Leads out of the app, as to a web page.
     pub const EXTERNAL: char = '\u{E8A7}';
     pub const FOLDER: char = '\u{E838}';
@@ -105,6 +106,8 @@ pub mod icon {
     pub const TIME_LEFT: char = '\u{E916}';
     /// Arrows either way: off to another monitor and back.
     pub const TRAVEL: char = '\u{E8AB}';
+    /// Windows Update's arrows going round.
+    pub const UPDATE: char = '\u{E895}';
     pub const WHEEL: char = '\u{ECE7}';
 }
 
@@ -1094,6 +1097,16 @@ pub fn button_width(ui: &Ui, fonts: &Fonts, label: &str) -> f32 {
 
 /// A button like Windows' standard ones, with an icon before its label.
 pub fn button(ui: &mut Ui, fonts: &Fonts, glyph: char, label: &str) -> Response {
+    any_button(ui, fonts, glyph, label, false)
+}
+
+/// A [`button`] in the accent color, for what a page is there to do, like Windows Update's
+/// Download and install.
+pub fn accent_button(ui: &mut Ui, fonts: &Fonts, glyph: char, label: &str) -> Response {
+    any_button(ui, fonts, glyph, label, true)
+}
+
+fn any_button(ui: &mut Ui, fonts: &Fonts, glyph: char, label: &str, accent: bool) -> Response {
     let text = control_text(ui, label);
     let icon = fonts.icon(14.0).map(|font| ui.painter().layout_no_wrap(glyph.into(), font, PRIMARY));
     let icon_width = icon.as_ref().map_or(0.0, |_| 14.0 + 8.0);
@@ -1101,14 +1114,21 @@ pub fn button(ui: &mut Ui, fonts: &Fonts, glyph: char, label: &str) -> Response 
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
     let pressed = response.is_pointer_button_down_on();
-    let fill = match (response.hovered(), pressed) {
-        (_, true) => CONTROL_PRESSED,
-        (true, false) => CONTROL_HOVER,
-        _ => CONTROL,
+    let (fill, edge) = match (accent, response.hovered(), pressed) {
+        (true, _, true) => (ACCENT.gamma_multiply(0.8), ACCENT),
+        (true, true, false) => (ACCENT.gamma_multiply(0.9), ACCENT),
+        (true, false, false) => (ACCENT, ACCENT),
+        (false, _, true) => (CONTROL_PRESSED, CONTROL_EDGE),
+        (false, true, false) => (CONTROL_HOVER, CONTROL_EDGE),
+        (false, false, false) => (CONTROL, CONTROL_EDGE),
     };
-    let color = if pressed { SECONDARY } else { PRIMARY };
+    let color = match (accent, pressed) {
+        (true, _) => ON_ACCENT,
+        (false, true) => SECONDARY,
+        (false, false) => PRIMARY,
+    };
     let painter = ui.painter();
-    painter.rect(rect, 4, fill, Stroke::new(1.0, CONTROL_EDGE), StrokeKind::Inside);
+    painter.rect(rect, 4, fill, Stroke::new(1.0, edge), StrokeKind::Inside);
     let mut x = rect.left() + 12.0;
     if let Some(icon) = icon {
         painter.galley(pos2(x, rect.center().y - icon.size().y / 2.0), icon, color);

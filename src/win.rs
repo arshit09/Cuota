@@ -279,13 +279,25 @@ pub fn process_alive(pid: u32) -> bool {
     }
 }
 
-/// Claims "one Cuota per sign-in" until the process exits. False when another Cuota has it.
-pub fn first_instance() -> bool {
+/// Claims "one Cuota per sign-in" until the process exits. False when another Cuota still has it
+/// after `wait`, as an updated copy waits for the one it replaces to quit.
+pub fn first_instance(wait: Duration) -> bool {
     let name = wide(r"Local\Cuota");
-    unsafe {
-        // The handle stays open, and so the name taken, for as long as this process runs.
-        let mutex = CreateMutexW(null(), 0, name.as_ptr());
-        mutex == 0 || GetLastError() != ERROR_ALREADY_EXISTS
+    let until = std::time::Instant::now() + wait;
+    loop {
+        unsafe {
+            // The handle stays open, and so the name taken, for as long as this process runs.
+            let mutex = CreateMutexW(null(), 0, name.as_ptr());
+            if mutex == 0 || GetLastError() != ERROR_ALREADY_EXISTS {
+                return true;
+            }
+            // Held open, it would keep the other copy's name taken after that one quits.
+            CloseHandle(mutex);
+        }
+        if std::time::Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
