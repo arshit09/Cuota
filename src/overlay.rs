@@ -50,7 +50,7 @@ pub(crate) const GLANCE_GAP: f32 = 6.0;
 /// screen has room, and resizable down to `SETTINGS_MIN`. A sidebar lists the pages, and the
 /// one shown runs no wider than `PAGE_WIDTH`.
 const SETTINGS_SIZE: Vec2 = vec2(800.0, 600.0);
-const SETTINGS_MIN: Vec2 = vec2(640.0, 460.0);
+const SETTINGS_MIN: Vec2 = vec2(640.0, 500.0);
 const SIDEBAR_WIDTH: f32 = 248.0;
 const PAGE_WIDTH: f32 = 760.0;
 /// The page's title, above what scrolls, and the room either side of the page.
@@ -140,8 +140,10 @@ fn custom_target(
 enum Page {
     /// Where Cuota shows, what double-clicking it does, and starting with Windows.
     General,
-    /// The panel's size and opacity, Clawd's animation, and the sound effects.
+    /// The panel's size and opacity, and Clawd's animation.
     Appearance,
+    /// The sound effects, how many there are, and a list to hear each one.
+    Sounds,
     /// What the panel shows.
     Panel,
     /// More the panel shows under its meters, and in what order.
@@ -153,12 +155,14 @@ enum Page {
 }
 
 impl Page {
-    const ALL: [Self; 6] = [Self::General, Self::Appearance, Self::Panel, Self::Details, Self::Taskbar, Self::Pet];
+    const ALL: [Self; 7] =
+        [Self::General, Self::Appearance, Self::Sounds, Self::Panel, Self::Details, Self::Taskbar, Self::Pet];
 
     fn name(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
+            Self::Sounds => "Sounds",
             Self::Panel => "Panel",
             Self::Details => "Details",
             Self::Taskbar => "Taskbar",
@@ -170,6 +174,7 @@ impl Page {
         match self {
             Self::General => icon::SETTINGS,
             Self::Appearance => icon::APPEARANCE,
+            Self::Sounds => icon::SOUND,
             Self::Panel => icon::PANEL,
             Self::Details => icon::DETAILS,
             Self::Taskbar => icon::TASKBAR,
@@ -1298,6 +1303,8 @@ impl Overlay {
                 widgets::setting(ui, fonts, icon::ANIMATE, "Animate Clawd", about, widgets::TOGGLE_WIDTH, |ui| {
                     widgets::toggle(ui, &mut settings.animate);
                 });
+            }
+            Page::Sounds => {
                 let about = Some("Pixel blips while Claude works");
                 widgets::setting(ui, fonts, icon::SOUND, "Sound effects", about, widgets::TOGGLE_WIDTH, |ui| {
                     widgets::toggle(ui, &mut settings.sounds);
