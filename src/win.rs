@@ -41,9 +41,9 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, EnumThreadWindows, GA_ROOT, GetAncestor,
     GetClassNameW, GetClientRect, GetCursorPos, GWL_EXSTYLE, GetForegroundWindow, GetMessageW, GetWindowLongW,
-    GetWindowRect, GetWindowTextW, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, IDOK, IDYES, IsWindow, IsZoomed,
-    MA_NOACTIVATE, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_YESNO, MONITORINFOF_PRIMARY, MSG,
-    MessageBoxW, STYLESTRUCT, SW_SHOWNORMAL,
+    GetWindowRect, GetWindowTextW, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, IDOK, IDYES, IsIconic, IsWindow,
+    IsWindowVisible, IsZoomed, MA_NOACTIVATE, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_YESNO,
+    MONITORINFOF_PRIMARY, MSG, MessageBoxW, STYLESTRUCT, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, ShowWindow,
     SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW,
     SetWindowPos, WINDOWPOS, WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED, WM_MOUSEACTIVATE,
     WM_NCCALCSIZE, WM_SIZE, WM_STYLECHANGING, WM_WINDOWPOSCHANGED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WindowFromPoint,
@@ -759,6 +759,42 @@ unsafe extern "system" fn on_window_event(_: HWINEVENTHOOK, _: u32, _: HWND, _: 
         }
         let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS;
         unsafe { SetWindowPos(front, HWND_BOTTOM, 0, 0, 0, 0, flags) };
+    }
+}
+
+/// Why a panel window that Cuota shows isn't on screen, if something else put it away: hidden,
+/// minimized, or moved off every monitor.
+pub fn put_away(window: HWND) -> Option<&'static str> {
+    unsafe {
+        if IsWindowVisible(window) == 0 {
+            Some("hidden")
+        } else if IsIconic(window) != 0 {
+            Some("minimized")
+        } else if MonitorFromWindow(window, MONITOR_DEFAULTTONULL) == 0 {
+            Some("off every monitor")
+        } else {
+            None
+        }
+    }
+}
+
+/// Brings back a panel window that something put away: shown again without taking focus, onto
+/// the nearest monitor's free area if it's off them all, and above other windows, or below
+/// them on the desktop.
+pub fn bring_back(window: HWND, on_top: bool) {
+    unsafe {
+        ShowWindow(window, SW_SHOWNOACTIVATE);
+        let mut flags = SWP_NOSIZE | SWP_NOACTIVATE;
+        let (mut x, mut y) = (0, 0);
+        if MonitorFromWindow(window, MONITOR_DEFAULTTONULL) == 0 {
+            let mut info: MONITORINFO = zeroed();
+            info.cbSize = size_of::<MONITORINFO>() as u32;
+            GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mut info);
+            (x, y) = (info.rcWork.left + 40, info.rcWork.top + 40);
+        } else {
+            flags |= SWP_NOMOVE;
+        }
+        SetWindowPos(window, if on_top { HWND_TOPMOST } else { HWND_BOTTOM }, x, y, 0, 0, flags);
     }
 }
 

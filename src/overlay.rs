@@ -1839,6 +1839,20 @@ impl eframe::App for Overlay {
         let placed = self.settings.pinned().is_some() && !self.hidden && !main.expanded && !main.placing && settled;
         self.main.dodge_pointer(ctx, self.settings.move_aside, placed);
 
+        // Kept on screen whatever puts it away, such as Windows signing in or another program.
+        // What hides it at sign-in isn't known yet, so the log says what was found.
+        if settled
+            && self.settings.pinned().is_some()
+            && !self.hidden
+            && !self.main.dodge.moving()
+            && let Some(window) = self.main.window
+            && let Some(away) = win::put_away(window)
+        {
+            log::warn!("Something left the panel {away}, so Cuota put it back on screen");
+            win::bring_back(window, self.settings.pinned() == Some(Mode::AlwaysOnTop));
+            ctx.request_repaint();
+        }
+
         // Sounds follow Claude's sessions, whether or not the panel shows. They're made in the
         // background as Cuota starts, or once they're turned on.
         if self.settings.sounds {

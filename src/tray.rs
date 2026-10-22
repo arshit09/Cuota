@@ -52,6 +52,9 @@ const APP_ID: u32 = 2;
 const TIMER: usize = 1;
 /// Without animation, icons are still refreshed this often to keep "resets in" tooltips current.
 const TOOLTIP_REFRESH_MS: u32 = 30_000;
+/// How soon to try again when Windows doesn't take an icon, as when Cuota starts at sign-in
+/// before the notification area is ready.
+const RETRY_MS: u32 = 2_000;
 const RED: Color32 = Color32::from_rgb(229, 72, 77);
 const AMBER: Color32 = Color32::from_rgb(232, 163, 61);
 
@@ -101,6 +104,7 @@ impl Tray {
                 shown: Vec::new(),
                 frame: 0,
                 timer: None,
+                missing: false,
                 taskbar_created,
             }));
             let _ = ready.send(window);
@@ -138,6 +142,8 @@ struct Icons {
     shown: Vec<(u32, Vec<u8>, String)>,
     frame: u32,
     timer: Option<u32>,
+    /// Windows didn't take an icon, which is tried again until it does.
+    missing: bool,
     /// Broadcast when Explorer restarts, which drops every tray icon.
     taskbar_created: u32,
 }
@@ -208,6 +214,7 @@ impl Icons {
         for id in gone {
             notify(self.window, NIM_DELETE, id, None);
         }
+        let mut missing = Vec::new();
         for (id, pixels, tip) in wanted {
             match self.shown.iter_mut().find(|s| s.0 == id) {
                 Some(shown) if shown.1 == pixels && shown.2 == tip => {}
@@ -215,14 +222,22 @@ impl Icons {
                     notify(self.window, NIM_MODIFY, id, Some((&pixels, size, &tip)));
                     *shown = (id, pixels, tip);
                 }
-                None => {
-                    notify(self.window, NIM_ADD, id, Some((&pixels, size, &tip)));
+                None if notify(self.window, NIM_ADD, id, Some((&pixels, size, &tip))) => {
                     self.shown.push((id, pixels, tip));
                 }
+                None => missing.push(id),
             }
         }
+        // Updates go out many times a minute, so only a missing icon is worth logging, once.
+        if !missing.is_empty() && !self.missing {
+            crate::log::warn!("Windows didn't add tray icons {missing:?}, so Cuota keeps trying");
+        } else if missing.is_empty() && self.missing {
+            crate::log::info!("Windows added the tray icons it didn't before");
+        }
+        self.missing = !missing.is_empty();
 
         let interval = match (animating, state.working) {
+            _ if self.missing => RETRY_MS,
             (true, true) => 250,
             (true, false) => 800,
             (false, _) => TOOLTIP_REFRESH_MS,
@@ -367,7 +382,8 @@ unsafe fn create_window() -> HWND {
 }
 
 /// Adds, updates or (with no `icon`) deletes tray icon `id`.
-fn notify(window: HWND, message: u32, id: u32, icon: Option<(&[u8], usize, &str)>) {
+/// Returns whether Windows did it.
+fn notify(window: HWND, message: u32, id: u32, icon: Option<(&[u8], usize, &str)>) -> bool {
     let mut data: NOTIFYICONDATAW = unsafe { zeroed() };
     data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
     data.hWnd = window;
@@ -383,14 +399,11 @@ fn notify(window: HWND, message: u32, id: u32, icon: Option<(&[u8], usize, &str)
         }
     }
     let done = unsafe { Shell_NotifyIconW(message, &data) } != 0;
-    // Updates go out many times a minute, so only a missing icon is worth logging.
-    if !done && message == NIM_ADD {
-        crate::log::warn!("Windows didn't add tray icon {id}");
-    }
     if handle != 0 {
         // Windows keeps its own copy.
         unsafe { DestroyIcon(handle) };
     }
+    done
 }
 
 /// An icon from straight-alpha RGBA pixels.
