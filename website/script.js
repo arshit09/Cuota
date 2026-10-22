@@ -833,21 +833,120 @@
     track.append(...[...track.children].map((child) => child.cloneNode(true)));
   }
 
-  // The newest release's version and size, from GitHub. The page shows v1.1.0 until then.
-  async function release() {
+  /* ---------- Releases ---------- */
+
+  const escape = (text) =>
+    text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+  // The bits of Markdown the release notes use: `code`, [links](https://…) and **bold**.
+  const inline = (text) =>
+    escape(text)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\[([^\]]+)\]\((https:\/\/[^)\s]+)\)/g, '<a href="$2">$1</a>')
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+
+  // A release's notes as a headline and blocks of HTML. The notes start with their date (the
+  // page shows published_at instead) and end with install steps after a ---, both left out.
+  function notes(body) {
+    const lines = (body || "").replace(/\r\n?/g, "\n").split("\n");
+    const end = lines.findIndex((line) => /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line));
+    let headline = "";
+    const blocks = [];
+    let paragraph = [];
+    let list = null;
+    const flush = () => {
+      if (paragraph.length) blocks.push(`<p>${inline(paragraph.join(" "))}</p>`);
+      if (list) blocks.push(`<ul class="px-list">${list.join("")}</ul>`);
+      paragraph = [];
+      list = null;
+    };
+    for (const raw of end < 0 ? lines : lines.slice(0, end)) {
+      const line = raw.trim();
+      let m;
+      if (!line || /^[A-Z][a-z]+ \d{1,2}, \d{4}$/.test(line)) {
+        flush();
+      } else if ((m = line.match(/^#{1,6}\s+(.*)$/))) {
+        flush();
+        if (headline) blocks.push(`<h4>${inline(m[1])}</h4>`);
+        else headline = m[1];
+      } else if ((m = line.match(/^\*\*([^*]+?)(?:\s*\((\d+)\))?\*\*:?$/))) {
+        flush();
+        const count = m[2] ? ` <span class="count">${m[2]}</span>` : "";
+        blocks.push(`<h4>${escape(m[1])}${count}</h4>`);
+      } else if ((m = line.match(/^[*-]\s+(.*)$/))) {
+        if (paragraph.length) flush();
+        (list ||= []).push(`<li>${inline(m[1])}</li>`);
+      } else if (list) {
+        // A bullet that wraps onto the next line.
+        list[list.length - 1] = list[list.length - 1].replace(/<\/li>$/, ` ${inline(line)}</li>`);
+      } else {
+        paragraph.push(line);
+      }
+    }
+    flush();
+    return { headline, html: blocks.join("") };
+  }
+
+  const SHOWN = 5;
+
+  function changelog(list, latest) {
+    const box = $("[data-releases]");
+    if (!box) return;
+    const items = list.filter((r) => !r.draft).map((r, i) => {
+      const { headline, html } = notes(r.body);
+      const when = new Date(r.published_at || r.created_at);
+      const date = when.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+      const tags = [
+        r === latest ? '<span class="tag tag-latest">Latest</span>' : "",
+        r.prerelease ? '<span class="tag">Pre-release</span>' : "",
+      ].join("");
+      return `<details class="release"${i === 0 ? " open" : ""}${i >= SHOWN ? " hidden" : ""}>
+        <summary>
+          <span class="release-version">${escape(r.tag_name)}</span>
+          <span class="release-title">${inline(headline || r.name || r.tag_name)}${tags}</span>
+          <time datetime="${escape(when.toISOString())}">${date}</time>
+        </summary>
+        <div class="release-notes">${html}<p class="release-link"><a href="${escape(r.html_url)}">${escape(r.tag_name)} on GitHub</a></p></div>
+      </details>`;
+    });
+    if (!items.length) {
+      box.innerHTML = '<p class="releases-note">No releases yet.</p>';
+      return;
+    }
+    const older = items.length - SHOWN;
+    box.innerHTML =
+      items.join("") +
+      (older > 0
+        ? `<button class="btn btn-sm btn-ghost releases-older" type="button">Show ${older} older release${older > 1 ? "s" : ""}</button>`
+        : "");
+    $(".releases-older", box)?.addEventListener("click", (e) => {
+      $$(".release[hidden]", box).forEach((el) => (el.hidden = false));
+      e.currentTarget.remove();
+    });
+  }
+
+  // Every release from GitHub, for the changelog and the newest one's version and size. The
+  // page shows v1.1.0 until then.
+  async function releases() {
+    const box = $("[data-releases]");
     try {
-      const response = await fetch("https://api.github.com/repos/arshit09/Cuota/releases/latest", {
+      const response = await fetch("https://api.github.com/repos/arshit09/Cuota/releases?per_page=100", {
         headers: { Accept: "application/vnd.github+json" },
       });
-      if (!response.ok) return;
-      const latest = await response.json();
+      if (!response.ok) throw new Error(response.status);
+      const list = await response.json();
+      const latest = list.find((r) => !r.draft && !r.prerelease);
+      changelog(list, latest);
+      if (!latest) return;
       const exe = (latest.assets || []).find((asset) => asset.name === "Cuota.exe");
       if (latest.tag_name) $$("[data-release-version]").forEach((el) => (el.textContent = latest.tag_name));
       if (exe) {
         const size = `${(exe.size / 1048576).toFixed(1)} MB`;
         $$("[data-release-size]").forEach((el) => (el.textContent = size));
       }
-    } catch {}
+    } catch {
+      if (box) box.innerHTML = '<p class="releases-note">Couldn\'t reach GitHub just now.</p>';
+    }
   }
 
   heroPanel();
@@ -857,5 +956,5 @@
   reveals();
   wave();
   ticker();
-  release();
+  releases();
 })();
