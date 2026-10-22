@@ -26,7 +26,7 @@ use crate::widgets::{self, Fonts, NavIcon, SortRow, Sorted, icon, single_line};
 use crate::win;
 use chrono::{TimeDelta, Utc};
 use eframe::egui::{
-    self, Align, Align2, Color32, FontData, FontFamily, FontId, IconData, Id, Label, Layout, Margin, MouseWheelUnit,
+    self, Align2, Color32, FontData, FontFamily, FontId, IconData, Id, Label, Margin, MouseWheelUnit,
     PointerButton, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId, WindowLevel, pos2, vec2,
 };
@@ -1191,7 +1191,7 @@ impl Overlay {
         });
     }
 
-    /// A sidebar with the account, the pages, GitHub and Quit, beside the page picked in it, as in
+    /// A sidebar with the account, the pages and GitHub, beside the page picked in it, as in
     /// Windows' Settings: the page's title stays put while its settings scroll under it. Returns
     /// how tall the page is, whether or not the window has room for all of it.
     fn settings_ui(&mut self, ui: &mut egui::Ui, state: &State) -> f32 {
@@ -1221,7 +1221,8 @@ impl Overlay {
         PAGE_TITLE + scroll.content_size.y
     }
 
-    /// The account on top, then the pages, and a link to Cuota's GitHub over Quit at the bottom.
+    /// The account on top, then the pages, and a link to Cuota's GitHub over its version at the
+    /// bottom. Quitting is left to the tray icon's menu.
     fn settings_sidebar(&mut self, ui: &mut egui::Ui, state: &State) {
         self.settings_account(ui, state);
         ui.add_space(20.0);
@@ -1233,17 +1234,15 @@ impl Overlay {
         }
 
         let bottom = ui.max_rect();
-        let footer = Rect::from_min_max(pos2(bottom.left(), bottom.bottom() - 32.0), bottom.max);
+        let footer = Rect::from_min_max(pos2(bottom.left(), bottom.bottom() - 20.0), bottom.max);
         let link = Rect::from_min_size(pos2(bottom.left(), footer.top() - 8.0 - 36.0), vec2(bottom.width(), 36.0));
         let mut slot = ui.new_child(UiBuilder::new().max_rect(link));
         let github = widgets::nav_link(&mut slot, &self.fonts, widgets::github_mark(ui.ctx()), "View on GitHub");
         if github.on_hover_text(REPOSITORY).clicked() {
             win::open_page(REPOSITORY);
         }
-        let mut slot = ui.new_child(UiBuilder::new().max_rect(footer).layout(Layout::left_to_right(Align::Center)));
-        if widgets::button(&mut slot, &self.fonts, icon::QUIT, "Quit Cuota").clicked() {
-            ui.ctx().send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
-        }
+        // Lined up with the entries' icons.
+        let version_at = pos2(footer.left() + 14.0, footer.center().y);
         let font = FontId::proportional(12.0);
         // Once a new release is out, it says so, and a click goes to where it's installed.
         let update = match self.updater.status() {
@@ -1252,11 +1251,11 @@ impl Overlay {
         };
         let Some(update) = update else {
             let version = concat!("Cuota v", env!("CARGO_PKG_VERSION"));
-            ui.painter().text(footer.right_center(), Align2::RIGHT_CENTER, version, font, widgets::SECONDARY);
+            ui.painter().text(version_at, Align2::LEFT_CENTER, version, font, widgets::SECONDARY);
             return;
         };
         let text = format!("Update to v{update}");
-        let rect = ui.painter().text(footer.right_center(), Align2::RIGHT_CENTER, text, font, CLAUDE_ORANGE);
+        let rect = ui.painter().text(version_at, Align2::LEFT_CENTER, text, font, CLAUDE_ORANGE);
         let response = ui.interact(rect.expand(4.0), ui.id().with("update"), Sense::click());
         if response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Go to Updates").clicked() {
             self.settings_page = Page::Updates;
