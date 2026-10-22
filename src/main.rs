@@ -17,6 +17,7 @@ mod settings;
 mod sound;
 mod stats;
 mod status;
+mod theme;
 mod tray;
 mod update;
 mod usage;

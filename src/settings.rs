@@ -40,6 +40,19 @@ pub enum SoundMode {
     Lively,
 }
 
+/// The panel's colors (see theme.rs). The settings window stays dark whichever is picked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Theme {
+    /// Light text on a dark panel, as Cuota always was.
+    #[default]
+    Dark,
+    /// Dark text on a light panel.
+    Light,
+    /// Light or dark as Windows' apps are (Settings > Colors > default app mode), changing
+    /// along with it.
+    Windows,
+}
+
 /// What double-clicking the panel does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DoubleClick {
@@ -316,6 +329,8 @@ pub struct Settings {
     pub sounds: bool,
     pub sound_mode: SoundMode,
     pub opacity: f32,
+    /// The panel's colors, which the desktop pet's card shares.
+    pub theme: Theme,
     /// How big the panel is: one of [`SIZES`].
     pub size: f32,
     /// Scrolling the mouse wheel over the panel steps its size up and down.
@@ -354,6 +369,7 @@ impl Default for Settings {
             sounds: true,
             sound_mode: SoundMode::Normal,
             opacity: 0.96,
+            theme: Theme::Dark,
             size: 1.0,
             wheel_resize: true,
             move_aside: false,
@@ -692,5 +708,15 @@ mod tests {
         let on = Settings { move_aside: true, ..Settings::default() };
         let text = serde_json::to_string(&on).unwrap();
         assert!(serde_json::from_str::<Settings>(&text).unwrap().move_aside);
+    }
+
+    #[test]
+    fn the_panel_stays_dark_until_another_theme_is_picked_even_in_older_settings() {
+        let older: Settings = serde_json::from_str(r#"{"opacity":0.8}"#).unwrap();
+        assert_eq!(older.theme, Theme::Dark);
+        for theme in [Theme::Light, Theme::Windows] {
+            let text = serde_json::to_string(&Settings { theme, ..Settings::default() }).unwrap();
+            assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().theme, theme);
+        }
     }
 }

@@ -13,14 +13,15 @@ use crate::mascot::{CLAUDE_ORANGE, Mascot};
 use crate::monitors::{self, Identify, Screen};
 use crate::pet::{self, Pet};
 use crate::scripts::{self, Scripts};
-use crate::settings::{DoubleClick, Mode, SIZES, Settings, SoundMode, Style, View, size_step};
+use crate::settings::{DoubleClick, Mode, SIZES, Settings, SoundMode, Style, Theme, View, size_step};
 use crate::sound::{self, Cues};
 use crate::stats::Transcripts;
 use crate::status::Status;
+use crate::theme::Palette;
 use crate::tray::{Tray, TrayConfig, TrayEvent};
 use crate::update::{self, Updater};
 use crate::usage::{self, History, Task};
-use crate::view::{self, AMBER, DIM, TEXT};
+use crate::view;
 use crate::widgets::{self, Fonts, NavIcon, SortRow, Sorted, icon, single_line};
 use crate::win;
 use chrono::{TimeDelta, Utc};
@@ -93,9 +94,6 @@ pub(crate) const MONITOR_CHECK: Duration = Duration::from_secs(2);
 /// How often a panel window dropped off its monitor looks again for the mouse button's release,
 /// to go back onto it.
 const RELEASE_CHECK: Duration = Duration::from_millis(100);
-
-pub(crate) const BG: Color32 = Color32::from_rgb(28, 28, 30);
-pub(crate) const BORDER: Color32 = Color32::from_rgb(56, 56, 60);
 
 /// The card under a Custom double-click: what it opens, and a Browse button to pick it. The
 /// Open dialog runs on a thread of its own, so what it picked arrives on a later frame.
@@ -503,6 +501,9 @@ pub struct Overlay {
     clearing: bool,
     /// Looks for new releases of Cuota, and puts one in place.
     updater: Updater,
+    /// Whether Windows' apps are in light mode, as last read, for the panel's Windows theme.
+    /// Read again whenever Windows says a setting changed.
+    light_windows: bool,
 }
 
 impl Overlay {
@@ -584,7 +585,13 @@ impl Overlay {
             history: if demo { History::demo() } else { History::load() },
             clearing: false,
             updater: Updater::new(!demo),
+            light_windows: win::light_apps(),
         }
+    }
+
+    /// The panel's colors, as picked under Appearance.
+    fn palette(&self) -> &'static Palette {
+        Palette::of(self.settings.theme, self.light_windows)
     }
 
     /// Sets the window up for a newly chosen set of modes.
@@ -926,22 +933,23 @@ impl Overlay {
         // Everything but the details is drawn at the chosen size.
         let scale = self.settings.size;
         let margin = MARGIN * scale;
-        let alpha = (self.settings.opacity * 255.0) as u8;
-        painter.rect_filled(full, CORNER * scale, Color32::from_rgba_unmultiplied(BG.r(), BG.g(), BG.b(), alpha));
-        painter.rect_stroke(full, CORNER * scale, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+        let palette = self.palette();
+        painter.rect_filled(full, CORNER * scale, palette.background(self.settings.opacity));
+        painter.rect_stroke(full, CORNER * scale, Stroke::new(1.0, palette.border), StrokeKind::Inside);
 
         // Lay everything out first so the window can be sized to fit.
         let view = &self.settings.panel;
         let now = Utc::now();
         let limits: Vec<&Limit> = state.limits.iter().filter(|l| view.shows(&l.label)).collect();
-        let builder = view::Builder { painter: &painter, strong: &self.fonts.strong, view, now, scale };
+        let builder = view::Builder { painter: &painter, strong: &self.fonts.strong, view, palette, now, scale };
         let meters = builder.build(&limits);
         let width = meters.size.x.max(NOTE_WIDTH * scale);
-        let note = note(state).map(|(text, color)| painter.layout(text, FontId::proportional(12.0 * scale), color, width));
+        let font = FontId::proportional(12.0 * scale);
+        let note = note(state, palette).map(|(text, color)| painter.layout(text, font, color, width));
         // Whatever more was picked to show under them.
         let stats = self.transcripts.latest();
         let source = glance::Source { state, stats: stats.as_deref(), limits: &limits, now };
-        let glance = glance::Builder { painter: &painter, source, scale, width }.build(view.details.shown());
+        let glance = glance::Builder { painter: &painter, source, palette, scale, width }.build(view.details.shown());
         // Clawd's status, when it shows, heads the meters.
         let animate = self.settings.animate;
         let status = view.clawd && view.status;
@@ -1003,14 +1011,14 @@ impl Overlay {
         let body_at = origin + vec2(clawd.x + gap, (row.y - body.y) / 2.0);
         if status {
             let working = self.clawd.status().1;
-            let next = self.status.paint(&painter, body_at, working, animate, scale);
+            let next = self.status.paint(&painter, body_at, working, animate, scale, palette);
             next_frame = next_frame.into_iter().chain(next).min();
         }
         let meters_at = body_at + vec2(0.0, status_size.y + status_gap);
         let mut below = meters_at.y + meters.size.y + note_gap;
         let mut hints = meters.paint(&painter, meters_at);
         if let Some(note) = note {
-            painter.galley(pos2(body_at.x, below), note, TEXT);
+            painter.galley(pos2(body_at.x, below), note, palette.text);
             below += note_size.y;
         }
         hints.extend(glance.paint(&painter, pos2(body_at.x, below + glance_gap)));
@@ -1019,8 +1027,13 @@ impl Overlay {
         }
 
         if let Some(area) = details {
-            painter.hline(full.left() + margin..=full.right() - margin, area.top() + 6.0, Stroke::new(1.0, BORDER));
+            painter.hline(full.left() + margin..=full.right() - margin, area.top() + 6.0, Stroke::new(1.0, palette.border));
             let mut slot = ui.new_child(UiBuilder::new().max_rect(area));
+            // A scroll bar that shows up on a light panel. Hover text stays dark: egui gives
+            // all windows one style for it.
+            if *palette == Palette::LIGHT {
+                slot.style_mut().visuals = egui::Visuals::light();
+            }
             // Dragging anywhere moves the panel, so the details scroll by wheel and scroll bar.
             let scroll_by = egui::scroll_area::ScrollSource { drag: egui::scroll_area::ScrollSource::NONE.drag, ..Default::default() };
             let scroll = egui::ScrollArea::vertical()
@@ -1030,7 +1043,8 @@ impl Overlay {
                 .scroll_source(scroll_by)
                 .show(&mut slot, |ui| {
                     let lane = Margin { right: SCROLL_LANE as i8, ..Margin::ZERO };
-                    egui::Frame::new().inner_margin(lane).show(ui, |ui| details::ui(ui, &self.fonts, state, stats.as_deref()));
+                    let details = |ui: &mut egui::Ui| details::ui(ui, &self.fonts, palette, state, stats.as_deref());
+                    egui::Frame::new().inner_margin(lane).show(ui, details);
                 });
             let height = scroll.content_size.y.ceil();
             if (height - window.details_height).abs() >= 1.0 {
@@ -1118,6 +1132,7 @@ impl Overlay {
             pet: self.settings.pet.clone(),
             animate: self.settings.animate,
             opacity: self.settings.opacity,
+            palette: *self.palette(),
             double_click: self.settings.double_click,
             custom_target: self.settings.custom_target.clone(),
         };
@@ -1303,6 +1318,7 @@ impl Overlay {
             history,
             clearing,
             updater,
+            light_windows,
             ..
         } = self;
         let page = *page;
@@ -1429,6 +1445,16 @@ impl Overlay {
                 widgets::setting(ui, fonts, icon::OPACITY, "Opacity", Some("Panel background"), SLIDER_ROW, |ui| {
                     value_label(ui, opacity);
                     widgets::slider(ui, &mut settings.opacity, 0.3..=1.0, SLIDER_WIDTH);
+                });
+                let themes = [(Theme::Dark, "Dark"), (Theme::Light, "Light"), (Theme::Windows, "Use Windows setting")];
+                let width = widgets::dropdown_width(ui, &themes.map(|(_, name)| name));
+                let about = match settings.theme {
+                    Theme::Windows if *light_windows => "Light now, as Windows' apps are",
+                    Theme::Windows => "Dark now, as Windows' apps are",
+                    _ => "Panel colors",
+                };
+                widgets::setting(ui, fonts, icon::THEME, "Theme", Some(about), width, |ui| {
+                    widgets::dropdown(ui, fonts, &mut settings.theme, &themes, width);
                 });
                 let about = Some("Turn off to use almost no CPU");
                 widgets::setting(ui, fonts, icon::ANIMATE, "Animate Clawd", about, widgets::TOGGLE_WIDTH, |ui| {
@@ -1798,6 +1824,11 @@ impl eframe::App for Overlay {
                     ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
                     continue;
                 }
+                // Light or dark mode may have changed, for the Windows theme to follow.
+                TrayEvent::WindowsSettings => {
+                    self.light_windows = win::light_apps();
+                    continue;
+                }
             };
             if details {
                 if !self.main.expanded {
@@ -2030,11 +2061,12 @@ pub(crate) fn repaint_after(ctx: &egui::Context, wait: Duration) {
     ctx.request_repaint_after(wait + frame);
 }
 
-/// A status line under the meters: the last error, or "Loading..." before any data.
-pub(crate) fn note(state: &State) -> Option<(String, Color32)> {
+/// A status line under the meters, in `palette`'s colors: the last error, or "Loading..."
+/// before any data.
+pub(crate) fn note(state: &State, palette: &Palette) -> Option<(String, Color32)> {
     match (&state.error, state.limits.is_empty()) {
-        (Some(error), _) => Some((error.clone(), AMBER)),
-        (None, true) => Some(("Loading...".into(), DIM)),
+        (Some(error), _) => Some((error.clone(), palette.amber)),
+        (None, true) => Some(("Loading...".into(), palette.dim)),
         (None, false) => None,
     }
 }
@@ -2262,6 +2294,46 @@ mod tests {
             assert!(panel_size(&ctx, &mut overlay, &state).y > (animations::SIZE.y + 2.0 * MARGIN) * size);
         }
         assert!(grown.windows(2).all(|pair| pair[0] < pair[1]), "they scale with the panel: {grown:?}");
+    }
+
+    /// The panel's background, and everything it and its details write, are in the colors of
+    /// the theme picked, the Windows one following Windows.
+    #[test]
+    fn the_panel_and_its_details_draw_in_the_theme_picked() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        overlay.main.set_expanded(true);
+        let themes = [
+            (Theme::Dark, true, Palette::DARK),
+            (Theme::Light, false, Palette::LIGHT),
+            (Theme::Windows, true, Palette::LIGHT),
+            (Theme::Windows, false, Palette::DARK),
+        ];
+        for (theme, light_windows, palette) in themes {
+            overlay.settings.theme = theme;
+            overlay.light_windows = light_windows;
+            // The second frame has the details' height from the first.
+            let _ = ctx.run_ui(window(vec2(1600.0, 1200.0)), |ui| {
+                overlay.main_panel(ui, &state);
+            });
+            let output = ctx.run_ui(window(vec2(1600.0, 1200.0)), |ui| {
+                overlay.main_panel(ui, &state);
+            });
+            let background = palette.background(overlay.settings.opacity);
+            let filled = |shape: &egui::Shape| matches!(shape, egui::Shape::Rect(rect) if rect.fill == background);
+            assert!(output.shapes.iter().any(|clipped| filled(&clipped.shape)), "{theme:?} has no {background:?}");
+            let colors = [palette.text, palette.dim, palette.amber, palette.red, CLAUDE_ORANGE];
+            let mut texts = 0;
+            for clipped in &output.shapes {
+                if let egui::Shape::Text(text) = &clipped.shape {
+                    texts += 1;
+                    for section in &text.galley.job.sections {
+                        let color = section.format.color;
+                        assert!(colors.contains(&color), "{:?} is in {color:?} in {theme:?}", text.galley.text());
+                    }
+                }
+            }
+            assert!(texts > 20, "the details show too: {texts} texts");
+        }
     }
 
     #[test]

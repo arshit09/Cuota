@@ -16,16 +16,17 @@ use crate::animations::{Act, BODY, Clawd, FRAME, Mood, Rng, SCALE};
 use crate::claude::{Limit, State};
 use crate::glance;
 use crate::monitors::{self, Screen};
-use crate::overlay::{BG, BORDER, CORNER, FRAME_TIME, GLANCE_GAP, MARGIN, MONITOR_CHECK, NOTE_WIDTH, note, repaint_after};
+use crate::overlay::{CORNER, FRAME_TIME, GLANCE_GAP, MARGIN, MONITOR_CHECK, NOTE_WIDTH, note, repaint_after};
 use crate::settings::{self, DoubleClick, View};
 use crate::stats::Stats;
 use crate::status::Status;
-use crate::view::{self, TEXT};
+use crate::theme::Palette;
+use crate::view;
 use crate::widgets::Fonts;
 use crate::win;
 use eframe::egui::{
-    Color32, Context, FontId, Galley, Painter, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
-    ViewportBuilder, ViewportId, WindowLevel, pos2, vec2,
+    Context, FontId, Galley, Painter, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, ViewportBuilder,
+    ViewportId, WindowLevel, pos2, vec2,
 };
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -99,8 +100,6 @@ const LINGER: Duration = Duration::from_millis(400);
 /// Room for his status under him, in points at his usual size, and from his feet to it.
 const STATUS_ROOM: f32 = 200.0;
 const STATUS_GAP: f32 = 2.0;
-/// Around his status, so it reads over anything.
-const RIM: Color32 = Color32::from_black_alpha(200);
 /// Between him and his card, in points at his usual size.
 const CARD_GAP: f32 = 10.0;
 /// Between his eyes, in GIF pixels.
@@ -736,6 +735,8 @@ pub struct Given {
     pub animate: bool,
     /// The panel's opacity, which his card shares.
     pub opacity: f32,
+    /// The panel's colors, which his card and status share.
+    pub palette: Palette,
     pub double_click: DoubleClick,
     pub custom_target: String,
 }
@@ -751,6 +752,7 @@ impl Given {
             && self.pet == other.pet
             && self.animate == other.animate
             && self.opacity == other.opacity
+            && self.palette == other.palette
             && self.double_click == other.double_click
             && self.custom_target == other.custom_target
     }
@@ -836,12 +838,10 @@ struct Inner {
 
 impl Pet {
     pub fn new(ctx: &Context, fonts: &Fonts, given: Given) -> Self {
-        let mut status = Status::new();
-        status.outline = Some(RIM);
         let home = start(&given.pet);
         let inner = Inner {
             clawd: Clawd::roaming(ctx),
-            status,
+            status: Status::new(),
             roam: Roam::new(Rng::new()),
             hover: Hover::default(),
             given,
@@ -1118,7 +1118,10 @@ impl Inner {
             let line = Rect::from_min_size(pos2(left, origin.y + status_top), status_size);
             self.status_rect = Some(line);
             let lively = self.clawd.status().1;
-            let status_next = self.status.paint(&painter, line.min, lively, animate, size);
+            // With a rim around it, so it reads over anything.
+            let palette = self.given.palette;
+            self.status.outline = Some(palette.rim);
+            let status_next = self.status.paint(&painter, line.min, lively, animate, size, &palette);
             next = next.into_iter().chain(status_next).min();
         }
 
@@ -1233,12 +1236,13 @@ impl Inner {
         let view = &given.pet.card;
         let now = chrono::Utc::now();
         let limits: Vec<&Limit> = given.state.limits.iter().filter(|limit| view.shows(&limit.label)).collect();
-        let meters = view::Builder { painter, strong: &self.fonts.strong, view, now, scale }.build(&limits);
+        let palette = &given.palette;
+        let meters = view::Builder { painter, strong: &self.fonts.strong, view, palette, now, scale }.build(&limits);
         let width = meters.size.x.max(NOTE_WIDTH * scale);
         let font = FontId::proportional(12.0 * scale);
-        let note = note(&given.state).map(|(text, color)| painter.layout(text, font, color, width));
+        let note = note(&given.state, palette).map(|(text, color)| painter.layout(text, font, color, width));
         let source = glance::Source { state: &given.state, stats: given.stats.as_deref(), limits: &limits, now };
-        let glance = glance::Builder { painter, source, scale, width }.build(view.details.shown());
+        let glance = glance::Builder { painter, source, palette, scale, width }.build(view.details.shown());
         let note_size = note.as_ref().map_or(Vec2::ZERO, |note| note.size());
         let note_gap = if note.is_some() && meters.size.y > 0.0 { 4.0 * scale } else { 0.0 };
         let head = meters.size.y + note_gap + note_size.y;
@@ -1250,15 +1254,15 @@ impl Inner {
     }
 
     fn paint_card(&self, painter: &Painter, card: Card, rect: Rect, scale: f32) {
-        let alpha = (self.given.opacity * 255.0) as u8;
-        painter.rect_filled(rect, CORNER * scale, Color32::from_rgba_unmultiplied(BG.r(), BG.g(), BG.b(), alpha));
-        painter.rect_stroke(rect, CORNER * scale, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+        let palette = &self.given.palette;
+        painter.rect_filled(rect, CORNER * scale, palette.background(self.given.opacity));
+        painter.rect_stroke(rect, CORNER * scale, Stroke::new(1.0, palette.border), StrokeKind::Inside);
         let at = rect.min + Vec2::splat(card.margin);
         let mut below = at.y + card.meters.size.y + card.note_gap;
         let _ = card.meters.paint(painter, at);
         if let Some(note) = card.note {
             let height = note.size().y;
-            painter.galley(pos2(at.x, below), note, TEXT);
+            painter.galley(pos2(at.x, below), note, palette.text);
             below += height;
         }
         let _ = card.glance.paint(painter, pos2(at.x, below + card.glance_gap));

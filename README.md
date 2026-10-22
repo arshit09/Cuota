@@ -18,7 +18,7 @@ Clawd, the Claude Code mascot, acts out a random activity while Claude works: a 
 
 <img src="docs/screenshots/moods.png" width="776" alt="Four panels, each with its word above the bars: Clawd running commands in sunglasses (Wrangling…), drinking coffee while he waits (Lollygagging…), asleep in a nightcap (Snoozing…), and celebrating under confetti (Nailed it!)">
 
-**Make it yours**: rings instead of bars, Clawd without his status line, or just the meters.
+**Make it yours**: rings instead of bars, a light panel instead of a dark one, Clawd without his status line, or just the meters.
 
 <p>
   <img src="docs/screenshots/panel-pie.png" width="286" alt="The panel with a ring per limit, showing its percentage inside and the time left underneath">
@@ -134,7 +134,7 @@ Drag the panel to move it. Always on top and Desktop are the same panel, so only
 
 **Move aside for the pointer** (in General, off at first): to click something behind the panel, just head for it. When the pointer slows down coming toward the panel, as it does before a click, the panel slides out of the way, and it slides back once the pointer has left its spot. Passing quickly over it, or idling beside it, leaves it where it is. To use the panel itself, hold **Ctrl** as you point at it; it then stays put until the pointer leaves it.
 
-Settings has a page for each part, picked in its sidebar: **General** (Show as, Monitors, Double-click, Move aside for the pointer, Start with Windows), **Appearance** (the panel's size and opacity, and Clawd's animation), **Sounds** (8-bit sound effects: Normal plays only what matters, like work starting, Claude asking you something and work finishing, while Lively adds a sound for each kind of step; a list plays each one so you can learn them), **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel, **Desktop pet** (above), **Usage**, and **Updates** (check now, update to a new release, or turn off the daily check). **View on GitHub**, at the foot of the sidebar, opens this repository.
+Settings has a page for each part, picked in its sidebar: **General** (Show as, Monitors, Double-click, Move aside for the pointer, Start with Windows), **Appearance** (the panel's size and opacity, its theme: Dark, Light, or light or dark as Windows' apps are, and Clawd's animation), **Sounds** (8-bit sound effects: Normal plays only what matters, like work starting, Claude asking you something and work finishing, while Lively adds a sound for each kind of step; a list plays each one so you can learn them), **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel, **Desktop pet** (above), **Usage**, and **Updates** (check now, update to a new release, or turn off the daily check). **View on GitHub**, at the foot of the sidebar, opens this repository.
 
 Tips:
 

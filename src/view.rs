@@ -3,17 +3,11 @@
 
 use crate::claude::{self, Limit};
 use crate::settings::{Style, View};
+use crate::theme::Palette;
 use chrono::{DateTime, Local, Utc};
 use eframe::egui::{Align2, Color32, FontFamily, FontId, Galley, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use std::f32::consts::TAU;
 use std::sync::Arc;
-
-pub const TEXT: Color32 = Color32::from_rgb(232, 232, 232);
-pub const DIM: Color32 = Color32::from_rgb(150, 150, 156);
-pub const AMBER: Color32 = Color32::from_rgb(232, 163, 61);
-pub const RED: Color32 = Color32::from_rgb(229, 72, 77);
-pub const TRACK: Color32 = Color32::from_rgb(64, 64, 70);
-const FILL: Color32 = Color32::from_rgb(200, 200, 204);
 
 pub struct Meters {
     pub size: Vec2,
@@ -37,25 +31,26 @@ impl Meters {
         Self { size: Vec2::ZERO, shapes: Vec::new(), hints: Vec::new() }
     }
 
+    /// Places text laid out in its colors.
     fn text(&mut self, galley: &Arc<Galley>, anchor: Align2, at: Pos2) {
         let rect = anchor.anchor_size(at, galley.size());
-        self.shapes.push(Shape::galley(rect.min, galley.clone(), TEXT));
+        self.shapes.push(Shape::galley(rect.min, galley.clone(), Color32::PLACEHOLDER));
     }
 
-    fn bar(&mut self, track: Rect, percent: f32) {
+    fn bar(&mut self, track: Rect, percent: f32, palette: &Palette) {
         let radius = track.height() / 2.0;
-        self.shapes.push(Shape::rect_filled(track, radius, TRACK));
+        self.shapes.push(Shape::rect_filled(track, radius, palette.track));
         let fraction = (percent / 100.0).clamp(0.0, 1.0);
         if fraction > 0.0 {
             let mut fill = track;
             fill.set_width((track.width() * fraction).max(track.height()));
-            self.shapes.push(Shape::rect_filled(fill, radius, level(percent)));
+            self.shapes.push(Shape::rect_filled(fill, radius, palette.level(percent)));
         }
     }
 
     /// A ring filling clockwise from the top.
-    fn ring(&mut self, center: Pos2, radius: f32, width: f32, percent: f32) {
-        self.shapes.push(Shape::circle_stroke(center, radius, Stroke::new(width, TRACK)));
+    fn ring(&mut self, center: Pos2, radius: f32, width: f32, percent: f32, palette: &Palette) {
+        self.shapes.push(Shape::circle_stroke(center, radius, Stroke::new(width, palette.track)));
         let fraction = (percent / 100.0).clamp(0.0, 1.0);
         if fraction > 0.0 {
             let steps = (64.0 * fraction).ceil().max(2.0) as usize;
@@ -65,7 +60,7 @@ impl Meters {
                     center + radius * vec2(angle.cos(), angle.sin())
                 })
                 .collect();
-            self.shapes.push(Shape::line(points, Stroke::new(width, level(percent))));
+            self.shapes.push(Shape::line(points, Stroke::new(width, palette.level(percent))));
         }
     }
 
@@ -82,6 +77,7 @@ pub struct Builder<'a> {
     pub painter: &'a Painter,
     pub strong: &'a FontFamily,
     pub view: &'a View,
+    pub palette: &'a Palette,
     pub now: DateTime<Utc>,
     /// How big to draw: 1 is the original size.
     pub scale: f32,
@@ -100,7 +96,7 @@ impl Builder<'_> {
         const ROW: f32 = 18.0;
         const BAR: f32 = 96.0;
         let s = self.scale;
-        let labels: Vec<_> = limits.iter().map(|l| self.text(&l.label, 12.5, DIM)).collect();
+        let labels: Vec<_> = limits.iter().map(|l| self.text(&l.label, 12.5, self.palette.dim)).collect();
         let percents = self.percents(limits, 12.5);
         let lefts = self.time_lefts(limits, 12.5);
 
@@ -112,7 +108,8 @@ impl Builder<'_> {
         for (i, limit) in limits.iter().enumerate() {
             let mid = ROW * s * (i as f32 + 0.5);
             meters.text(&labels[i], Align2::LEFT_CENTER, pos2(0.0, mid));
-            meters.bar(Rect::from_min_size(pos2(bar_x, mid - 2.0 * s), vec2(BAR * s, 4.0 * s)), limit.percent);
+            let track = Rect::from_min_size(pos2(bar_x, mid - 2.0 * s), vec2(BAR * s, 4.0 * s));
+            meters.bar(track, limit.percent, self.palette);
             if let Some(g) = percents.get(i) {
                 meters.text(g, Align2::RIGHT_CENTER, pos2(percent_end, mid));
             }
@@ -135,10 +132,10 @@ impl Builder<'_> {
         let mut meters = Meters::new();
         let mut x = 0.0;
         for (i, limit) in limits.iter().enumerate() {
-            let label = self.text(&limit.label, 11.5, DIM);
+            let label = self.text(&limit.label, 11.5, self.palette.dim);
             let column = ring.max(label.size().x).max(lefts.get(i).map_or(0.0, |g| g.size().x));
             let center = x + column / 2.0;
-            meters.ring(pos2(center, ring / 2.0), ring / 2.0 - 2.5 * s, 5.0 * s, limit.percent);
+            meters.ring(pos2(center, ring / 2.0), ring / 2.0 - 2.5 * s, 5.0 * s, limit.percent, self.palette);
             if let Some(g) = percents.get(i) {
                 meters.text(g, Align2::CENTER_CENTER, pos2(center, ring / 2.0));
             }
@@ -167,7 +164,7 @@ impl Builder<'_> {
         let font = FontId::new(size * self.scale, self.strong.clone());
         limits
             .iter()
-            .map(|l| self.painter.layout_no_wrap(format!("{:.0}%", l.percent), font.clone(), TEXT))
+            .map(|l| self.painter.layout_no_wrap(format!("{:.0}%", l.percent), font.clone(), self.palette.text))
             .collect()
     }
 
@@ -178,19 +175,11 @@ impl Builder<'_> {
         }
         limits
             .iter()
-            .map(|l| self.text(&l.resets_at.map(|t| claude::until(t, self.now)).unwrap_or_default(), size, DIM))
+            .map(|l| self.text(&l.resets_at.map(|t| claude::until(t, self.now)).unwrap_or_default(), size, self.palette.dim))
             .collect()
     }
 }
 
 fn widest(galleys: &[Arc<Galley>]) -> f32 {
     galleys.iter().map(|g| g.size().x).fold(0.0, f32::max)
-}
-
-pub fn level(percent: f32) -> Color32 {
-    match percent {
-        p if p >= 90.0 => RED,
-        p if p >= 75.0 => AMBER,
-        _ => FILL,
-    }
 }

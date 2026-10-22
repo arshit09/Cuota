@@ -7,7 +7,7 @@ use crate::details::{self, compact, grouped};
 use crate::mascot::CLAUDE_ORANGE;
 use crate::settings::Detail;
 use crate::stats::{Stats, Tally};
-use crate::view::{DIM, RED, TEXT, TRACK};
+use crate::theme::Palette;
 use crate::widgets::single_line;
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use eframe::egui::text::{LayoutJob, TextFormat};
@@ -56,6 +56,7 @@ pub struct Source<'a> {
 pub struct Builder<'a> {
     pub painter: &'a Painter,
     pub source: Source<'a>,
+    pub palette: &'a Palette,
     /// How big to draw: 1 is the original size.
     pub scale: f32,
     /// How wide they run: text wraps there, and the charts are this wide.
@@ -76,7 +77,7 @@ impl Builder<'_> {
                 }
                 Content::Note(READING)
             } else {
-                match content(detail, &self.source) {
+                match content(detail, &self.source, self.palette) {
                     Some(content) => content,
                     None => continue,
                 }
@@ -84,7 +85,7 @@ impl Builder<'_> {
             let top = y.map_or(0.0, |y| y + GAP * self.scale);
             y = Some(match content {
                 Content::Lines(lines) => self.lines(&mut glance, lines, top),
-                Content::Note(note) => self.lines(&mut glance, vec![Line::note(note)], top),
+                Content::Note(note) => self.lines(&mut glance, vec![Line::note(note, self.palette)], top),
                 Content::Parts(parts) => self.parts(&mut glance, &parts, top),
                 Content::Days(days) => self.days(&mut glance, days, top),
                 Content::Titles(sessions) => self.titles(&mut glance, sessions, top),
@@ -114,7 +115,7 @@ impl Builder<'_> {
             let galley = self.layout(line.spans, Some(self.width));
             let rect = Rect::from_min_size(pos2(0.0, y), galley.size());
             glance.size.x = glance.size.x.max(rect.width());
-            glance.shapes.push(Shape::galley(rect.min, galley, TEXT));
+            glance.shapes.push(Shape::galley(rect.min, galley, Color32::PLACEHOLDER));
             if let Some(hint) = line.hint {
                 glance.hints.push((rect, hint));
             }
@@ -144,7 +145,8 @@ impl Builder<'_> {
         let mut at = pos2(0.0, top + 10.0 * s);
         let mut height: f32 = 0.0;
         for (name, color, percent) in parts {
-            let label = self.layout(vec![(format!("{name} "), DIM), (format!("{percent:.0}%"), TEXT)], None);
+            let spans = vec![(format!("{name} "), self.palette.dim), (format!("{percent:.0}%"), self.palette.text)];
+            let label = self.layout(spans, None);
             let width = swatch + 4.0 * s + label.size().x;
             if at.x > 0.0 && at.x + width > self.width {
                 at = pos2(0.0, at.y + height);
@@ -152,7 +154,7 @@ impl Builder<'_> {
             height = label.size().y;
             let mark = Rect::from_center_size(pos2(at.x + swatch / 2.0, at.y + height / 2.0), vec2(swatch, swatch));
             glance.shapes.push(Shape::rect_filled(mark, 2.0 * s, *color));
-            glance.shapes.push(Shape::galley(pos2(at.x + swatch + 4.0 * s, at.y), label, TEXT));
+            glance.shapes.push(Shape::galley(pos2(at.x + swatch + 4.0 * s, at.y), label, Color32::PLACEHOLDER));
             at.x += width + 10.0 * s;
         }
         glance.size.x = glance.size.x.max(self.width);
@@ -171,7 +173,7 @@ impl Builder<'_> {
         let bar = (slot - 8.0 * s).clamp(3.0 * s, 18.0 * s);
         let round = (2.0 * s).round() as u8;
         let font = FontId::proportional(10.0 * s);
-        glance.shapes.push(Shape::hline(0.0..=self.width, base + 0.5, Stroke::new(1.0, TRACK)));
+        glance.shapes.push(Shape::hline(0.0..=self.width, base + 0.5, Stroke::new(1.0, self.palette.track)));
         let mut bottom = base;
         for (i, (date, tally)) in days.iter().enumerate() {
             let center = slot * (i as f32 + 0.5);
@@ -182,7 +184,8 @@ impl Builder<'_> {
                 let corners = CornerRadius { nw: round, ne: round, sw: 0, se: 0 };
                 glance.shapes.push(Shape::rect_filled(column, corners, details::PARTS[0]));
             }
-            let (name, color) = if *date == today { ("Today".to_owned(), TEXT) } else { (date.format("%a").to_string(), DIM) };
+            let (text, dim) = (self.palette.text, self.palette.dim);
+            let (name, color) = if *date == today { ("Today".to_owned(), text) } else { (date.format("%a").to_string(), dim) };
             let name = self.painter.layout_no_wrap(name, font.clone(), color);
             let at = pos2(center - name.size().x / 2.0, base + 2.0 * s);
             let below = at.y + name.size().y;
@@ -201,7 +204,7 @@ impl Builder<'_> {
         let s = self.scale;
         let indent = 12.0 * s;
         for session in sessions {
-            let color = if session.busy { TEXT } else { DIM };
+            let color = if session.busy { self.palette.text } else { self.palette.dim };
             let name = session.display_name();
             let title = single_line(self.painter, name, self.font(), color, self.width - indent);
             let rect = Rect::from_min_size(pos2(indent, y), title.size());
@@ -209,7 +212,7 @@ impl Builder<'_> {
             glance.shapes.push(if session.busy {
                 Shape::circle_filled(dot, 3.0 * s, CLAUDE_ORANGE)
             } else {
-                Shape::circle_stroke(dot, 2.5 * s, Stroke::new(1.0, DIM))
+                Shape::circle_stroke(dot, 2.5 * s, Stroke::new(1.0, self.palette.dim))
             });
             let about = details::session_about(session, self.source.now);
             let hint = if title.elided { format!("{name}\n{about}") } else { about };
@@ -249,19 +252,20 @@ impl Line {
     }
 
     /// `value` after a dim `label`, as the meters show a limit and how much of it is used.
-    fn fact(label: &str, value: String, color: Color32) -> Self {
-        Self::new(vec![(format!("{label} "), DIM), (value, color)])
+    fn fact(label: &str, value: String, color: Color32, palette: &Palette) -> Self {
+        Self::new(vec![(format!("{label} "), palette.dim), (value, color)])
     }
 
     /// One of a limit's notes from the details after its name, read as one sentence: "Weekly on
     /// pace to end at about 62%". Notes dim on the details' cards are bright here, where
     /// they're the point.
-    fn limit(limit: &Limit, (note, color): (String, Color32)) -> Self {
-        Self::fact(&limit.label, lowercase_first(&note), if color == DIM { TEXT } else { color })
+    fn limit(limit: &Limit, (note, color): (String, Color32), palette: &Palette) -> Self {
+        let color = if color == palette.dim { palette.text } else { color };
+        Self::fact(&limit.label, lowercase_first(&note), color, palette)
     }
 
-    fn note(text: impl Into<String>) -> Self {
-        Self::new(vec![(text.into(), DIM)])
+    fn note(text: impl Into<String>, palette: &Palette) -> Self {
+        Self::new(vec![(text.into(), palette.dim)])
     }
 
     fn hint(self, hint: Option<String>) -> Self {
@@ -273,15 +277,17 @@ impl Line {
     }
 }
 
-/// What `detail` has to show, if anything. Those from Claude Code's stats have nothing until
-/// they're read.
-fn content<'a>(detail: Detail, source: &Source<'a>) -> Option<Content<'a>> {
+/// What `detail` has to show, if anything, in `palette`'s colors. Those from Claude Code's
+/// stats have nothing until they're read.
+fn content<'a>(detail: Detail, source: &Source<'a>, palette: &Palette) -> Option<Content<'a>> {
     let &Source { state, stats, limits, now } = source;
+    let p = palette;
+    let (text, dim) = (p.text, p.dim);
     let lines = |lines: Vec<Line>| (!lines.is_empty()).then_some(Content::Lines(lines));
     match detail {
         Detail::Resets | Detail::Pace => {
             let note = if detail == Detail::Resets { details::reset_note } else { details::pace_note };
-            lines(limits.iter().filter_map(|limit| Some(Line::limit(limit, note(limit, now)?))).collect())
+            lines(limits.iter().filter_map(|limit| Some(Line::limit(limit, note(limit, now, p)?, p))).collect())
         }
         Detail::WeeklyShare => lines(
             limits
@@ -289,19 +295,19 @@ fn content<'a>(detail: Detail, source: &Source<'a>) -> Option<Content<'a>> {
                 .filter_map(|limit| {
                     let (used, allowed) = limit.share?;
                     let share = format!("used {used:.0}% of Weekly \u{B7} capped at {allowed:.0}%");
-                    Some(Line::fact(&limit.label, share, TEXT))
+                    Some(Line::fact(&limit.label, share, text, p))
                 })
                 .collect(),
         ),
         Detail::Apps => {
-            let parts = details::app_parts(&state.breakdown.as_ref()?.parts);
+            let parts = details::app_parts(&state.breakdown.as_ref()?.parts, p);
             Some(if parts.is_empty() { Content::Note("Nothing used yet this week") } else { Content::Parts(parts) })
         }
         Detail::Plan => {
             let account = &state.account;
-            let mut spans = vec![(account.plan.clone()?, TEXT)];
+            let mut spans = vec![(account.plan.clone()?, text)];
             let since = account.since.map(|t| t.with_timezone(&Local));
-            spans.extend(since.map(|t| (format!(" \u{B7} since {}", t.format("%b %Y")), DIM)));
+            spans.extend(since.map(|t| (format!(" \u{B7} since {}", t.format("%b %Y")), dim)));
             // The rest of what the details tell of the account.
             let mut facts: Vec<String> = since.map(|t| format!("Subscribed since {}", t.format("%-d %b %Y"))).into_iter().collect();
             facts.extend(account.billing.as_ref().map(|billing| format!("Billed through {billing}")));
@@ -310,8 +316,8 @@ fn content<'a>(detail: Detail, source: &Source<'a>) -> Option<Content<'a>> {
         }
         Detail::ExtraUsage => {
             let extra = state.extra.as_ref()?;
-            let color = if extra.capped { RED } else { TEXT };
-            lines(vec![Line::fact("Extra usage", lowercase_first(&details::extra_usage(extra)), color)])
+            let color = if extra.capped { p.red } else { text };
+            lines(vec![Line::fact("Extra usage", lowercase_first(&details::extra_usage(extra)), color, p)])
         }
         Detail::Sessions => {
             let working = state.sessions.iter().filter(|session| session.busy).count();
@@ -320,7 +326,7 @@ fn content<'a>(detail: Detail, source: &Source<'a>) -> Option<Content<'a>> {
                 (running, 0) => format!("{running} running \u{B7} idle"),
                 (running, working) => format!("{running} running \u{B7} {working} working"),
             };
-            lines(vec![Line::fact("Sessions", running, TEXT)])
+            lines(vec![Line::fact("Sessions", running, text, p)])
         }
         Detail::SessionTitles => (!state.sessions.is_empty()).then_some(Content::Titles(&state.sessions)),
         Detail::ClaudeCode => {
@@ -329,12 +335,12 @@ fn content<'a>(detail: Detail, source: &Source<'a>) -> Option<Content<'a>> {
                 return Some(Content::Note("No Claude Code replies yet this week"));
             }
             let spans = vec![
-                (grouped(total.replies), TEXT),
-                (" replies \u{B7} ".to_owned(), DIM),
-                (grouped(total.tool_calls), TEXT),
-                (" tool calls \u{B7} ".to_owned(), DIM),
-                (compact(total.tokens.total()), TEXT),
-                (" tokens".to_owned(), DIM),
+                (grouped(total.replies), text),
+                (" replies \u{B7} ".to_owned(), dim),
+                (grouped(total.tool_calls), text),
+                (" tool calls \u{B7} ".to_owned(), dim),
+                (compact(total.tokens.total()), text),
+                (" tokens".to_owned(), dim),
             ];
             let hint = format!("Claude Code this week, on this PC\n{}", details::token_kinds(&total.tokens));
             lines(vec![Line::new(spans).hint(Some(hint))])
@@ -343,17 +349,17 @@ fn content<'a>(detail: Detail, source: &Source<'a>) -> Option<Content<'a>> {
             let days = &stats?.days;
             days.iter().any(|(_, tally)| tally.tokens.total() > 0).then_some(Content::Days(days))
         }
-        Detail::BusiestHour => lines(vec![Line::fact("Busiest hour", details::hour_span(stats?.busiest_hour?), TEXT)]),
-        Detail::TopModel => lines(vec![top("Top model", stats?.models.first()?)]),
-        Detail::TopProject => lines(vec![top("Top project", stats?.projects.first()?)]),
-        Detail::Updated => lines(vec![Line::fact("Updated", state.updated?.format("%H:%M").to_string(), TEXT)]),
+        Detail::BusiestHour => lines(vec![Line::fact("Busiest hour", details::hour_span(stats?.busiest_hour?), text, p)]),
+        Detail::TopModel => lines(vec![top("Top model", stats?.models.first()?, p)]),
+        Detail::TopProject => lines(vec![top("Top project", stats?.projects.first()?, p)]),
+        Detail::Updated => lines(vec![Line::fact("Updated", state.updated?.format("%H:%M").to_string(), text, p)]),
     }
 }
 
 /// The model or project with the most tokens, and how many. Hovering splits them up.
-fn top(label: &str, (name, tally): &(String, Tally)) -> Line {
+fn top(label: &str, (name, tally): &(String, Tally), palette: &Palette) -> Line {
     let tokens = format!(" \u{B7} {} tokens", compact(tally.tokens.total()));
-    let line = Line::new(vec![(format!("{label} "), DIM), (name.clone(), TEXT), (tokens, DIM)]);
+    let line = Line::new(vec![(format!("{label} "), palette.dim), (name.clone(), palette.text), (tokens, palette.dim)]);
     line.hint(Some(details::token_kinds(&tally.tokens)))
 }
 
@@ -386,7 +392,8 @@ pub fn title(detail: Detail) -> &'static str {
 /// An example of what `detail` shows, for its row in settings: what the panel would show now
 /// when it has something to show, or else a made-up one.
 pub fn example(detail: Detail, source: &Source) -> String {
-    let now = match content(detail, source) {
+    // Only the words are used.
+    let now = match content(detail, source, &Palette::DARK) {
         Some(Content::Lines(lines)) => lines.first().map(Line::text),
         Some(Content::Parts(parts)) => {
             let parts: Vec<String> = parts.iter().map(|(name, _, percent)| format!("{name} {percent:.0}%")).collect();
@@ -427,7 +434,8 @@ fn sample(detail: Detail) -> &'static str {
 mod tests {
     use super::*;
     use crate::claude::demo_state;
-    use crate::view::AMBER;
+
+    const DARK: Palette = Palette::DARK;
 
     /// The text of each line `details` show, top to bottom, with the panel's fonts.
     fn drawn(source: Source, details: &[Detail]) -> Vec<String> {
@@ -435,7 +443,7 @@ mod tests {
         crate::overlay::setup_fonts(&ctx);
         let mut texts = Vec::new();
         let _ = ctx.run_ui(Default::default(), |ui| {
-            let builder = Builder { painter: ui.painter(), source, scale: 1.0, width: 240.0 };
+            let builder = Builder { painter: ui.painter(), source, palette: &DARK, scale: 1.0, width: 240.0 };
             for shape in builder.build(details.iter().copied()).shapes {
                 if let Shape::Text(text) = shape {
                     texts.push(text.galley.text().to_owned());
@@ -456,11 +464,14 @@ mod tests {
     fn a_limits_notes_follow_its_name_as_one_sentence_bright_unless_theyre_a_warning() {
         let state = demo_state();
         let limits: Vec<&Limit> = state.limits.iter().collect();
-        let line = Line::limit(limits[1], ("On pace to end at about 58%".to_owned(), DIM));
+        let line = Line::limit(limits[1], ("On pace to end at about 58%".to_owned(), DARK.dim), &DARK);
         assert_eq!(line.text(), "Weekly on pace to end at about 58%");
-        assert_eq!(line.spans[1].1, TEXT);
-        let warning = Line::limit(limits[2], ("At this pace, runs out Wed 18:23".to_owned(), AMBER));
-        assert_eq!(warning.spans[1].1, AMBER);
+        assert_eq!(line.spans[1].1, DARK.text);
+        let warning = Line::limit(limits[2], ("At this pace, runs out Wed 18:23".to_owned(), DARK.amber), &DARK);
+        assert_eq!(warning.spans[1].1, DARK.amber);
+        // So too in the light theme, where dim and bright are other colors.
+        let light = Palette::LIGHT;
+        assert_eq!(Line::limit(limits[1], ("On pace".to_owned(), light.dim), &light).spans[1].1, light.text);
         let source = Source { state: &state, stats: None, limits: &limits, now: Utc::now() };
         let resets = drawn(source, &[Detail::Resets]);
         assert_eq!(resets.len(), 3, "one for each limit the meters show: {resets:?}");

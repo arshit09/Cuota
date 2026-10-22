@@ -1,11 +1,11 @@
 //! Building blocks for the settings window, made to look and work like Windows 11's own Settings:
 //! sidebar entries for its pages, setting cards (an icon, a title, an optional description and a
 //! control), expanders that open onto more settings, and the controls themselves. The expanded
-//! panel's details share the section headings, cards and rules.
+//! panel's details share the section headings, cards and rules, drawn in the panel's colors.
 
 use crate::mascot::{self, CLAUDE_ORANGE};
+use crate::theme::Palette;
 use crate::vector;
-use crate::view::DIM;
 use eframe::egui::{
     Align, Align2, Color32, ColorImage, Context, CornerRadius, CursorIcon, EventFilter, FontFamily, FontId, Frame,
     Galley, Id, Key, Layout, Margin, Modifiers, Painter, Popup, Pos2, Rect, Response, Sense, Shadow, Shape, Stroke,
@@ -17,10 +17,6 @@ use eframe::egui::{
 };
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-
-/// The details' cards and the lines in and around them.
-pub const CARD: Color32 = Color32::from_rgb(37, 37, 41);
-const LINE: Color32 = Color32::from_rgb(49, 49, 54);
 
 // Windows 11's dark theme, which the settings window follows.
 pub const WINDOW: Color32 = Color32::from_rgb(32, 32, 32);
@@ -103,6 +99,8 @@ pub mod icon {
     pub const STATUS: char = '\u{E8BD}';
     pub const STYLE: char = '\u{EB05}';
     pub const TASKBAR: char = '\u{E75B}';
+    /// A painter's palette, as on Windows' own Colors page, where light and dark mode are picked.
+    pub const THEME: char = '\u{E790}';
     pub const TIME_LEFT: char = '\u{E916}';
     /// Arrows either way: off to another monitor and back.
     pub const TRAVEL: char = '\u{E8AB}';
@@ -165,22 +163,23 @@ impl Fonts {
 }
 
 /// A small caps section title, with an optional control on the right.
-pub fn heading(ui: &mut Ui, fonts: &Fonts, text: &str, add_control: impl FnOnce(&mut Ui)) {
+pub fn heading(ui: &mut Ui, fonts: &Fonts, palette: &Palette, text: &str, add_control: impl FnOnce(&mut Ui)) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
-    let mut job = LayoutJob::simple_singleline(text.to_uppercase(), FontId::new(11.0, fonts.strong.clone()), DIM);
+    let font = FontId::new(11.0, fonts.strong.clone());
+    let mut job = LayoutJob::simple_singleline(text.to_uppercase(), font, palette.dim);
     job.sections[0].format.extra_letter_spacing = 0.6;
     let galley = ui.painter().layout_job(job);
     let at = pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0);
-    ui.painter().galley(at, galley, DIM);
+    ui.painter().galley(at, galley, palette.dim);
     let mut slot = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::right_to_left(Align::Center)));
     add_control(&mut slot);
 }
 
 /// A rounded group of rows, with a [`rule`] between them.
-pub fn card<R>(ui: &mut Ui, add_rows: impl FnOnce(&mut Ui) -> R) -> R {
+pub fn card<R>(ui: &mut Ui, palette: &Palette, add_rows: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
-        .fill(CARD)
-        .stroke(Stroke::new(1.0, LINE))
+        .fill(palette.card)
+        .stroke(Stroke::new(1.0, palette.line))
         .corner_radius(8)
         .inner_margin(Margin::symmetric(14, 0))
         .show(ui, |ui| {
@@ -192,9 +191,9 @@ pub fn card<R>(ui: &mut Ui, add_rows: impl FnOnce(&mut Ui) -> R) -> R {
 }
 
 /// A hairline between a [`card`]'s rows, running to its edges.
-pub fn rule(ui: &mut Ui) {
+pub fn rule(ui: &mut Ui, palette: &Palette) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().hline(rect.left()..=rect.right() + 13.0, rect.center().y, Stroke::new(1.0, LINE));
+    ui.painter().hline(rect.left()..=rect.right() + 13.0, rect.center().y, Stroke::new(1.0, palette.line));
 }
 
 /// What a sidebar entry shows before its name.

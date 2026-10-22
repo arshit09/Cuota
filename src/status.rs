@@ -3,7 +3,7 @@
 //! sweeping across with the letters just behind it still settling.
 
 use crate::mascot::CLAUDE_ORANGE;
-use crate::view::{DIM, TEXT};
+use crate::theme::Palette;
 use eframe::egui::{Color32, FontId, Painter, Pos2, Rect, Vec2, pos2, vec2};
 use std::time::{Duration, Instant};
 
@@ -54,7 +54,7 @@ impl Status {
     /// two words while one types over the other.
     pub fn size(&self, painter: &Painter, scale: f32) -> Vec2 {
         let font = FontId::proportional(SIZE * scale);
-        let width = |text: &str| painter.layout_no_wrap(text.to_owned(), font.clone(), TEXT).size().x;
+        let width = |text: &str| painter.layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER).size().x;
         let mut word = width(&self.word);
         if let Some((last, _)) = &self.typing {
             word = word.max(width(last)) + CURSOR_ROOM * font.size;
@@ -63,14 +63,22 @@ impl Status {
         vec2((STAR_WIDTH + STAR_GAP) * font.size + word, height)
     }
 
-    /// Paints the line with its top-left at `at`. While `working`, the star is orange and
-    /// turns (if `animate`) and the word is bright; otherwise both are dim and still. Returns
-    /// when it next changes.
-    pub fn paint(&mut self, painter: &Painter, at: Pos2, working: bool, animate: bool, scale: f32) -> Option<Duration> {
+    /// Paints the line with its top-left at `at`, in `palette`'s colors. While `working`, the
+    /// star is orange and turns (if `animate`) and the word is bright; otherwise both are dim
+    /// and still. Returns when it next changes.
+    pub fn paint(
+        &mut self,
+        painter: &Painter,
+        at: Pos2,
+        working: bool,
+        animate: bool,
+        scale: f32,
+        palette: &Palette,
+    ) -> Option<Duration> {
         let now = Instant::now();
         let font = FontId::proportional(SIZE * scale);
         let em = font.size;
-        let (star_color, color) = if working { (CLAUDE_ORANGE, TEXT) } else { (DIM, DIM) };
+        let (star_color, color) = if working { (CLAUDE_ORANGE, palette.text) } else { (palette.dim, palette.dim) };
         let turning = working && animate;
         let turned = now.saturating_duration_since(self.since);
         let glyph = if turning { star(turned) } else { RESTING };

@@ -2,7 +2,8 @@
 //! them, and Identify, which shows each one's number on it for a moment, as Windows' own
 //! display settings do, so you can tell which is which.
 
-use crate::overlay::{BG, BORDER, CORNER, repaint_after, show_immediate};
+use crate::overlay::{CORNER, repaint_after, show_immediate};
+use crate::theme::Palette;
 use crate::widgets::Fonts;
 use crate::win;
 use eframe::egui::{
@@ -165,8 +166,10 @@ impl Identify {
                 }
                 let rect = ui.max_rect();
                 let painter = ui.painter();
-                painter.rect_filled(rect, CORNER, BG);
-                painter.rect_stroke(rect, CORNER, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+                // Dark whatever the panel's theme, like the settings window that shows them.
+                let dark = Palette::DARK;
+                painter.rect_filled(rect, CORNER, dark.background);
+                painter.rect_stroke(rect, CORNER, Stroke::new(1.0, dark.border), StrokeKind::Inside);
                 let font = FontId::new(NUMBER, fonts.strong.clone());
                 painter.text(rect.center(), Align2::CENTER_CENTER, screen.number, font, Color32::WHITE);
             });

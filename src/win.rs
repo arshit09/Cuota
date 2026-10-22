@@ -77,6 +77,12 @@ pub fn menus_are_dark() -> bool {
     dark_menus_supported() && theme_setting("AppsUseLightTheme") == Some(0)
 }
 
+/// Windows' apps are in light mode (Settings > Colors > default app mode), as they are until
+/// it's set.
+pub fn light_apps() -> bool {
+    theme_setting("AppsUseLightTheme") != Some(0)
+}
+
 /// One of Windows' light and dark mode settings.
 fn theme_setting(name: &str) -> Option<u32> {
     let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");

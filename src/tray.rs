@@ -75,6 +75,8 @@ pub enum TrayEvent {
     Details,
     /// Quit, picked from an icon's menu.
     Quit,
+    /// One of Windows' settings changed, light or dark mode perhaps, which the panel can follow.
+    WindowsSettings,
 }
 
 /// Handle to the tray thread.
@@ -155,7 +157,11 @@ thread_local! {
 impl Icons {
     fn handle(&mut self, message: u32, lparam: LPARAM) -> bool {
         match message {
-            WM_REFRESH | WM_SETTINGCHANGE => self.refresh(),
+            WM_REFRESH => self.refresh(),
+            WM_SETTINGCHANGE => {
+                self.refresh();
+                self.send(TrayEvent::WindowsSettings);
+            }
             WM_TIMER => {
                 self.frame = self.frame.wrapping_add(1);
                 self.refresh();
