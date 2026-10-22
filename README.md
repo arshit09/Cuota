@@ -77,7 +77,11 @@ The screenshots use `--demo`'s made-up account and usage.
 
 ## Download, or build & run
 
-Download **Cuota.exe** from the [latest release](https://github.com/arshit09/Cuota/releases/latest) and run it. It's unsigned, so if Windows says it protected your PC, click **More info**, then **Run anyway**. Cuota checks for new releases once a day; when one is out, **Settings › Updates › Update now** downloads it, swaps it in for the old file and restarts. Your settings are kept.
+Download **CuotaSetup.exe** from the [latest release](https://github.com/arshit09/Cuota/releases/latest), run it and click **Install**. It's unsigned, so if Windows says it protected your PC, click **More info**, then **Run anyway**. Setup puts Cuota in `%LOCALAPPDATA%\Programs\Cuota` (no admin rights needed; it asks only if that folder won't let it write), adds it to the Start menu and starts it. Uninstall it from **Settings › Apps**. Your settings are kept.
+
+Prefer no installer? The release also has the portable **Cuota.exe**: it's self-contained, so copy it anywhere and run it.
+
+Cuota checks for new releases once a day; when one is out, **Settings › Updates › Update now** downloads it, swaps it in for the old file and restarts. Your settings are kept.
 
 Or build it yourself:
 
@@ -86,13 +90,14 @@ cargo build --release
 .\target\release\cuota.exe
 ```
 
-The exe is self-contained, so copy it anywhere. To start it when you sign in, turn on **Start with Windows** in its settings. Only one Cuota runs at a time: launching it again opens the running one's settings.
+`build-setup.bat` builds the setup too, into `target\dist\release\cuota-setup.exe`. To start Cuota when you sign in, turn on **Start with Windows** in its settings. Only one Cuota runs at a time: launching it again opens the running one's settings.
 
 | Flag | Does |
 |---|---|
 | `--interval 120` | Refresh every 120 s while Claude is in use (default 60, min 30) |
 | `--demo` | Show fake data |
 | `--once` | Print usage to the terminal and exit |
+| `--uninstall` | Remove the copy setup installed (Settings › Apps runs this) |
 
 ## Using it
 

@@ -6,6 +6,7 @@ mod claude;
 mod details;
 mod dodge;
 mod glance;
+mod install;
 mod log;
 mod mascot;
 mod monitors;
@@ -35,7 +36,8 @@ Usage: cuota [--interval <seconds>] [--once] [--demo]
   --interval <s>  How often to refresh usage while Claude is in use (default 60, minimum 30)
   --once          Print usage to stdout and exit
   --demo          Show the overlay with fake data
-  --updated       Wait for the Cuota this one replaced to quit (an update starts it so)";
+  --updated       Wait for the Cuota this one replaced to quit (an update starts it so)
+  --uninstall     Remove the copy setup installed (Settings > Apps runs this)";
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -58,6 +60,10 @@ fn main() -> eframe::Result {
         print_once();
         return Ok(());
     }
+    if flag(install::UNINSTALL) {
+        uninstall();
+        return Ok(());
+    }
     // Started by an update, it takes over once the copy it replaces has quit.
     let updated = flag(update::UPDATED);
     if !win::first_instance(if updated { update::HANDOVER } else { Duration::ZERO }) {
@@ -68,6 +74,7 @@ fn main() -> eframe::Result {
     }
     if updated {
         update::clean_up();
+        install::note_version(env!("CARGO_PKG_VERSION"));
     }
     let interval = args
         .iter()
@@ -124,6 +131,23 @@ fn initial_position(settings: &mut Settings) -> [f32; 2] {
         win::on_screen(x, y)
     });
     settings.panel_pos.unwrap_or([40.0, 40.0])
+}
+
+/// Asks, then takes the installed Cuota off this PC, as Settings › Apps does.
+fn uninstall() {
+    if !win::message("Uninstall Cuota? Your settings are kept.", true) {
+        return;
+    }
+    match install::uninstall() {
+        Ok(()) => {
+            log::info!("Cuota was uninstalled");
+            win::message("Cuota was uninstalled.", false);
+        }
+        Err(e) => {
+            log::warn!("Couldn't uninstall Cuota: {e}");
+            win::message(&e, false);
+        }
+    }
 }
 
 fn print_once() {

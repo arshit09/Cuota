@@ -41,8 +41,9 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, EnumThreadWindows, GA_ROOT, GetAncestor,
     GetClassNameW, GetClientRect, GetCursorPos, GWL_EXSTYLE, GetForegroundWindow, GetMessageW, GetWindowLongW,
-    GetWindowRect, GetWindowTextW, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, IsWindow, IsZoomed, MA_NOACTIVATE,
-    MONITORINFOF_PRIMARY, MSG, STYLESTRUCT, SW_SHOWNORMAL,
+    GetWindowRect, GetWindowTextW, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, IDOK, IDYES, IsWindow, IsZoomed,
+    MA_NOACTIVATE, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_YESNO, MONITORINFOF_PRIMARY, MSG,
+    MessageBoxW, STYLESTRUCT, SW_SHOWNORMAL,
     SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW,
     SetWindowPos, WINDOWPOS, WINEVENT_OUTOFCONTEXT, WM_DISPLAYCHANGE, WM_DWMCOMPOSITIONCHANGED, WM_MOUSEACTIVATE,
     WM_NCCALCSIZE, WM_SIZE, WM_STYLECHANGING, WM_WINDOWPOSCHANGED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WindowFromPoint,
@@ -106,8 +107,7 @@ fn registry_string(root: HKEY, key: &str, name: &str) -> Option<String> {
     Some(String::from_utf16_lossy(&value).trim_end_matches('\0').to_owned())
 }
 
-const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const RUN_VALUE: &str = "Cuota";
+use crate::install::{RUN_KEY, RUN_VALUE};
 
 /// How Windows' Run key starts this exe.
 fn startup_command() -> Option<String> {
@@ -185,6 +185,15 @@ pub fn open_target(target: &str) {
 /// Opens a web page in the default browser.
 pub fn open_page(url: &str) {
     shell_open(vec![url.to_owned()], None);
+}
+
+/// Shows `text` in a message box titled Cuota, with Yes and No buttons when `question`.
+/// Returns whether Yes (or OK) was clicked.
+pub fn message(text: &str, question: bool) -> bool {
+    let style = if question { MB_YESNO | MB_ICONQUESTION } else { MB_OK | MB_ICONINFORMATION };
+    let (text, title) = (wide(text), wide("Cuota"));
+    let answer = unsafe { MessageBoxW(0, text.as_ptr(), title.as_ptr(), style | MB_SETFOREGROUND) };
+    answer == IDYES || answer == IDOK
 }
 
 /// The folder `path` is in, if it names one.
@@ -282,7 +291,7 @@ pub fn process_alive(pid: u32) -> bool {
 /// Claims "one Cuota per sign-in" until the process exits. False when another Cuota still has it
 /// after `wait`, as an updated copy waits for the one it replaces to quit.
 pub fn first_instance(wait: Duration) -> bool {
-    let name = wide(r"Local\Cuota");
+    let name = wide(crate::install::MUTEX);
     let until = std::time::Instant::now() + wait;
     loop {
         unsafe {

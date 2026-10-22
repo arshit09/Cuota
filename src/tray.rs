@@ -41,7 +41,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
-const CLASS: &str = "CuotaTray";
+const CLASS: &str = crate::install::TRAY_CLASS;
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_REFRESH: u32 = WM_APP + 2;
 /// Sent by a second launch of Cuota, which exits and leaves this one to open its settings.
@@ -157,6 +157,8 @@ impl Icons {
             // Right-clicks open the menu in `window_proc`.
             WM_TRAY if lparam as u32 == WM_LBUTTONUP => self.send(TrayEvent::Click),
             WM_SHOW_SETTINGS => self.send(TrayEvent::Settings),
+            // From setup, before it replaces this exe, or an uninstall.
+            crate::install::WM_QUIT_CUOTA => self.send(TrayEvent::Quit),
             WM_CLOSE => {
                 for (id, ..) in self.shown.drain(..) {
                     notify(self.window, NIM_DELETE, id, None);

@@ -142,4 +142,53 @@ mod tests {
         let share = opaque as f32 / (SPARK_PIXELS * SPARK_PIXELS) as f32;
         assert!((0.15..0.5).contains(&share), "spark covers {share}");
     }
+
+    /// Setup's icon, which it also installs for Cuota's shortcut, is the spark at the sizes
+    /// Windows asks for. After changing the spark, run this with CUOTA_UPDATE_ICON set to
+    /// redraw `setup/cuota.ico`.
+    #[test]
+    fn setups_icon_is_the_spark() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/setup/cuota.ico");
+        let drawn = ico(&[16, 20, 24, 32, 40, 48, 64, 256]);
+        if std::env::var_os("CUOTA_UPDATE_ICON").is_some() {
+            std::fs::write(path, &drawn).unwrap();
+        }
+        assert!(std::fs::read(path).unwrap() == drawn, "setup/cuota.ico is out of date");
+    }
+
+    /// An .ico of 32-bit bitmaps of the spark, one per size.
+    fn ico(sizes: &[usize]) -> Vec<u8> {
+        let images: Vec<Vec<u8>> = sizes.iter().map(|&size| bitmap(&spark_rgba(size), size)).collect();
+        let mut ico = vec![0, 0, 1, 0];
+        ico.extend((sizes.len() as u16).to_le_bytes());
+        let mut offset = 6 + 16 * sizes.len();
+        for (&size, image) in sizes.iter().zip(&images) {
+            // 256 is written as 0.
+            ico.extend([size as u8, size as u8, 0, 0]);
+            ico.extend(1u16.to_le_bytes()); // planes
+            ico.extend(32u16.to_le_bytes()); // bits per pixel
+            ico.extend((image.len() as u32).to_le_bytes());
+            ico.extend((offset as u32).to_le_bytes());
+            offset += image.len();
+        }
+        images.iter().for_each(|image| ico.extend(image));
+        ico
+    }
+
+    /// Square RGBA as an icon bitmap: a header twice as tall as the image, BGRA rows from the
+    /// bottom up, then an all-clear 1-bit mask, which alpha makes unused.
+    fn bitmap(rgba: &[u8], size: usize) -> Vec<u8> {
+        let mut image = Vec::new();
+        image.extend(40u32.to_le_bytes());
+        image.extend((size as i32).to_le_bytes());
+        image.extend((2 * size as i32).to_le_bytes());
+        image.extend(1u16.to_le_bytes());
+        image.extend(32u16.to_le_bytes());
+        image.extend([0u8; 24]);
+        for row in rgba.chunks_exact(size * 4).rev() {
+            row.chunks_exact(4).for_each(|p| image.extend([p[2], p[1], p[0], p[3]]));
+        }
+        image.resize(image.len() + size.div_ceil(32) * 4 * size, 0);
+        image
+    }
 }
