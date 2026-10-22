@@ -77,6 +77,9 @@ fn main() -> eframe::Result {
         update::clean_up();
         install::note_version(env!("CARGO_PKG_VERSION"));
     }
+    if flag(install::INSTALLED) {
+        install::take_over_startup();
+    }
     let interval = args
         .iter()
         .position(|a| a == "--interval")
@@ -88,8 +91,8 @@ fn main() -> eframe::Result {
     let mut settings = Settings::load();
     let position = initial_position(&mut settings);
     let spark = mascot::spark_rgba(mascot::SPARK_PIXELS);
-    let side = mascot::SPARK_PIXELS as u32;
-    let icon = Arc::new(IconData { rgba: spark.clone(), width: side, height: side });
+    // Windows halves it for the title bar's small icon, which keeps the pixels crisp.
+    let icon = Arc::new(IconData { rgba: tray::draw_icon(32), width: 32, height: 32 });
     let level = if settings.pinned() == Some(Mode::Desktop) { WindowLevel::AlwaysOnBottom } else { WindowLevel::AlwaysOnTop };
 
     let options = eframe::NativeOptions {

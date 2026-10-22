@@ -143,11 +143,11 @@ mod tests {
         assert!((0.15..0.5).contains(&share), "spark covers {share}");
     }
 
-    /// Setup's icon, which it also installs for Cuota's shortcut, is the spark at the sizes
-    /// Windows asks for. After changing the spark, run this with CUOTA_UPDATE_ICON set to
-    /// redraw `setup/cuota.ico`.
+    /// Cuota's icon, in its exe and setup's (see build.rs) and installed for its shortcut, is
+    /// Clawd at the sizes Windows asks for. After changing him, run this with CUOTA_UPDATE_ICON
+    /// set to redraw `setup/cuota.ico`.
     #[test]
-    fn setups_icon_is_the_spark() {
+    fn the_icon_is_clawd() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/setup/cuota.ico");
         let drawn = ico(&[16, 20, 24, 32, 40, 48, 64, 256]);
         if std::env::var_os("CUOTA_UPDATE_ICON").is_some() {
@@ -156,9 +156,9 @@ mod tests {
         assert!(std::fs::read(path).unwrap() == drawn, "setup/cuota.ico is out of date");
     }
 
-    /// An .ico of 32-bit bitmaps of the spark, one per size.
+    /// An .ico of 32-bit bitmaps of Clawd, one per size.
     fn ico(sizes: &[usize]) -> Vec<u8> {
-        let images: Vec<Vec<u8>> = sizes.iter().map(|&size| bitmap(&spark_rgba(size), size)).collect();
+        let images: Vec<Vec<u8>> = sizes.iter().map(|&size| bitmap(&crate::tray::draw_icon(size), size)).collect();
         let mut ico = vec![0, 0, 1, 0];
         ico.extend((sizes.len() as u16).to_le_bytes());
         let mut offset = 6 + 16 * sizes.len();

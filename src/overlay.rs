@@ -165,7 +165,7 @@ fn update_cards(ui: &mut egui::Ui, fonts: &Fonts, settings: &mut Settings, updat
         Status::Downloading(release, done) => {
             (format!("Downloading Cuota {}", release.version), format!("{:.0}%", done * 100.0))
         }
-        Status::Restarting(release) => (format!("Starting Cuota {}", release.version), "Just a moment".to_owned()),
+        Status::Restarting(release) => (format!("Installing Cuota {}", release.version), "Just a moment".to_owned()),
         Status::Failed { error, release: Some(release) } => (format!("Couldn't update to Cuota {}", release.version), error.clone()),
         Status::Failed { error, release: None } => ("Couldn't check for updates".to_owned(), error.clone()),
     };
@@ -211,8 +211,8 @@ fn update_cards(ui: &mut egui::Ui, fonts: &Fonts, settings: &mut Settings, updat
         }
     });
 
-    let about = Some("Looks on GitHub for a new release once a day");
-    widgets::setting(ui, fonts, icon::REFRESH, "Check for updates automatically", about, widgets::TOGGLE_WIDTH, |ui| {
+    let about = Some("Looks on GitHub for a new release once a day, and installs it");
+    widgets::setting(ui, fonts, icon::REFRESH, "Update automatically", about, widgets::TOGGLE_WIDTH, |ui| {
         widgets::toggle(ui, &mut settings.check_updates);
     });
 
@@ -1965,6 +1965,7 @@ impl eframe::App for Overlay {
         {
             win::set_up_panel(window);
             win::keep_at_bottom(window, self.keep_bottom.clone());
+            win::use_exe_icon(window);
             self.main.window = Some(window);
         }
         if let Some(window) = self.main.window {

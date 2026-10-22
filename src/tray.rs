@@ -703,6 +703,32 @@ fn draw_app(size: usize) -> Vec<u8> {
     canvas.rgba
 }
 
+/// Cuota's icon for its exe, its setup and its windows: Clawd standing, squeezed as on the tray
+/// to 11 by 11, then as big as whole pixels let him be, centered.
+pub fn draw_icon(size: usize) -> Vec<u8> {
+    const SIDE: usize = 11;
+    let scale = (size / (SIDE + 1)).max(1);
+    let offset = size.saturating_sub(SIDE * scale) / 2;
+    let mut rgba = vec![0; size * size * 4];
+    let mut top = 0;
+    for (line, height) in mascot::STAND.iter().zip(CLAWD_ROWS.map(|h| h as usize)) {
+        for (col, pixel) in line.bytes().enumerate() {
+            let color = match pixel {
+                b'#' => CLAUDE_ORANGE,
+                b'o' | b'-' => EYE,
+                _ => continue,
+            };
+            for y in offset + top * scale..offset + (top + height) * scale {
+                for x in offset + col * scale..offset + (col + 1) * scale {
+                    rgba[(y * size + x) * 4..][..4].copy_from_slice(&color.to_srgba_unmultiplied());
+                }
+            }
+        }
+        top += height;
+    }
+    rgba
+}
+
 fn draw_limit(size: usize, limit: &Limit, view: &View, ink: Ink) -> Vec<u8> {
     let mut canvas = Canvas::new(size);
     let percent = limit.percent.round().clamp(0.0, 999.0) as u32;

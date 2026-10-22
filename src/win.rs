@@ -596,6 +596,27 @@ pub fn shows_at(window: HWND, x: i32, y: i32) -> bool {
     }
 }
 
+/// Gives `window`'s class, which winit registers for all of Cuota's windows without an icon,
+/// the exe's own (see build.rs). winit sets only each window's small icon, so the taskbar fell
+/// back to Windows' blank one for the settings window.
+pub fn use_exe_icon(window: HWND) {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GCLP_HICON, GCLP_HICONSM, GetSystemMetrics, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CXSMICON,
+        SM_CYICON, SM_CYSMICON, SetClassLongPtrW,
+    };
+    unsafe {
+        let instance = GetModuleHandleW(null());
+        for (index, width, height) in [(GCLP_HICON, SM_CXICON, SM_CYICON), (GCLP_HICONSM, SM_CXSMICON, SM_CYSMICON)] {
+            // The icon group build.rs gives id 1.
+            let icon = LoadImageW(instance, 1 as _, IMAGE_ICON, GetSystemMetrics(width), GetSystemMetrics(height), LR_DEFAULTCOLOR);
+            if icon != 0 {
+                SetClassLongPtrW(window, index, icon);
+            }
+        }
+    }
+}
+
 /// The radius the panel's window is cut to, in physical pixels.
 pub fn corner_radius() -> f32 {
     f32::from_bits(CORNER_RADIUS.load(Ordering::Relaxed))

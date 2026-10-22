@@ -1,11 +1,11 @@
 //! Updates from Cuota's GitHub releases: a look at the latest one a little after Cuota starts and
-//! once a day after that, or whenever asked, and putting its Cuota.exe in place of this one.
-//! Cuota is a portable exe, so updating replaces the file where it is: Start with Windows, which
-//! keeps its path, then starts the new one, and the settings, kept in `%APPDATA%`, stay put.
+//! once a day after that, or whenever asked, and installing it, by itself when found by those
+//! looks. The settings, kept in `%APPDATA%`, stay put.
 //!
-//! Windows lets a running exe be renamed but not overwritten, so this one moves aside to
-//! `Cuota.exe.old`, the download takes its name, and the new copy starts with `--updated`, which
-//! waits for this one to quit and then clears away the old file.
+//! Releases carry only CuotaSetup.exe, so updating downloads that to `%TEMP%` and runs it with
+//! `--update` and this exe's path. Setup closes this Cuota, installs the new one (moving a copy
+//! run from anywhere else into its folder, and deleting it there), and starts it with
+//! `--updated`, which clears away what's left.
 
 use crate::log;
 use chrono::{DateTime, Local};
@@ -20,11 +20,13 @@ const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AGENT: &str = concat!("cuota/", env!("CARGO_PKG_VERSION"));
 /// The release's file to download, the same name every time.
-const ASSET: &str = "Cuota.exe";
+const ASSET: &str = "CuotaSetup.exe";
+/// Setup's flag for updating without being asked, followed by the exe it replaces.
+const SETUP_UPDATE: &str = "--update";
 /// The first look waits a little, so it stays out of the way of starting up.
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
-/// Far more than Cuota.exe takes, so a wrong download can't fill the memory.
+/// Far more than setup takes, so a wrong download can't fill the memory.
 const MAX_SIZE: usize = 64 * 1024 * 1024;
 /// The flag the new copy starts with.
 pub const UPDATED: &str = "--updated";
@@ -38,13 +40,13 @@ pub struct Release {
     pub version: String,
     /// Its page, which says what's new.
     pub page: String,
-    /// Where its Cuota.exe downloads from, if it has one.
+    /// Where its CuotaSetup.exe downloads from, if it has one.
     pub download: Option<String>,
 }
 
 impl Release {
-    /// Whether it can be put in place of this exe from inside Cuota. Debug builds leave
-    /// cargo's exe alone, so they only link to the page.
+    /// Whether it can be installed from inside Cuota. Debug builds leave cargo's exe alone,
+    /// so they only link to the page.
     pub fn installable(&self) -> bool {
         self.download.is_some() && !cfg!(debug_assertions)
     }
@@ -60,7 +62,7 @@ pub enum Status {
     Available(Release),
     /// Fetching it, with how much has come, from 0 to 1.
     Downloading(Release, f32),
-    /// In place, with the new copy started, so this one quits.
+    /// Setup is installing it, so this one quits.
     Restarting(Release),
     /// The look or the update didn't work. Holds the release when it was the update.
     Failed { error: String, release: Option<Release> },
@@ -73,22 +75,35 @@ pub struct Updater {
     started: Instant,
     /// When it last started looking.
     asked: Option<Instant>,
+    /// Installs what its own look finds, without waiting for Update now.
+    install_found: bool,
 }
 
 impl Updater {
     /// `automatic` is off for the demo, whose panels are for screenshots.
     pub fn new(automatic: bool) -> Self {
-        Self { status: Arc::default(), automatic, started: Instant::now(), asked: None }
+        Self { status: Arc::default(), automatic, started: Instant::now(), asked: None, install_found: false }
     }
 
     pub fn status(&self) -> Status {
         self.status.lock().unwrap().clone()
     }
 
-    /// Looks for a new release when one's due and `on`. Returns how long until the next is due.
+    /// Looks for a new release when one's due and `on`, and installs what that finds. Returns
+    /// how long until the next look is due.
     pub fn tick(&mut self, ctx: &egui::Context, on: bool) -> Option<Duration> {
         if !on || !self.automatic {
             return None;
+        }
+        if self.install_found
+            && let Status::Available(release) = self.status()
+        {
+            // Once: if it fails, Try again is the user's.
+            self.install_found = false;
+            if release.installable() {
+                log::info!("Installing Cuota {} by itself", release.version);
+                self.install(ctx);
+            }
         }
         let due = match self.asked {
             Some(asked) => asked + CHECK_EVERY,
@@ -102,6 +117,7 @@ impl Updater {
         let status = self.status();
         if !matches!(status, Status::Available(_) | Status::Downloading(..) | Status::Restarting(_)) {
             self.check(ctx);
+            self.install_found = true;
         }
         self.asked = Some(now);
         Some(CHECK_EVERY)
@@ -132,7 +148,7 @@ impl Updater {
         });
     }
 
-    /// Downloads the release found, puts it in place of this exe and starts it.
+    /// Downloads the release found and starts its setup, which closes this Cuota.
     pub fn install(&mut self, ctx: &egui::Context) {
         let release = match self.status() {
             Status::Available(release) | Status::Failed { release: Some(release), .. } => release,
@@ -146,14 +162,10 @@ impl Updater {
                 *status.lock().unwrap() = Status::Downloading(release.clone(), done);
                 ctx.request_repaint();
             };
-            let done = download(&url, progress).and_then(|bytes| {
-                let exe = std::env::current_exe().map_err(|e| format!("Couldn't tell where Cuota is: {e}"))?;
-                put_in_place(&exe, &bytes)?;
-                restart(&exe)
-            });
+            let done = download(&url, progress).and_then(|bytes| run_setup(&bytes));
             *status.lock().unwrap() = match done {
                 Ok(()) => {
-                    log::info!("Updated to Cuota {}, which starts as this one quits", release.version);
+                    log::info!("Setup is installing Cuota {}, which starts as this one quits", release.version);
                     Status::Restarting(release)
                 }
                 Err(error) => {
@@ -181,8 +193,9 @@ impl Updater {
     }
 }
 
-/// Clears away what an update left beside the exe: the copy it replaced, and a download that
-/// never took its place. The new copy does this once the old one has quit.
+/// Clears away what an update left: beside the exe, the copy it replaced and a download that
+/// never took its place, as earlier versions updated, and the setup it ran. The new copy does
+/// this once the old one has quit.
 pub fn clean_up() {
     let Ok(exe) = std::env::current_exe() else { return };
     for leftover in [beside(&exe, "old"), beside(&exe, "new")] {
@@ -192,6 +205,32 @@ pub fn clean_up() {
             log::warn!("Couldn't remove {}: {e}", leftover.display());
         }
     }
+    // Setup started this copy as its last step, so it takes a moment to let go of its file.
+    std::thread::spawn(|| {
+        let setup = downloaded_setup();
+        let until = Instant::now() + Duration::from_secs(60);
+        while setup.exists() && std::fs::remove_file(&setup).is_err() && Instant::now() < until {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+/// Where the release's setup downloads to.
+fn downloaded_setup() -> PathBuf {
+    std::env::temp_dir().join(ASSET)
+}
+
+/// Saves `bytes`, a release's setup, and runs it to update this exe.
+fn run_setup(bytes: &[u8]) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("Couldn't tell where Cuota is: {e}"))?;
+    let setup = downloaded_setup();
+    std::fs::write(&setup, bytes).map_err(|e| format!("Couldn't save the update in {}: {e}", setup.display()))?;
+    std::process::Command::new(&setup)
+        .arg(SETUP_UPDATE)
+        .arg(&exe)
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("Couldn't start the update: {e}"))
 }
 
 /// The latest release, or `None` when there's none yet.
@@ -294,37 +333,6 @@ fn beside(exe: &Path, extension: &str) -> PathBuf {
     name.into()
 }
 
-/// Writes `bytes` where `exe` is, moving the exe there now to `.old`. Anything that goes wrong
-/// puts things back as they were.
-fn put_in_place(exe: &Path, bytes: &[u8]) -> Result<(), String> {
-    let folder = exe.parent().map_or_else(|| exe.display().to_string(), |folder| folder.display().to_string());
-    let (new, old) = (beside(exe, "new"), beside(exe, "old"));
-    std::fs::write(&new, bytes).map_err(|e| format!("Couldn't save it in {folder}: {e}"))?;
-    // Left by an update whose old copy couldn't be cleared away.
-    let _ = std::fs::remove_file(&old);
-    if let Err(e) = std::fs::rename(exe, &old) {
-        let _ = std::fs::remove_file(&new);
-        return Err(format!("Couldn't move Cuota aside in {folder}: {e}"));
-    }
-    if let Err(e) = std::fs::rename(&new, exe) {
-        let _ = std::fs::rename(&old, exe);
-        let _ = std::fs::remove_file(&new);
-        return Err(format!("Couldn't put the new Cuota in {folder}: {e}"));
-    }
-    Ok(())
-}
-
-/// Starts the new copy with what this one started with, to take over once this one quits.
-fn restart(exe: &Path) -> Result<(), String> {
-    let args = std::env::args().skip(1).filter(|arg| arg != UPDATED);
-    std::process::Command::new(exe)
-        .args(args)
-        .arg(UPDATED)
-        .spawn()
-        .map(drop)
-        .map_err(|e| format!("Cuota is updated, but didn't start again, so start it yourself: {e}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,19 +357,19 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_exe_among_a_releases_files() {
+    fn finds_the_setup_among_a_releases_files() {
         let body = json!({
             "tag_name": "v1.2.0",
             "html_url": "https://github.com/arshit09/Cuota/releases/tag/v1.2.0",
             "assets": [
-                { "name": "notes.txt", "browser_download_url": "https://example.com/notes.txt" },
                 { "name": "Cuota.exe", "browser_download_url": "https://example.com/Cuota.exe" },
+                { "name": "CuotaSetup.exe", "browser_download_url": "https://example.com/CuotaSetup.exe" },
             ],
         });
         let release = parse_release(&body).unwrap();
         assert_eq!(release.version, "1.2.0");
         assert_eq!(release.page, "https://github.com/arshit09/Cuota/releases/tag/v1.2.0");
-        assert_eq!(release.download.as_deref(), Some("https://example.com/Cuota.exe"));
+        assert_eq!(release.download.as_deref(), Some("https://example.com/CuotaSetup.exe"));
 
         let no_exe = parse_release(&json!({ "tag_name": "1.3.0", "assets": [] })).unwrap();
         assert_eq!(no_exe.download, None);
@@ -369,27 +377,12 @@ mod tests {
         assert_eq!(parse_release(&json!({ "tag_name": "nightly" })), None);
     }
 
-    #[test]
-    fn puts_the_new_exe_in_place_and_keeps_the_old_one_aside() {
-        let folder = std::env::temp_dir().join(format!("cuota-update-test-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).unwrap();
-        let exe = folder.join("Cuota.exe");
-        std::fs::write(&exe, b"MZ old").unwrap();
-        std::fs::write(beside(&exe, "old"), b"MZ older").unwrap();
-
-        put_in_place(&exe, b"MZ new").unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), b"MZ new");
-        assert_eq!(std::fs::read(beside(&exe, "old")).unwrap(), b"MZ old");
-        assert!(!beside(&exe, "new").exists());
-        std::fs::remove_dir_all(&folder).unwrap();
-    }
-
     /// Asks GitHub for real, so it's left out of the usual run: `cargo test -- --ignored`.
     #[test]
     #[ignore]
     fn downloads_the_latest_release_from_github() {
         let release = latest().unwrap().expect("a release on GitHub");
-        let url = release.download.expect("a Cuota.exe in the latest release");
+        let url = release.download.expect("a CuotaSetup.exe in the latest release");
         let shown = std::cell::Cell::new(0.0);
         let bytes = download(&url, |done| shown.set(done)).unwrap();
         assert!(bytes.len() > 1024 * 1024);

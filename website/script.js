@@ -938,7 +938,7 @@
       const latest = list.find((r) => !r.draft && !r.prerelease);
       changelog(list, latest);
       if (!latest) return;
-      const exe = (latest.assets || []).find((asset) => asset.name === "Cuota.exe");
+      const exe = (latest.assets || []).find((asset) => asset.name === "CuotaSetup.exe");
       if (latest.tag_name) $$("[data-release-version]").forEach((el) => (el.textContent = latest.tag_name));
       if (exe) {
         const size = `${(exe.size / 1048576).toFixed(1)} MB`;

@@ -79,9 +79,9 @@ The screenshots use `--demo`'s made-up account and usage.
 
 Download **CuotaSetup.exe** from the [latest release](https://github.com/arshit09/Cuota/releases/latest), run it and click **Install**. It's unsigned, so if Windows says it protected your PC, click **More info**, then **Run anyway**. Setup puts Cuota in `%LOCALAPPDATA%\Programs\Cuota` (no admin rights needed; it asks only if that folder won't let it write), adds it to the Start menu and starts it. Uninstall it from **Settings › Apps**. Your settings are kept.
 
-Prefer no installer? The release also has the portable **Cuota.exe**: it's self-contained, so copy it anywhere and run it.
+Used the portable **Cuota.exe** from 1.4.0 or before? Run CuotaSetup.exe once: it closes that copy, deletes it, points **Start with Windows** at the installed one (so it never starts twice) and keeps your settings.
 
-Cuota checks for new releases once a day; when one is out, **Settings › Updates › Update now** downloads it, swaps it in for the old file and restarts. Your settings are kept.
+Cuota checks for new releases once a day and installs them by itself: it runs the new release's setup, which closes Cuota, updates it and starts it again. Turn that off in **Settings › Updates**, and use **Update now** there instead.
 
 Or build it yourself:
 
@@ -148,7 +148,7 @@ Tips:
 - Calls `api.anthropic.com/api/oauth/usage`, the same endpoint Claude Code uses. The token goes only to Anthropic.
 - For usage details, reads Claude Code's session transcripts in `%USERPROFILE%\.claude\projects`, only while the panel is expanded or shows a detail from them. They stay on your PC.
 - Never writes to Claude's files itself. **Log out**, in settings' account menu, runs Claude Code's own `claude auth logout`. Its own settings live in `%APPDATA%\Cuota\settings.json`.
-- Once a day (unless turned off in **Updates**), asks `api.github.com` for this repository's latest release. It sends nothing about you. Updating downloads that release's `Cuota.exe` beside the running one, renames the running one to `Cuota.exe.old`, starts the new one and quits; the new one deletes the old file.
+- Once a day (unless turned off in **Updates**), asks `api.github.com` for this repository's latest release. It sends nothing about you. Updating downloads that release's `CuotaSetup.exe` to `%TEMP%` and runs it, which closes Cuota, installs the new one and starts it; the new one deletes the downloaded setup.
 - Logs rate limits, failed requests, crashes and other problems to `%LOCALAPPDATA%\Cuota\Logs\cuota.log`. Past 1 MB it moves to `cuota.old.log`, so the log stays small. The log leaves out your email and what your sessions are about.
 
 API calls stay rare: about once a minute while Claude is working, once more when it stops, and none while it's idle (**Refresh**, in settings' account menu, still asks). It also reuses usage Claude Code already fetched.

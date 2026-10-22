@@ -357,7 +357,7 @@ pub struct Settings {
     pub panel_spots: BTreeMap<String, [f32; 2]>,
     /// Notes how much of each limit Claude Code's tasks use (see usage.rs).
     pub track_usage: bool,
-    /// Looks on GitHub for a new release of Cuota once a day (see update.rs).
+    /// Looks on GitHub for a new release of Cuota once a day, and installs it (see update.rs).
     pub check_updates: bool,
 }
 

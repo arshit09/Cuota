@@ -17,8 +17,9 @@ use eframe::egui::{
 };
 use job::Stage;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use windows_sys::Win32::Graphics::Dwm::{
     DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DwmEnableBlurBehindWindow, DwmSetWindowAttribute,
 };
@@ -43,6 +44,8 @@ const CLOSE_GLYPH: char = '\u{E8BB}';
 /// How tall Clawd's clip shows, in points; its width follows the GIF's.
 const CLAWD_HEIGHT: f32 = 160.0;
 const BUTTON: [f32; 2] = [140.0, 32.0];
+/// How long an update's "done" shows before setup closes by itself.
+const UPDATED_FOR: Duration = Duration::from_millis(1500);
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -52,6 +55,11 @@ fn main() -> eframe::Result {
     {
         std::process::exit(if job::put_files(Path::new(folder), job::CUOTA).is_ok() { 0 } else { 1 });
     }
+    // Cuota's updater, with the exe it's updating.
+    let updating = match args.as_slice() {
+        [flag, exe] if flag == job::UPDATE => Some(PathBuf::from(exe)),
+        _ => None,
+    };
     let icon = window_icon(job::ICON, 64);
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
@@ -65,7 +73,7 @@ fn main() -> eframe::Result {
         centered: true,
         ..Default::default()
     };
-    eframe::run_native("Cuota Setup", options, Box::new(|cc| Ok(Box::new(Setup::new(cc)))))
+    eframe::run_native("Cuota Setup", options, Box::new(|cc| Ok(Box::new(Setup::new(cc, updating)))))
 }
 
 struct Setup {
@@ -73,22 +81,27 @@ struct Setup {
     stage: Arc<Mutex<Stage>>,
     window: isize,
     fonts: Fonts,
+    /// The Cuota being updated, when its updater ran setup.
+    updating: Option<PathBuf>,
+    /// When an update was seen done, to close a moment later.
+    done_at: Option<Instant>,
 }
 
 impl Setup {
-    fn new(cc: &eframe::CreationContext) -> Self {
+    fn new(cc: &eframe::CreationContext, updating: Option<PathBuf>) -> Self {
         let fonts = set_up_fonts(&cc.egui_ctx);
         let window = match cc.window_handle().map(|handle| handle.as_raw()) {
             Ok(RawWindowHandle::Win32(handle)) => handle.hwnd.get(),
             _ => 0,
         };
         see_through(window);
-        Self {
-            clawd: clip::Player::new(&cc.egui_ctx, clip::GREETING),
-            stage: Arc::new(Mutex::new(Stage::Ready)),
-            window,
-            fonts,
+        use_exe_icon(window);
+        let stage = Arc::new(Mutex::new(Stage::Ready));
+        // An update needs no click.
+        if updating.is_some() {
+            job::start(stage.clone(), cc.egui_ctx.clone(), window, updating.clone());
         }
+        Self { clawd: clip::Player::new(&cc.egui_ctx, clip::GREETING), stage, window, fonts, updating, done_at: None }
     }
 
     /// Minimize and close, drawn as Windows 11 draws them. Close waits while installing.
@@ -151,10 +164,13 @@ impl eframe::App for Setup {
         painter.image(texture.id(), clawd, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         ctx.request_repaint_after(next);
 
+        let updating = self.updating.is_some();
         let status = match &stage {
+            Stage::Ready if updating => format!("Updating Cuota to {}…", job::VERSION),
             Stage::Ready => format!("Ready to install Cuota {}", job::VERSION),
             Stage::Working(step) => (*step).to_owned(),
             Stage::Asking => "Waiting for your permission…".to_owned(),
+            Stage::Done if updating => format!("Cuota is updated to {}.", job::VERSION),
             Stage::Done => "Cuota is installed. Find it in Start anytime.".to_owned(),
             Stage::Failed(why) => why.clone(),
         };
@@ -164,7 +180,18 @@ impl eframe::App for Setup {
         painter.galley(pos2(area.center().x, clawd.bottom() + 6.0), galley, TEXT);
         self.window_controls(ui, area, working);
 
+        // An update closes by itself once it's done.
+        if updating && stage == Stage::Done {
+            let done_at = *self.done_at.get_or_insert_with(Instant::now);
+            match UPDATED_FOR.checked_sub(done_at.elapsed()) {
+                Some(left) => ctx.request_repaint_after(left),
+                None => ctx.send_viewport_cmd(ViewportCommand::Close),
+            }
+            return;
+        }
+
         let label = match stage {
+            Stage::Ready if updating => return,
             Stage::Ready => "Install",
             Stage::Done => "Close",
             Stage::Failed(_) => "Try again",
@@ -176,7 +203,7 @@ impl eframe::App for Setup {
             if stage == Stage::Done {
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             } else {
-                job::start(self.stage.clone(), ctx.clone(), self.window);
+                job::start(self.stage.clone(), ctx.clone(), self.window, self.updating.clone());
             }
         }
     }
@@ -249,6 +276,25 @@ fn set_up_fonts(ctx: &egui::Context) -> Fonts {
     });
     ctx.set_fonts(fonts);
     Fonts { strong: family, icons }
+}
+
+/// Gives the window setup's own icon, from its resources (see build.rs), at the taskbar's size.
+/// winit sets only the small one, from which the taskbar showed Windows' blank icon instead.
+fn use_exe_icon(window: isize) {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GCLP_HICON, GetSystemMetrics, ICON_BIG, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CYICON,
+        SendMessageW, SetClassLongPtrW, WM_SETICON,
+    };
+    unsafe {
+        // The icon group build.rs gives id 1.
+        let (width, height) = (GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+        let icon = LoadImageW(GetModuleHandleW(std::ptr::null()), 1 as _, IMAGE_ICON, width, height, LR_DEFAULTCOLOR);
+        if icon != 0 {
+            SetClassLongPtrW(window, GCLP_HICON, icon);
+            SendMessageW(window, WM_SETICON, ICON_BIG as usize, icon);
+        }
+    }
 }
 
 /// Lets the desktop show through the window's clear corners, as Cuota's panel does: an empty

@@ -3,7 +3,7 @@
 use crate::{install, shortcut};
 use eframe::egui::Context;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,6 +20,11 @@ pub const VERSION: &str = env!("CUOTA_VERSION");
 const PUBLISHER: &str = "Arshit Vaghasiya";
 /// Setup runs a copy of itself as admin with this and a folder, when copying there needs it.
 pub const COPY_FILES: &str = "--copy-files";
+/// Cuota's updater runs setup with this and the exe it's updating: setup installs without
+/// waiting for a click, and closes once it's done.
+pub const UPDATE: &str = "--update";
+/// What the new Cuota starts with after an update (see Cuota's update.rs).
+const UPDATED: &str = "--updated";
 /// Each step shows at least this long, so its status can be read.
 const STEP: Duration = Duration::from_millis(500);
 
@@ -34,8 +39,8 @@ pub enum Stage {
 }
 
 /// Installs Cuota, moving `stage` along as it goes. `window` is setup's, for Windows to put
-/// its permission prompt in front of.
-pub fn start(stage: Arc<Mutex<Stage>>, ctx: Context, window: isize) {
+/// its permission prompt in front of. `updating` is the exe Cuota's updater ran setup from.
+pub fn start(stage: Arc<Mutex<Stage>>, ctx: Context, window: isize, updating: Option<PathBuf>) {
     std::thread::spawn(move || {
         let mut shown = Instant::now() - STEP;
         let mut show = |next: Stage| {
@@ -44,7 +49,13 @@ pub fn start(stage: Arc<Mutex<Stage>>, ctx: Context, window: isize) {
             ctx.request_repaint();
             shown = Instant::now();
         };
-        let result = install(&mut show, window);
+        let result = install(&mut show, window, updating.as_deref());
+        // An update that didn't work leaves the Cuota it was updating running, as it was.
+        if result.is_err()
+            && let Some(old) = updating.filter(|old| old.is_file() && !install::running())
+        {
+            let _ = Command::new(&old).spawn();
+        }
         show(match result {
             Ok(()) => Stage::Done,
             Err(e) => Stage::Failed(e),
@@ -52,11 +63,21 @@ pub fn start(stage: Arc<Mutex<Stage>>, ctx: Context, window: isize) {
     });
 }
 
-fn install(show: &mut dyn FnMut(Stage), window: isize) -> Result<(), String> {
+fn install(show: &mut dyn FnMut(Stage), window: isize, updating: Option<&Path>) -> Result<(), String> {
     if CUOTA.is_empty() {
         return Err("This setup was built without Cuota.".into());
     }
     let folder = install::folder().ok_or("Couldn't find your Programs folder.")?;
+    // Copies run from anywhere else, like the portable Cuota.exe from before setup: running,
+    // started at sign-in, or the one being updated. The installed one takes their place.
+    let found = install::running_exes().into_iter().chain(install::startup_exe()).chain(updating.map(Path::to_path_buf));
+    let mut old_copies: Vec<PathBuf> = Vec::new();
+    for exe in found {
+        let elsewhere = exe.parent().is_some_and(|parent| !install::same_path(parent, &folder));
+        if elsewhere && exe.is_file() && !old_copies.iter().any(|seen| install::same_path(seen, &exe)) {
+            old_copies.push(exe);
+        }
+    }
     if install::running() {
         show(Stage::Working("Closing Cuota…"));
         if !install::close_running(Duration::from_secs(5)) {
@@ -78,10 +99,20 @@ fn install(show: &mut dyn FnMut(Stage), window: isize) -> Result<(), String> {
     shortcut::create(&link, &exe, &folder.join(install::ICON), "Your Claude usage limits, with Clawd")
         .map_err(|e| format!("Couldn't add Cuota to Start: {e}"))?;
     install::register(&folder, VERSION, PUBLISHER)?;
-    install::point_startup_at(&exe);
+
+    if !old_copies.is_empty() {
+        show(Stage::Working("Removing the old Cuota…"));
+        old_copies.iter().for_each(|old| install::remove_old_copy(old));
+    }
 
     show(Stage::Working("Starting Cuota…"));
-    Command::new(&exe).current_dir(&folder).spawn().map_err(|e| format!("Couldn't start Cuota: {e}"))?;
+    // It points Start with Windows at itself, if an old copy had it.
+    let mut cuota = Command::new(&exe);
+    cuota.arg(install::INSTALLED);
+    if updating.is_some() {
+        cuota.arg(UPDATED);
+    }
+    cuota.current_dir(&folder).spawn().map_err(|e| format!("Couldn't start Cuota: {e}"))?;
     Ok(())
 }
 

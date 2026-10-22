@@ -21,11 +21,11 @@ use windows_sys::Win32::System::Registry::{
     RegSetKeyValueW,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcessId, OpenMutexW, OpenProcess, PROCESS_TERMINATE, SYNCHRONIZATION_SYNCHRONIZE, TerminateProcess,
-    WaitForSingleObject,
+    GetCurrentProcessId, OpenMutexW, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_TERMINATE, QueryFullProcessImageNameW, SYNCHRONIZATION_SYNCHRONIZE, TerminateProcess, WaitForSingleObject,
 };
 use windows_sys::Win32::UI::Shell::{FOLDERID_Programs, FOLDERID_UserProgramFiles, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath};
-use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, PostMessageW, WM_APP};
+use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowThreadProcessId, PostMessageW, WM_APP};
 use windows_sys::core::GUID;
 
 /// Held by the running Cuota: one per sign-in.
@@ -36,6 +36,9 @@ pub const TRAY_CLASS: &str = "CuotaTray";
 pub const WM_QUIT_CUOTA: u32 = WM_APP + 4;
 /// The argument Settings › Apps runs Cuota with to uninstall it.
 pub const UNINSTALL: &str = "--uninstall";
+/// Setup starts the installed Cuota with this, so it takes over Start with Windows from the
+/// copy it replaced (see [`take_over_startup`]).
+pub const INSTALLED: &str = "--installed";
 pub const EXE: &str = "Cuota.exe";
 /// Cuota.exe has no icon of its own, so its shortcut and Apps entry point at this one.
 pub const ICON: &str = "Cuota.ico";
@@ -45,7 +48,7 @@ pub const RUN_VALUE: &str = "Cuota";
 const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Cuota";
 
 /// `%LOCALAPPDATA%\Programs\Cuota`, which needn't exist yet.
-#[allow(dead_code)] // Setup's, like `register` and `point_startup_at`.
+#[allow(dead_code)] // Setup's, like `register` and `remove_old_copy`.
 pub fn folder() -> Option<PathBuf> {
     known_folder(&FOLDERID_UserProgramFiles).map(|programs| programs.join("Cuota"))
 }
@@ -83,7 +86,23 @@ pub fn running() -> bool {
 /// Asks each running Cuota to quit and gives them `wait` to go. Copies from before Cuota knew
 /// that request, or that don't answer, are ended. Returns whether none is left running.
 pub fn close_running(wait: Duration) -> bool {
+    let trays = tray_windows();
+    for &(window, _) in &trays {
+        unsafe { PostMessageW(window, WM_QUIT_CUOTA, 0, 0) };
+    }
+    if gone_within(wait) {
+        return true;
+    }
+    // By process, for copies renamed from Cuota.exe, and by name, for any without a tray.
+    trays.iter().for_each(|&(_, process)| end_process(process));
+    end_processes(EXE);
+    gone_within(Duration::from_secs(3))
+}
+
+/// Every running Cuota's tray window, which each version has had, with its process.
+fn tray_windows() -> Vec<(isize, u32)> {
     let class = wide(TRAY_CLASS);
+    let mut found = Vec::new();
     unsafe {
         let mut window = 0;
         loop {
@@ -91,14 +110,34 @@ pub fn close_running(wait: Duration) -> bool {
             if window == 0 {
                 break;
             }
-            PostMessageW(window, WM_QUIT_CUOTA, 0, 0);
+            let mut process = 0;
+            GetWindowThreadProcessId(window, &mut process);
+            if process != GetCurrentProcessId() {
+                found.push((window, process));
+            }
         }
     }
-    if gone_within(wait) {
-        return true;
+    found
+}
+
+/// Where the running Cuotas were started from, whatever their files are called.
+#[allow(dead_code)] // Setup's.
+pub fn running_exes() -> Vec<PathBuf> {
+    tray_windows().into_iter().filter_map(|(_, process)| process_exe(process)).collect()
+}
+
+fn process_exe(id: u32) -> Option<PathBuf> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, id);
+        if process == 0 {
+            return None;
+        }
+        let mut path = [0u16; 1024];
+        let mut length = path.len() as u32;
+        let read = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, path.as_mut_ptr(), &mut length) != 0;
+        CloseHandle(process);
+        read.then(|| PathBuf::from(OsString::from_wide(&path[..length as usize])))
     }
-    end_processes(EXE);
-    gone_within(Duration::from_secs(3))
 }
 
 fn gone_within(wait: Duration) -> bool {
@@ -110,6 +149,17 @@ fn gone_within(wait: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(100));
     }
     true
+}
+
+fn end_process(id: u32) {
+    unsafe {
+        let process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZATION_SYNCHRONIZE, 0, id);
+        if process != 0 {
+            TerminateProcess(process, 1);
+            WaitForSingleObject(process, 2000);
+            CloseHandle(process);
+        }
+    }
 }
 
 /// Ends every process named `name` but this one.
@@ -126,12 +176,7 @@ fn end_processes(name: &str) {
             let length = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
             let exe = String::from_utf16_lossy(&entry.szExeFile[..length]);
             if exe.eq_ignore_ascii_case(name) && entry.th32ProcessID != GetCurrentProcessId() {
-                let process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZATION_SYNCHRONIZE, 0, entry.th32ProcessID);
-                if process != 0 {
-                    TerminateProcess(process, 1);
-                    WaitForSingleObject(process, 2000);
-                    CloseHandle(process);
-                }
+                end_process(entry.th32ProcessID);
             }
             more = Process32NextW(snapshot, &mut entry) != 0;
         }
@@ -185,17 +230,67 @@ fn installed_copy() -> bool {
     here.zip(registered_folder()).is_some_and(|(here, folder)| same_path(&here, &folder))
 }
 
-fn same_path(a: &Path, b: &Path) -> bool {
+pub fn same_path(a: &Path, b: &Path) -> bool {
     a.as_os_str().to_string_lossy().eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
 }
 
 /// If Windows starts some Cuota at sign-in, as an earlier copy's Start with Windows set up,
-/// it starts `exe` instead.
-#[allow(dead_code)]
-pub fn point_startup_at(exe: &Path) {
-    if get_string(RUN_KEY, RUN_VALUE).is_some() {
-        let _ = set_string(RUN_KEY, RUN_VALUE, &format!("\"{}\"", exe.display()));
+/// it starts this one instead. Every version keeps that in the one value, so there's never
+/// two. Cuota does this itself when setup starts it with [`INSTALLED`]: Windows Defender takes
+/// a setup that points sign-in at the exe it just wrote for malware staying on the PC.
+#[allow(dead_code)] // Cuota's.
+pub fn take_over_startup() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let command = format!("\"{}\"", exe.display());
+    if get_string(RUN_KEY, RUN_VALUE).is_some_and(|entry| !entry.eq_ignore_ascii_case(&command)) {
+        let _ = set_string(RUN_KEY, RUN_VALUE, &command);
     }
+}
+
+/// The Cuota that Windows starts at sign-in, if any.
+#[allow(dead_code)]
+pub fn startup_exe() -> Option<PathBuf> {
+    get_string(RUN_KEY, RUN_VALUE).and_then(|command| command_exe(&command))
+}
+
+/// The program a command line starts: quoted, or up to the first space.
+fn command_exe(command: &str) -> Option<PathBuf> {
+    let command = command.trim();
+    let exe = match command.strip_prefix('"') {
+        Some(quoted) => quoted.split('"').next()?,
+        None => command.split(' ').next()?,
+    };
+    (!exe.is_empty()).then(|| PathBuf::from(exe))
+}
+
+/// Deletes `exe`, a Cuota run from outside setup's folder, such as the portable Cuota.exe that
+/// releases had before setup, and what its updates left beside it. It waits a little for the
+/// file to be let go of, as a Cuota that has just quit holds it a moment longer. Cuotas that
+/// cargo built are left alone.
+#[allow(dead_code)]
+pub fn remove_old_copy(exe: &Path) {
+    let is_exe = exe.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
+    if !is_exe || built_by_cargo(exe) {
+        return;
+    }
+    let until = Instant::now() + Duration::from_secs(3);
+    while exe.exists() && std::fs::remove_file(exe).is_err() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    for leftover in ["old", "new"] {
+        let mut name = exe.as_os_str().to_owned();
+        name.push(".");
+        name.push(leftover);
+        let _ = std::fs::remove_file(PathBuf::from(name));
+    }
+}
+
+/// Whether `exe` is in a cargo project's `target` folder.
+fn built_by_cargo(exe: &Path) -> bool {
+    exe.ancestors().any(|folder| {
+        folder.file_name().is_some_and(|name| name.eq_ignore_ascii_case("target"))
+            && folder.parent().is_some_and(|project| project.join("Cargo.toml").is_file())
+    })
 }
 
 /// Takes the installed Cuota off this PC: closes it, and removes its shortcut, its sign-in
@@ -299,6 +394,35 @@ mod tests {
         assert_eq!(folder, local.join("Programs").join("Cuota"));
         let shortcut = shortcut().unwrap();
         assert!(shortcut.ends_with(r"Start Menu\Programs\Cuota.lnk"), "{}", shortcut.display());
+    }
+
+    #[test]
+    fn reads_the_program_from_a_startup_command() {
+        let exe = |command| command_exe(command).map(|path| path.display().to_string());
+        assert_eq!(exe(r#""C:\Users\A B\Downloads\Cuota.exe""#).as_deref(), Some(r"C:\Users\A B\Downloads\Cuota.exe"));
+        assert_eq!(exe(r#""C:\Cuota\Cuota.exe" --demo"#).as_deref(), Some(r"C:\Cuota\Cuota.exe"));
+        assert_eq!(exe(r"C:\Cuota.exe --demo").as_deref(), Some(r"C:\Cuota.exe"));
+        assert_eq!(exe("  "), None);
+    }
+
+    #[test]
+    fn removes_an_old_copy_and_its_leftovers_but_not_cargos() {
+        let folder = std::env::temp_dir().join(format!("cuota-old-copy-{}", std::process::id()));
+        let built = folder.join("project").join("target").join("release");
+        std::fs::create_dir_all(&built).unwrap();
+        std::fs::write(folder.join("project").join("Cargo.toml"), "").unwrap();
+        for name in ["Cuota (1).exe", "Cuota (1).exe.old", "Cuota (1).exe.new", "notes.txt"] {
+            std::fs::write(folder.join(name), b"MZ").unwrap();
+        }
+        std::fs::write(built.join("cuota.exe"), b"MZ").unwrap();
+
+        remove_old_copy(&folder.join("Cuota (1).exe"));
+        remove_old_copy(&folder.join("notes.txt"));
+        remove_old_copy(&built.join("cuota.exe"));
+        let left: Vec<_> = std::fs::read_dir(&folder).unwrap().map(|f| f.unwrap().file_name()).collect();
+        assert_eq!(left, ["notes.txt", "project"]);
+        assert!(built.join("cuota.exe").exists());
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]
