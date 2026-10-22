@@ -455,6 +455,55 @@ pub fn local_account() -> Account {
     read_claude_json().account
 }
 
+/// What cmd answers with when it can't find a command.
+const COMMAND_NOT_FOUND: i32 = 9009;
+/// Keeps the cmd that runs Claude Code's command out of sight.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Signs Claude Code out on this PC, as its /logout does, by running `claude auth logout`.
+/// Cuota has no login of its own, only Claude Code's, so this signs Cuota out too. A hidden
+/// cmd runs it, so the PATH finds Claude Code whether it's a claude.exe or npm's claude.cmd. It
+/// takes a moment, so it's for a thread of its own. Err says why it couldn't, for the user.
+pub fn log_out() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    // Tests click through settings, and must never sign anyone out.
+    if cfg!(test) {
+        unreachable!("tests never log Claude Code out");
+    }
+    let output = std::process::Command::new("cmd.exe")
+        .args(["/d", "/c", "claude auth logout"])
+        .current_dir(std::env::temp_dir())
+        .stdin(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    let output = match output {
+        Ok(output) => output,
+        Err(e) => {
+            log::warn!("Couldn't run claude auth logout: {e}");
+            return Err(format!("Couldn't run Claude Code: {e}"));
+        }
+    };
+    if output.status.success() {
+        log::info!("Logged Claude Code out");
+        return Ok(());
+    }
+    let said = [&output.stderr, &output.stdout].map(|text| String::from_utf8_lossy(text).into_owned()).join("\n");
+    log::warn!("claude auth logout failed ({}): {}", output.status, said.trim());
+    Err(log_out_failure(output.status.code(), &said))
+}
+
+/// Why logging out failed, for the user, from cmd's exit code and what was printed.
+fn log_out_failure(code: Option<i32>, said: &str) -> String {
+    if code == Some(COMMAND_NOT_FOUND) {
+        return "Cuota couldn't find Claude Code. Run /logout in Claude Code to log out.".to_owned();
+    }
+    // Its last line says the most.
+    match said.lines().map(str::trim).rfind(|line| !line.is_empty()) {
+        Some(line) => format!("Claude Code couldn't log out: {line}"),
+        None => "Claude Code couldn't log out. Run /logout in Claude Code instead.".to_owned(),
+    }
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 struct SessionFile {
@@ -1282,6 +1331,16 @@ mod tests {
     fn title_cases_model_keys() {
         assert_eq!(title_case("fable"), "Fable");
         assert_eq!(title_case("oauth_apps"), "Oauth Apps");
+    }
+
+    #[test]
+    fn a_failed_log_out_says_why_or_where_else_to_log_out() {
+        assert_eq!(
+            log_out_failure(Some(COMMAND_NOT_FOUND), "'claude' is not recognized as an internal or external command"),
+            "Cuota couldn't find Claude Code. Run /logout in Claude Code to log out."
+        );
+        assert_eq!(log_out_failure(Some(1), "Logging out…\nNetwork error\n\n"), "Claude Code couldn't log out: Network error");
+        assert!(log_out_failure(Some(1), " \n").ends_with("Run /logout in Claude Code instead."));
     }
 
     #[test]

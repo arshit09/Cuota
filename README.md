@@ -134,7 +134,7 @@ Drag the panel to move it. Always on top and Desktop are the same panel, so only
 
 **Move aside for the pointer** (in General, off at first): to click something behind the panel, just head for it. When the pointer slows down coming toward the panel, as it does before a click, the panel slides out of the way, and it slides back once the pointer has left its spot. Passing quickly over it, or idling beside it, leaves it where it is. To use the panel itself, hold **Ctrl** as you point at it; it then stays put until the pointer leaves it.
 
-Settings has a page for each part, picked in its sidebar: **General** (Show as, Monitors, Double-click, Move aside for the pointer, Start with Windows), **Appearance** (the panel's size and opacity, its theme: Dark, Light, or light or dark as Windows' apps are, and Clawd's animation), **Sounds** (8-bit sound effects: Normal plays only what matters, like work starting, Claude asking you something and work finishing, while Lively adds a sound for each kind of step; a list plays each one so you can learn them), **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel, **Desktop pet** (above), **Usage**, and **Updates** (check now, update to a new release, or turn off the daily check). **View on GitHub**, at the foot of the sidebar, opens this repository.
+Settings has a page for each part, picked in its sidebar: **General** (Show as, Monitors, Double-click, Move aside for the pointer, Start with Windows), **Appearance** (the panel's size and opacity, its theme: Dark, Light, or light or dark as Windows' apps are, and Clawd's animation), **Sounds** (8-bit sound effects: Normal plays only what matters, like work starting, Claude asking you something and work finishing, while Lively adds a sound for each kind of step; a list plays each one so you can learn them), **Panel** and **Taskbar**, which each set what that one shows: Bars or Pie, which limits, percentage, time left, and Clawd, with or without his status line above the meters in the panel, **Desktop pet** (above), **Usage**, and **Updates** (check now, update to a new release, or turn off the daily check). **View on GitHub**, at the foot of the sidebar, opens this repository. Under it is the Claude Code account Cuota reads, by its email; click it for a menu with your plan's details and when usage was last fetched, **Refresh**, and **Log out**, which signs Claude Code out on this PC (Cuota uses its login, so it signs out too). Quit Cuota from its tray icon's menu.
 
 Tips:
 
@@ -147,11 +147,11 @@ Tips:
 - Reads Claude Code's login token from `%USERPROFILE%\.claude\.credentials.json` (or `CLAUDE_CONFIG_DIR`, or `CLAUDE_CODE_OAUTH_TOKEN`).
 - Calls `api.anthropic.com/api/oauth/usage`, the same endpoint Claude Code uses. The token goes only to Anthropic.
 - For usage details, reads Claude Code's session transcripts in `%USERPROFILE%\.claude\projects`, only while the panel is expanded or shows a detail from them. They stay on your PC.
-- Never writes to Claude's files. Its own settings live in `%APPDATA%\Cuota\settings.json`.
+- Never writes to Claude's files itself. **Log out**, in settings' account menu, runs Claude Code's own `claude auth logout`. Its own settings live in `%APPDATA%\Cuota\settings.json`.
 - Once a day (unless turned off in **Updates**), asks `api.github.com` for this repository's latest release. It sends nothing about you. Updating downloads that release's `Cuota.exe` beside the running one, renames the running one to `Cuota.exe.old`, starts the new one and quits; the new one deletes the old file.
 - Logs rate limits, failed requests, crashes and other problems to `%LOCALAPPDATA%\Cuota\Logs\cuota.log`. Past 1 MB it moves to `cuota.old.log`, so the log stays small. The log leaves out your email and what your sessions are about.
 
-API calls stay rare: about once a minute while Claude is working, once more when it stops, and none while it's idle (the Refresh button still asks). It also reuses usage Claude Code already fetched.
+API calls stay rare: about once a minute while Claude is working, once more when it stops, and none while it's idle (**Refresh**, in settings' account menu, still asks). It also reuses usage Claude Code already fetched.
 
 The endpoint is undocumented, so a Claude update could break it.
 

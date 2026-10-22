@@ -26,9 +26,9 @@ use crate::widgets::{self, Fonts, NavIcon, SortRow, Sorted, icon, single_line};
 use crate::win;
 use chrono::{TimeDelta, Utc};
 use eframe::egui::{
-    self, Align2, Color32, FontData, FontFamily, FontId, IconData, Id, Label, Margin, MouseWheelUnit,
-    PointerButton, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2, ViewportBuilder, ViewportCommand,
-    ViewportId, WindowLevel, pos2, vec2,
+    self, Align2, Color32, FontData, FontFamily, FontId, IconData, Id, Label, Margin, MouseWheelUnit, PointerButton,
+    Popup, PopupCloseBehavior, Pos2, Rect, RectAlign, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2,
+    ViewportBuilder, ViewportCommand, ViewportId, WindowLevel, pos2, vec2,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::{BTreeSet, HashMap};
@@ -55,6 +55,8 @@ pub(crate) const GLANCE_GAP: f32 = 6.0;
 const SETTINGS_SIZE: Vec2 = vec2(800.0, 600.0);
 const SETTINGS_MIN: Vec2 = vec2(640.0, 580.0);
 const SIDEBAR_WIDTH: f32 = 248.0;
+/// The menu the account at the foot of the sidebar opens.
+const ACCOUNT_MENU_WIDTH: f32 = 296.0;
 const PAGE_WIDTH: f32 = 760.0;
 /// The page's title, above what scrolls, and the room either side of the page.
 const PAGE_TITLE: f32 = 68.0;
@@ -286,6 +288,18 @@ impl Page {
     }
 }
 
+/// Log out, in the account menu at the foot of the settings sidebar, which signs Claude Code out
+/// on this PC.
+enum LogOut {
+    Idle,
+    /// Clicked once, and waiting for a second click to be sure.
+    Confirming,
+    /// Claude Code is signing out, on a thread of its own, which says how that went.
+    Running(Receiver<Result<(), String>>),
+    /// Why it couldn't, for the menu to say.
+    Failed(String),
+}
+
 /// The panel with only Taskbar on: shown beside the taskbar when an icon is clicked, and hidden
 /// again when it loses focus, like Windows' own flyouts.
 #[derive(Clone, Copy, PartialEq)]
@@ -499,6 +513,8 @@ pub struct Overlay {
     history: History,
     /// Clear history was clicked once, and waits for a second click to be sure.
     clearing: bool,
+    /// Where the account menu's Log out has got to.
+    log_out: LogOut,
     /// Looks for new releases of Cuota, and puts one in place.
     updater: Updater,
     /// Whether Windows' apps are in light mode, as last read, for the panel's Windows theme.
@@ -584,6 +600,7 @@ impl Overlay {
             stats_asked: None,
             history: if demo { History::demo() } else { History::load() },
             clearing: false,
+            log_out: LogOut::Idle,
             updater: Updater::new(!demo),
             light_windows: win::light_apps(),
         }
@@ -1221,11 +1238,9 @@ impl Overlay {
         PAGE_TITLE + scroll.content_size.y
     }
 
-    /// The account on top, then the pages, and a link to Cuota's GitHub over its version at the
-    /// bottom. Quitting is left to the tray icon's menu.
+    /// The pages, then at the bottom a link to Cuota's GitHub and the account, over Cuota's
+    /// version. Quitting is left to the tray icon's menu.
     fn settings_sidebar(&mut self, ui: &mut egui::Ui, state: &State) {
-        self.settings_account(ui, state);
-        ui.add_space(20.0);
         ui.spacing_mut().item_spacing.y = 4.0;
         for page in Page::ALL {
             if widgets::nav_item(ui, &self.fonts, page.icon(ui.ctx()), page.name(), self.settings_page == page).clicked() {
@@ -1235,12 +1250,16 @@ impl Overlay {
 
         let bottom = ui.max_rect();
         let footer = Rect::from_min_max(pos2(bottom.left(), bottom.bottom() - 20.0), bottom.max);
-        let link = Rect::from_min_size(pos2(bottom.left(), footer.top() - 8.0 - 36.0), vec2(bottom.width(), 36.0));
+        let account_at = pos2(bottom.left(), footer.top() - 4.0 - widgets::ACCOUNT_HEIGHT);
+        let account = Rect::from_min_size(account_at, vec2(bottom.width(), widgets::ACCOUNT_HEIGHT));
+        let link = Rect::from_min_size(pos2(bottom.left(), account.top() - 4.0 - 36.0), vec2(bottom.width(), 36.0));
         let mut slot = ui.new_child(UiBuilder::new().max_rect(link));
         let github = widgets::nav_link(&mut slot, &self.fonts, widgets::github_mark(ui.ctx()), "View on GitHub");
         if github.on_hover_text(REPOSITORY).clicked() {
             win::open_page(REPOSITORY);
         }
+        let mut slot = ui.new_child(UiBuilder::new().max_rect(account));
+        self.settings_account(&mut slot, state);
         // Lined up with the entries' icons.
         let version_at = pos2(footer.left() + 14.0, footer.center().y);
         let font = FontId::proportional(12.0);
@@ -1262,43 +1281,136 @@ impl Overlay {
         }
     }
 
-    /// The Claude spark and the account, with when usage was last fetched and a button to
-    /// fetch it now.
-    fn settings_account(&self, ui: &mut egui::Ui, state: &State) {
-        const LOGO: f32 = 40.0;
+    /// The account Claude Code is signed in with, by its email and plan. A click opens a menu
+    /// above it with the plan's details, Refresh and Log out.
+    fn settings_account(&mut self, ui: &mut egui::Ui, state: &State) {
         let account = &state.account;
-        let painter = ui.painter().clone();
+        let menu = Id::new("account menu");
+        let open = Popup::is_id_open(ui.ctx(), menu);
+        // A second click is only sure while the menu that asked is still open.
+        if !open && matches!(self.log_out, LogOut::Confirming | LogOut::Failed(_)) {
+            self.log_out = LogOut::Idle;
+        }
+        self.finish_log_out(ui.ctx(), menu);
+        // The plan goes under the email, unless it's standing in for it.
+        let caption = account.email.as_ref().and(account.plan.as_deref());
+        let initial = initial(account.email.as_deref());
+        let tile = widgets::account_item(ui, &self.fonts, initial, account_name(account), caption, open);
+        Popup::menu(&tile)
+            .id(menu)
+            .align(RectAlign::TOP_START)
+            .align_alternatives(&[RectAlign::BOTTOM_START])
+            .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+            .width(ACCOUNT_MENU_WIDTH)
+            .gap(4.0)
+            .frame(widgets::flyout_frame())
+            .show(|ui| self.account_menu(ui, state));
+    }
+
+    /// The account menu: who's signed in, what Claude Code knows of the plan and when usage was
+    /// last fetched, then Refresh, and Log out, which takes a second click to be sure.
+    fn account_menu(&mut self, ui: &mut egui::Ui, state: &State) {
+        const PICTURE: f32 = 20.0;
+        let account = &state.account;
+        let signed_in = account.email.is_some() || account.plan.is_some();
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.set_min_width(ui.available_width());
+
         let width = ui.available_width();
-
-        let text_left = LOGO + 12.0;
-        let text_width = width - text_left;
-        let plan = account.plan.as_deref().unwrap_or("Claude");
-        let strong = FontId::new(16.0, self.fonts.strong.clone());
-        let mut lines = vec![single_line(&painter, plan, strong, widgets::PRIMARY, text_width)];
-        for detail in [&account.email, &account.organization].into_iter().flatten() {
-            lines.push(single_line(&painter, detail, FontId::proportional(12.0), widgets::SECONDARY, text_width));
-        }
-        let text_height: f32 = lines.iter().map(|line| line.size().y).sum();
-        let (rect, _) = ui.allocate_exact_size(vec2(width, text_height.max(LOGO)), Sense::hover());
-
-        self.mascot.paint_logo(&painter, pos2(rect.left() + LOGO / 2.0, rect.center().y), LOGO / 2.0 - 3.0);
-        let mut y = rect.center().y - text_height / 2.0;
-        for line in lines {
-            let height = line.size().y;
-            painter.galley(pos2(rect.left() + text_left, y), line, widgets::PRIMARY);
-            y += height;
-        }
-
-        let updated = state.updated.map_or_else(|| "Not updated yet".into(), |t| t.format("Updated %H:%M").to_string());
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.add_space(text_left);
-            ui.label(RichText::new(updated).size(12.0).color(widgets::SECONDARY));
-            if widgets::icon_button(ui, &self.fonts, icon::REFRESH, "Refresh").on_hover_text("Fetch usage now").clicked() {
-                let _ = self.refresh.send(());
+        let text_left = 12.0 + 2.0 * PICTURE + 12.0;
+        let room = width - text_left - 12.0;
+        let painter = ui.painter().clone();
+        let name = single_line(&painter, account_name(account), FontId::new(14.0, self.fonts.strong.clone()), widgets::PRIMARY, room);
+        let caption = match (&account.email, &account.plan) {
+            (Some(_), Some(plan)) => Some(plan.as_str()),
+            (None, None) => Some("Sign in with /login in Claude Code"),
+            _ => None,
+        };
+        let caption = caption.map(|caption| single_line(&painter, caption, FontId::proportional(12.0), widgets::SECONDARY, room));
+        let lines: Vec<_> = account_lines(account, state.updated)
+            .iter()
+            .map(|line| single_line(&painter, line, FontId::proportional(12.0), widgets::SECONDARY, room))
+            .collect();
+        // The email and plan beside the picture, and the details under them.
+        let header_height = name.size().y + caption.as_ref().map_or(0.0, |caption| caption.size().y);
+        let header = header_height.max(2.0 * PICTURE);
+        let lines_height: f32 = lines.iter().map(|line| line.size().y).sum();
+        let (rect, _) = ui.allocate_exact_size(vec2(width, 10.0 + header + 6.0 + lines_height + 10.0), Sense::hover());
+        let middle = rect.top() + 10.0 + header / 2.0;
+        let picture = pos2(rect.left() + 12.0 + PICTURE, middle);
+        widgets::avatar(&painter, &self.fonts, picture, PICTURE, initial(account.email.as_deref()));
+        let mut at = pos2(rect.left() + text_left, middle - header_height / 2.0);
+        let paint = |galleys: Vec<Arc<egui::Galley>>, at: &mut Pos2| {
+            for galley in galleys {
+                let height = galley.size().y;
+                painter.galley(*at, galley, widgets::PRIMARY);
+                at.y += height;
             }
+        };
+        paint([Some(name), caption].into_iter().flatten().collect(), &mut at);
+        at.y = middle + header / 2.0 + 6.0;
+        paint(lines, &mut at);
+
+        widgets::menu_separator(ui);
+        if widgets::menu_item(ui, &self.fonts, icon::REFRESH, "Refresh").on_hover_text("Fetch usage now").clicked() {
+            let _ = self.refresh.send(());
+        }
+        if !signed_in {
+            return;
+        }
+        let running = matches!(self.log_out, LogOut::Running(_));
+        let label = match self.log_out {
+            LogOut::Confirming => "Yes, log out",
+            LogOut::Running(_) => "Logging out…",
+            LogOut::Idle | LogOut::Failed(_) => "Log out",
+        };
+        let item = ui.add_enabled_ui(!running, |ui| widgets::menu_item(ui, &self.fonts, icon::SIGN_OUT, label)).inner;
+        if item.on_hover_text("Signs Claude Code out on this PC").clicked() {
+            if matches!(self.log_out, LogOut::Confirming) {
+                self.start_log_out(ui.ctx());
+            } else {
+                self.log_out = LogOut::Confirming;
+            }
+        }
+        let note = match &self.log_out {
+            LogOut::Confirming => "Click again to sign Claude Code out on this PC. Cuota uses its login, so it signs out too.",
+            LogOut::Failed(why) => why.as_str(),
+            LogOut::Idle | LogOut::Running(_) => return,
+        };
+        egui::Frame::new().inner_margin(Margin::symmetric(12, 6)).show(ui, |ui| {
+            ui.add(Label::new(RichText::new(note).size(12.0).color(widgets::SECONDARY)).wrap());
         });
+    }
+
+    /// Runs Claude Code's logout on a thread of its own, then fetches usage again, so settings
+    /// show who's signed in now.
+    fn start_log_out(&mut self, ctx: &egui::Context) {
+        let (done, result) = mpsc::channel();
+        let (ctx, refresh) = (ctx.clone(), self.refresh.clone());
+        std::thread::spawn(move || {
+            let _ = done.send(claude::log_out());
+            let _ = refresh.send(());
+            ctx.request_repaint();
+        });
+        self.log_out = LogOut::Running(result);
+    }
+
+    /// Once Claude Code has logged out, closes the account `menu`, or opens it again to say why
+    /// it couldn't.
+    fn finish_log_out(&mut self, ctx: &egui::Context, menu: Id) {
+        let LogOut::Running(result) = &self.log_out else { return };
+        match result.try_recv() {
+            Ok(Ok(())) => {
+                self.log_out = LogOut::Idle;
+                Popup::close_id(ctx, menu);
+            }
+            Ok(Err(why)) => {
+                self.log_out = LogOut::Failed(why);
+                Popup::open_id(ctx, menu);
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => self.log_out = LogOut::Idle,
+        }
     }
 
     /// The page picked in the sidebar: a card for each setting, as in Windows' Settings.
@@ -1653,6 +1765,30 @@ fn usage_history(ui: &mut egui::Ui, fonts: &Fonts, history: &mut History, cleari
             }
         });
     }
+}
+
+/// What names the account at the foot of the settings sidebar: its email, or its plan without
+/// one, or that no one's signed in.
+fn account_name(account: &claude::Account) -> &str {
+    account.email.as_deref().or(account.plan.as_deref()).unwrap_or("Not signed in")
+}
+
+/// The first letter or digit of `email`, in capitals, for the account's picture.
+fn initial(email: Option<&str>) -> Option<char> {
+    let first = email?.chars().find(|c| c.is_alphanumeric())?;
+    first.to_uppercase().next()
+}
+
+/// What the account menu tells under the email and plan: only what Claude Code knows of the
+/// account, a line each, then when usage was last fetched.
+fn account_lines(account: &claude::Account, updated: Option<chrono::DateTime<chrono::Local>>) -> Vec<String> {
+    let mut lines: Vec<String> = account.organization.iter().cloned().collect();
+    lines.extend(account.role.as_ref().map(|role| format!("Role: {role}")));
+    lines.extend(account.billing.as_ref().map(|billing| format!("Billed through {billing}")));
+    let since = account.since.map(|since| since.with_timezone(&chrono::Local));
+    lines.extend(since.map(|since| format!("Subscribed since {}", since.format("%b %Y"))));
+    lines.push(updated.map_or_else(|| "Usage not fetched yet".to_owned(), |at| at.format("Usage updated %H:%M").to_string()));
+    lines
 }
 
 /// When a task ran and where, then what it took of each limit.
@@ -2624,6 +2760,64 @@ mod tests {
         overlay.here = Some(monitor(2));
         click(&mut overlay, "Monitor 2");
         assert_eq!(picked(&overlay), [monitor(2), monitor(9)]);
+    }
+
+    #[test]
+    fn the_account_goes_by_its_email_and_its_menu_tells_only_what_claude_code_knows() {
+        use chrono::Timelike;
+        let account = claude::demo_state().account;
+        assert_eq!(account_name(&account), "you@example.com");
+        assert_eq!(initial(account.email.as_deref()), Some('Y'));
+        assert_eq!(initial(Some("_émile@example.com")), Some('É'));
+        assert_eq!(initial(Some("@")), None);
+        let updated = chrono::Local::now().with_hour(9).and_then(|now| now.with_minute(5));
+        assert_eq!(
+            account_lines(&account, updated),
+            ["Example Organization", "Role: Admin", "Billed through Stripe", "Subscribed since Aug 2025", "Usage updated 09:05"]
+        );
+
+        let plan_only = claude::Account { plan: Some("Claude Pro".into()), ..Default::default() };
+        assert_eq!(account_name(&plan_only), "Claude Pro");
+        assert_eq!(initial(plan_only.email.as_deref()), None);
+        let nobody = claude::Account::default();
+        assert_eq!(account_name(&nobody), "Not signed in");
+        assert_eq!(account_lines(&nobody, None), ["Usage not fetched yet"]);
+    }
+
+    /// Only the first click on Log out: a second would sign Claude Code out.
+    #[test]
+    fn the_account_opens_its_menu_above_it_and_log_out_asks_to_be_sure() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        let mut time = 0.0;
+        let mut frame = |overlay: &mut Overlay, events: Vec<egui::Event>| {
+            time += 0.05;
+            let input = egui::RawInput { events, time: Some(time), ..window(SETTINGS_MIN) };
+            ctx.run_ui(input, |ui| {
+                overlay.settings_ui(ui, &state);
+            })
+        };
+        let email = drawn(&frame(&mut overlay, vec![]), "you@example.com");
+        let mut click = |overlay: &mut Overlay, at: Pos2| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(overlay, vec![egui::Event::PointerMoved(at)]);
+            frame(overlay, vec![button(true)]);
+            frame(overlay, vec![button(false)]);
+            frame(overlay, vec![])
+        };
+        let menu = click(&mut overlay, email.center());
+        let log_out = drawn(&menu, "Log out");
+        assert!(log_out.bottom() < email.top(), "the menu opens above the account");
+        drawn(&menu, "Subscribed since Aug 2025");
+        drawn(&menu, "Refresh");
+
+        let asked = click(&mut overlay, log_out.center());
+        assert!(matches!(overlay.log_out, LogOut::Confirming));
+        drawn(&asked, "Yes, log out");
     }
 
     fn window(size: Vec2) -> egui::RawInput {

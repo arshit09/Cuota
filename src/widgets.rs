@@ -61,6 +61,8 @@ pub mod icon {
     pub const CHEVRON_UP: char = '\u{E70E}';
     pub const CLAWD: char = '\u{E76E}';
     pub const CLEAR: char = '\u{E74D}';
+    /// A head and shoulders: an account with no letter to show for it.
+    pub const CONTACT: char = '\u{E77B}';
     pub const DETAILS: char = '\u{E9D2}';
     pub const DOUBLE_CLICK: char = '\u{E962}';
     pub const DOWNLOAD: char = '\u{E896}';
@@ -91,6 +93,8 @@ pub mod icon {
     pub const REORDER: char = '\u{E76F}';
     pub const SETTINGS: char = '\u{E713}';
     pub const SHOW_AS: char = '\u{E7F4}';
+    /// A door with an arrow leaving it.
+    pub const SIGN_OUT: char = '\u{F3B1}';
     pub const SIZE: char = '\u{E740}';
     pub const SOUND: char = '\u{E767}';
     pub const SOUND_MODE: char = '\u{E9E9}';
@@ -238,6 +242,65 @@ pub fn nav_link(ui: &mut Ui, fonts: &Fonts, icon: impl Into<NavIcon>, name: &str
         ui.painter().text(at, Align2::RIGHT_CENTER, icon::EXTERNAL, font, SECONDARY);
     }
     response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// The account at the foot of a sidebar, like the one in Windows' Start menu: its [`avatar`],
+/// then `name` with `caption` under it, each on one line and cut short when too long. Lit while
+/// `open`, as its menu is.
+pub fn account_item(
+    ui: &mut Ui,
+    fonts: &Fonts,
+    initial: Option<char>,
+    name: &str,
+    caption: Option<&str>,
+    open: bool,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ACCOUNT_HEIGHT), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), name));
+    let fill = match (response.hovered() || open, response.is_pointer_button_down_on()) {
+        (_, true) => SUBTLE_PRESSED,
+        (true, false) => SUBTLE,
+        (false, false) => Color32::TRANSPARENT,
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 4, fill);
+    // Centered where the entries above have their icons, its text lined up with their names.
+    avatar(painter, fonts, pos2(rect.left() + 14.0 + NAV_ICON / 2.0, rect.center().y), 16.0, initial);
+    let text_left = rect.left() + 48.0;
+    let room = rect.right() - 8.0 - text_left;
+    let name = single_line(painter, name, FontId::proportional(BODY), PRIMARY, room);
+    let caption = caption.map(|caption| single_line(painter, caption, FontId::proportional(CAPTION), SECONDARY, room));
+    let height = name.size().y + caption.as_ref().map_or(0.0, |caption| caption.size().y);
+    let mut at = pos2(text_left, rect.center().y - height / 2.0);
+    let name_height = name.size().y;
+    painter.galley(at, name, PRIMARY);
+    if let Some(caption) = caption {
+        at.y += name_height;
+        painter.galley(at, caption, SECONDARY);
+    }
+    focus_ring(ui, &response, rect, 4.0);
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// How tall an [`account_item`] is.
+pub const ACCOUNT_HEIGHT: f32 = 52.0;
+
+/// A round picture for an account, as Windows draws one without a photo: `initial` in black on
+/// the accent color, or a head and shoulders when there's no letter for it.
+pub fn avatar(painter: &Painter, fonts: &Fonts, center: Pos2, radius: f32, initial: Option<char>) {
+    match initial {
+        Some(initial) => {
+            painter.circle_filled(center, radius, ACCENT);
+            let font = FontId::new(radius, fonts.strong.clone());
+            painter.text(center, Align2::CENTER_CENTER, initial, font, ON_ACCENT);
+        }
+        None => {
+            painter.circle(center, radius, CONTROL, Stroke::new(1.0, CONTROL_EDGE));
+            if let Some(font) = fonts.icon(radius) {
+                painter.text(center, Align2::CENTER_CENTER, icon::CONTACT, font, SECONDARY);
+            }
+        }
+    }
 }
 
 /// A sidebar entry's fill, accent bar, icon and name.
@@ -961,14 +1024,8 @@ pub fn dropdown<T: Copy + PartialEq>(
     chevron_mark(painter, fonts, pos2(rect.right() - 17.0, rect.center().y), icon::CHEVRON_DOWN);
     focus_ring(ui, &response, rect, 4.0);
 
-    let frame = Frame::new()
-        .fill(POPUP)
-        .stroke(Stroke::new(1.0, POPUP_EDGE))
-        .corner_radius(8)
-        .inner_margin(Margin::same(4))
-        .shadow(Shadow { offset: [0, 8], blur: 16, spread: 0, color: Color32::from_black_alpha(100) });
     let mut changed = false;
-    Popup::menu(&response).id(popup).width(width).gap(4.0).frame(frame).show(|ui| {
+    Popup::menu(&response).id(popup).width(width).gap(4.0).frame(flyout_frame()).show(|ui| {
         ui.spacing_mut().item_spacing.y = 2.0;
         ui.set_min_width(ui.available_width());
         for (option, label) in options {
@@ -999,6 +1056,44 @@ pub fn dropdown<T: Copy + PartialEq>(
         response.mark_changed();
     }
     response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// What a flyout shows on, such as a [`dropdown`]'s list or a menu: a card lifted off the
+/// window by a shadow, as Windows' flyouts are.
+pub fn flyout_frame() -> Frame {
+    Frame::new()
+        .fill(POPUP)
+        .stroke(Stroke::new(1.0, POPUP_EDGE))
+        .corner_radius(8)
+        .inner_margin(Margin::same(4))
+        .shadow(Shadow { offset: [0, 8], blur: 16, spread: 0, color: Color32::from_black_alpha(100) })
+}
+
+/// One of a flyout menu's commands: an icon and a label across the menu, lit under the pointer.
+pub fn menu_item(ui: &mut Ui, fonts: &Fonts, glyph: char, label: &str) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
+    let fill = match (response.hovered(), response.is_pointer_button_down_on()) {
+        (_, true) => SUBTLE_PRESSED,
+        (true, false) => CONTROL_HOVER,
+        (false, false) => Color32::TRANSPARENT,
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 4, fill);
+    let mut x = rect.left() + 12.0;
+    if let Some(font) = fonts.icon(14.0) {
+        painter.text(pos2(x + 7.0, rect.center().y), Align2::CENTER_CENTER, glyph, font, PRIMARY);
+        x += 14.0 + 12.0;
+    }
+    painter.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(BODY), PRIMARY);
+    focus_ring(ui, &response, rect, 4.0);
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// A line across a flyout menu between its parts.
+pub fn menu_separator(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
+    ui.painter().hline(rect.x_range(), rect.center().y, Stroke::new(1.0, POPUP_EDGE));
 }
 
 /// A horizontal slider. Arrow keys nudge it when focused.
