@@ -198,12 +198,12 @@ pub fn point_startup_at(exe: &Path) {
     }
 }
 
-/// Takes the installed Cuota off this PC: closes it, removes its shortcut, its sign-in entry
-/// and its Apps listing, and deletes its files once this process has quit. Settings stay in
+/// Takes the installed Cuota off this PC: closes it, and removes its shortcut, its sign-in
+/// entry and its Apps listing. Its files go with [`delete_files_once_closed`]. Settings stay in
 /// `%APPDATA%\Cuota`.
 pub fn uninstall() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let folder = exe.parent().ok_or("Cuota's folder is missing")?.to_path_buf();
+    let folder = exe.parent().ok_or("Cuota's folder is missing")?;
     if !installed_copy() {
         return Err(format!("This Cuota, in {}, wasn't installed by setup, so there's nothing to uninstall. Delete it to remove it.", folder.display()));
     }
@@ -221,13 +221,33 @@ pub fn uninstall() -> Result<(), String> {
         0 | ERROR_FILE_NOT_FOUND => {}
         status => return Err(format!("Couldn't take Cuota off the Apps list: error {status}")),
     }
-    // This exe can't delete itself while it runs, so a hidden cmd does once it has quit. Only
-    // setup's files go, and the folder only if that empties it.
-    let files = [EXE, ICON, "Cuota.exe.old", "Cuota.exe.new"].map(|name| format!("\"{}\"", folder.join(name).display()));
-    let script = format!("ping -n 3 127.0.0.1 >nul & del /f /q {} & rmdir \"{}\"", files.join(" "), folder.display());
+    Ok(())
+}
+
+/// Deletes setup's files from this exe's folder, and the folder if that empties it. This exe
+/// can't delete itself while it runs, so a hidden script does: it tries every second until
+/// this process has quit (for up to a minute), then deletes itself.
+pub fn delete_files_once_closed() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let folder = exe.parent().ok_or("Cuota's folder is missing")?;
+    let quoted = |name: &str| format!("\"{}\"", folder.join(name).display());
+    // UTF-8 from the second line on, for user names outside the console's code page.
+    let script = format!(
+        "@chcp 65001 >nul\r\n\
+         @for /l %%i in (1,1,60) do @(ping -n 2 127.0.0.1 >nul & del /f /q {exe} 2>nul & if not exist {exe} goto gone)\r\n\
+         :gone\r\n\
+         @del /f /q {others} 2>nul\r\n\
+         @rmdir \"{folder}\" 2>nul\r\n\
+         @del /f /q \"%~f0\"\r\n",
+        exe = quoted(EXE),
+        others = [ICON, "Cuota.exe.old", "Cuota.exe.new"].map(quoted).join(" "),
+        folder = folder.display(),
+    );
+    let path = std::env::temp_dir().join(format!("cuota-uninstall-{}.cmd", std::process::id()));
+    std::fs::write(&path, script).map_err(|e| format!("Couldn't delete Cuota's files: {e}"))?;
     std::process::Command::new("cmd.exe")
         .args(["/d", "/c"])
-        .raw_arg(&script)
+        .raw_arg(format!("\"{}\"", path.display()))
         .current_dir(std::env::temp_dir())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
@@ -235,7 +255,7 @@ pub fn uninstall() -> Result<(), String> {
     Ok(())
 }
 
-/// Keeps the cmd that deletes Cuota's files out of sight.
+/// Keeps the script that deletes Cuota's files out of sight.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 fn get_string(key: &str, name: &str) -> Option<String> {

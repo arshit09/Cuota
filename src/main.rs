@@ -142,6 +142,9 @@ fn uninstall() {
         Ok(()) => {
             log::info!("Cuota was uninstalled");
             win::message("Cuota was uninstalled.", false);
+            if let Err(e) = install::delete_files_once_closed() {
+                log::warn!("{e}");
+            }
         }
         Err(e) => {
             log::warn!("Couldn't uninstall Cuota: {e}");
