@@ -172,12 +172,15 @@ fn update_cards(ui: &mut egui::Ui, fonts: &Fonts, settings: &mut Settings, updat
 
     // What the button does, and the release whose page it can also open.
     let (install, release) = match &status {
-        Status::Available(release) | Status::Failed { release: Some(release), .. } => (release.installable(), Some(release)),
+        Status::Available(release)
+        | Status::Downloading(release, _)
+        | Status::Restarting(release)
+        | Status::Failed { release: Some(release), .. } => (release.installable(), Some(release)),
         _ => (false, None),
     };
     let (glyph, label) = match (&status, install, release) {
         (Status::Failed { .. }, true, _) => (icon::DOWNLOAD, "Try again"),
-        (_, true, _) => (icon::DOWNLOAD, "Update now"),
+        (_, true, _) => (icon::DOWNLOAD, "Restart to update"),
         (_, false, Some(_)) => (icon::EXTERNAL, "Open release page"),
         _ => (icon::REFRESH, "Check now"),
     };

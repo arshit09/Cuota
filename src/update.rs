@@ -75,7 +75,7 @@ pub struct Updater {
     started: Instant,
     /// When it last started looking.
     asked: Option<Instant>,
-    /// Installs what its own look finds, without waiting for Update now.
+    /// Installs what its own look finds, without waiting for Restart to update.
     install_found: bool,
 }
 

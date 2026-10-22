@@ -81,7 +81,7 @@ Download **CuotaSetup.exe** from the [latest release](https://github.com/arshit0
 
 Used the portable **Cuota.exe** from 1.4.0 or before? Run CuotaSetup.exe once: it closes that copy, deletes it, points **Start with Windows** at the installed one (so it never starts twice) and keeps your settings.
 
-Cuota checks for new releases once a day and installs them by itself: it runs the new release's setup, which closes Cuota, updates it and starts it again. Turn that off in **Settings › Updates**, and use **Update now** there instead.
+Cuota checks for new releases once a day and installs them by itself: it runs the new release's setup, which closes Cuota, updates it and starts it again. Turn that off in **Settings › Updates**, and use **Restart to update** there instead: Check now looks for a release, and the button then downloads it and runs its setup.
 
 Or build it yourself:
 
