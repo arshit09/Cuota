@@ -69,6 +69,8 @@ pub mod icon {
     /// Leads out of the app, as to a web page.
     pub const EXTERNAL: char = '\u{E8A7}';
     pub const FOLDER: char = '\u{E838}';
+    /// The web: a website.
+    pub const GLOBE: char = '\u{E774}';
     pub const HEAR: char = '\u{E7F6}';
     /// A clock with an arrow round it: what's been.
     pub const HISTORY: char = '\u{E81C}';
@@ -76,6 +78,8 @@ pub mod icon {
     pub const HOVER_CARD: char = '\u{E8A1}';
     /// An eye: see which monitor is which.
     pub const IDENTIFY: char = '\u{E7B3}';
+    /// An i in a circle: about the app.
+    pub const INFO: char = '\u{E946}';
     pub const LIMITS: char = '\u{E9F9}';
     pub const LOG: char = '\u{E8A5}';
     /// Two screens side by side.
@@ -200,13 +204,13 @@ pub fn rule(ui: &mut Ui, palette: &Palette) {
     ui.painter().hline(rect.left()..=rect.right() + 13.0, rect.center().y, Stroke::new(1.0, palette.line));
 }
 
-/// What a sidebar entry shows before its name.
+/// What a sidebar entry or a [`link_card`] shows before its name.
 #[derive(Clone, Copy)]
 pub enum NavIcon {
     /// A glyph of the icon font.
     Glyph(char),
-    /// A white image as many pixels across as the glyphs, such as [`github_mark`] or [`clawd_mark`], drawn in
-    /// their color.
+    /// A white image as many pixels across as the glyphs, such as [`github_mark`], [`camera_mark`] or
+    /// [`clawd_mark`], drawn in their color.
     Image(TextureId),
 }
 
@@ -228,19 +232,6 @@ pub fn nav_item(ui: &mut Ui, fonts: &Fonts, icon: impl Into<NavIcon>, name: &str
     let (_, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, ui.is_enabled(), selected, name));
     paint_nav_entry(ui, fonts, &response, icon.into(), name, selected);
-    response.on_hover_cursor(CursorIcon::PointingHand)
-}
-
-/// A sidebar entry that opens a web page rather than a page of its own, like the links at the
-/// foot of Windows apps' sidebars, with an arrow saying it leads out of the app.
-pub fn nav_link(ui: &mut Ui, fonts: &Fonts, icon: impl Into<NavIcon>, name: &str) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Link, ui.is_enabled(), name));
-    paint_nav_entry(ui, fonts, &response, icon.into(), name, false);
-    if let Some(font) = fonts.icon(12.0) {
-        let at = pos2(rect.right() - 14.0, rect.center().y);
-        ui.painter().text(at, Align2::RIGHT_CENTER, icon::EXTERNAL, font, SECONDARY);
-    }
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -318,26 +309,30 @@ fn paint_nav_entry(ui: &Ui, fonts: &Fonts, response: &Response, icon: NavIcon, n
         painter.rect_filled(bar, 1.5, ACCENT);
     }
     let left = rect.left() + 14.0;
-    // Without the icon font no entry has an icon, images included, so the names line up.
-    if let Some(font) = fonts.icon(NAV_ICON) {
-        let center = pos2(left + NAV_ICON / 2.0, rect.center().y);
-        match icon {
-            NavIcon::Glyph(glyph) => {
-                painter.text(center, Align2::CENTER_CENTER, glyph, font, PRIMARY);
-            }
-            NavIcon::Image(texture) => {
-                // On whole pixels, a texel to each, so it stays sharp.
-                let ppp = ui.pixels_per_point();
-                let side = Vec2::splat(nav_icon_pixels(ppp) as f32 / ppp);
-                let at = Rect::from_min_size((center - side / 2.0).round_to_pixels(ppp), side);
-                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                painter.image(texture, at, uv, PRIMARY);
-            }
-        }
-    }
+    paint_nav_icon(ui, fonts, icon, pos2(left + NAV_ICON / 2.0, rect.center().y), NAV_ICON);
     let text_left = if fonts.icons.is_some() { left + 34.0 } else { left };
     painter.text(pos2(text_left, rect.center().y), Align2::LEFT_CENTER, name, FontId::proportional(BODY), PRIMARY);
     focus_ring(ui, response, rect, 4.0);
+}
+
+/// A [`NavIcon`] centered on `center`, a glyph `size` points tall or an image as wide as a
+/// sidebar entry's. Without the icon font nothing is drawn, images included, so the text
+/// beside icons lines up.
+fn paint_nav_icon(ui: &Ui, fonts: &Fonts, icon: NavIcon, center: Pos2, size: f32) {
+    let Some(font) = fonts.icon(size) else { return };
+    match icon {
+        NavIcon::Glyph(glyph) => {
+            ui.painter().text(center, Align2::CENTER_CENTER, glyph, font, PRIMARY);
+        }
+        NavIcon::Image(texture) => {
+            // On whole pixels, a texel to each, so it stays sharp.
+            let ppp = ui.pixels_per_point();
+            let side = Vec2::splat(nav_icon_pixels(ppp) as f32 / ppp);
+            let at = Rect::from_min_size((center - side / 2.0).round_to_pixels(ppp), side);
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            ui.painter().image(texture, at, uv, PRIMARY);
+        }
+    }
 }
 
 /// How many pixels across a sidebar entry's icon is.
@@ -351,6 +346,20 @@ pub const GITHUB_MARK: &str = "M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 
 /// GitHub's mark as a [`NavIcon::Image`].
 pub fn github_mark(ctx: &Context) -> TextureId {
     nav_image(ctx, "github-mark", |pixels| vector::mask(GITHUB_MARK, 16.0, pixels))
+}
+
+/// A camera, on a 16 x 16 viewBox: a rounded square with a round lens and a flash, the kind of
+/// glyph that stands for Instagram. Drawn here, not taken from its logo. Each hole winds the
+/// other way round from what it's cut out of.
+pub const CAMERA_MARK: &str = "M4.75 .75H11.25A4 4 0 0 1 15.25 4.75V11.25A4 4 0 0 1 11.25 15.25H4.75A4 4 0 0 1 .75 11.25V4.75A4 4 0 0 1 4.75 .75Z\
+    M4.75 2.25A2.5 2.5 0 0 0 2.25 4.75V11.25A2.5 2.5 0 0 0 4.75 13.75H11.25A2.5 2.5 0 0 0 13.75 11.25V4.75A2.5 2.5 0 0 0 11.25 2.25Z\
+    M8 4.25A3.75 3.75 0 0 1 8 11.75A3.75 3.75 0 0 1 8 4.25Z\
+    M8 5.75A2.25 2.25 0 0 0 8 10.25A2.25 2.25 0 0 0 8 5.75Z\
+    M12 3A1 1 0 0 1 12 5A1 1 0 0 1 12 3Z";
+
+/// [`CAMERA_MARK`] as a [`NavIcon::Image`].
+pub fn camera_mark(ctx: &Context) -> TextureId {
+    nav_image(ctx, "camera-mark", |pixels| vector::mask(CAMERA_MARK, 16.0, pixels))
 }
 
 /// Clawd standing, as a [`NavIcon::Image`]: the desktop pet's own picture.
@@ -433,6 +442,67 @@ pub fn setting(
     let mut slot = ui.new_child(UiBuilder::new().max_rect(header.control).layout(layout));
     add_control(&mut slot);
     header.response
+}
+
+/// A card that opens a web page, like the links in Windows' Settings: an icon, a title and an
+/// optional description, all of it clickable, with an arrow on the right saying it leads out
+/// of the app.
+pub fn link_card(ui: &mut Ui, fonts: &Fonts, icon: impl Into<NavIcon>, title: &str, description: Option<&str>) -> Response {
+    let icon = icon.into();
+    let glyph = match icon {
+        NavIcon::Glyph(glyph) => glyph,
+        NavIcon::Image(_) => ' ',
+    };
+    let mut header = header(ui, fonts, glyph, title, description, CHEVRON, Sense::click());
+    // An image goes where the glyph would.
+    if let NavIcon::Image(_) = icon {
+        header.icon = None;
+    }
+    let response = &header.response;
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Link, ui.is_enabled(), title));
+    let fill = if response.hovered() && !response.is_pointer_button_down_on() { SETTING_HOVER } else { SETTING };
+    let painter = ui.painter();
+    painter.rect(header.rect, 4, fill, Stroke::new(1.0, SETTING_EDGE), StrokeKind::Inside);
+    header.paint(painter);
+    if let NavIcon::Image(_) = icon {
+        let center = pos2(header.rect.left() + CARD_PADDING + ICON_SIZE / 2.0, header.rect.center().y);
+        paint_nav_icon(ui, fonts, icon, center, ICON_SIZE);
+    }
+    if let Some(font) = fonts.icon(14.0) {
+        let arrow = pos2(header.control.right() - CHEVRON / 2.0, header.control.center().y);
+        painter.text(arrow, Align2::CENTER_CENTER, icon::EXTERNAL, font, SECONDARY);
+    }
+    focus_ring(ui, response, header.rect, 4.0);
+    header.response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// The card atop an About page, as in Windows' Settings: a big picture of the app beside its
+/// name in large type, with `lines` under the name. `paint_picture` paints the picture into the
+/// square it's given.
+pub fn app_card(ui: &mut Ui, fonts: &Fonts, name: &str, lines: &[&str], paint_picture: impl FnOnce(&Painter, Rect)) {
+    const PICTURE: f32 = 64.0;
+    const PADDING: f32 = 20.0;
+    let width = ui.available_width();
+    let text_left = CARD_PADDING + PICTURE + PADDING;
+    let wrap = (width - text_left - CARD_PADDING).max(60.0);
+    let painter = ui.painter().clone();
+    let name = painter.layout(name.to_owned(), FontId::new(20.0, fonts.strong.clone()), PRIMARY, wrap);
+    let lines: Vec<_> =
+        lines.iter().map(|line| painter.layout((*line).to_owned(), FontId::proportional(CAPTION), SECONDARY, wrap)).collect();
+    let text_height = name.size().y + 2.0 + lines.iter().map(|line| line.size().y + 1.0).sum::<f32>();
+    let (rect, _) = ui.allocate_exact_size(vec2(width, text_height.max(PICTURE) + 2.0 * PADDING), Sense::hover());
+    painter.rect(rect, 4, SETTING, Stroke::new(1.0, SETTING_EDGE), StrokeKind::Inside);
+    let picture = Rect::from_center_size(pos2(rect.left() + CARD_PADDING + PICTURE / 2.0, rect.center().y), Vec2::splat(PICTURE));
+    paint_picture(&painter, picture);
+    let mut at = pos2(rect.left() + text_left, rect.center().y - text_height / 2.0);
+    let name_height = name.size().y;
+    painter.galley(at, name, PRIMARY);
+    at.y += name_height + 2.0;
+    for line in lines {
+        let height = line.size().y;
+        painter.galley(at, line, SECONDARY);
+        at.y += height + 1.0;
+    }
 }
 
 /// A setting that opens onto more settings, like Windows' expanders: a card showing `summary`
@@ -1257,6 +1327,20 @@ fn focus_ring(ui: &Ui, response: &Response, rect: Rect, radius: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_camera_is_a_rounded_square_and_a_ring_with_a_flash() {
+        let mask = vector::mask(CAMERA_MARK, 16.0, 32);
+        let at = |x: usize, y: usize| mask[y * 32 + x];
+        // Its frame, the lens's ring, and the flash.
+        for (x, y) in [(16, 2), (16, 10), (24, 8)] {
+            assert_eq!(at(x, y), 255, "nothing at {x}, {y}");
+        }
+        // Outside the corner, inside the frame, and inside the lens.
+        for (x, y) in [(0, 0), (16, 6), (16, 16)] {
+            assert_eq!(at(x, y), 0, "something at {x}, {y}");
+        }
+    }
 
     #[test]
     fn clawd_mark_is_symmetric_and_as_wide_as_the_glyphs() {

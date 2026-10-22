@@ -173,6 +173,12 @@ impl Updater {
     fn set(&self, status: Status) {
         *self.status.lock().unwrap() = status;
     }
+
+    /// Puts it where it would be after looking, without looking.
+    #[cfg(test)]
+    pub fn set_status(&self, status: Status) {
+        self.set(status);
+    }
 }
 
 /// Clears away what an update left beside the exe: the copy it replaced, and a download that

@@ -1,5 +1,5 @@
 //! SVG path data filled into anti-aliased masks, for the marks Cuota draws itself rather than
-//! with a font: the Claude spark and GitHub's mark.
+//! with a font: the Claude spark, GitHub's mark and the camera beside Instagram's link.
 
 use eframe::egui::{Vec2, emath::Rot2, vec2};
 use std::f32::consts::{FRAC_PI_2, TAU};

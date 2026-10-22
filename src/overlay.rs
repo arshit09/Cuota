@@ -61,8 +61,11 @@ const PAGE_WIDTH: f32 = 760.0;
 /// The page's title, above what scrolls, and the room either side of the page.
 const PAGE_TITLE: f32 = 68.0;
 const PAGE_GUTTER: f32 = 16.0;
-/// Where Cuota's code lives, which the sidebar links to.
+/// Where Cuota's code lives, which the About page links to.
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
+/// Where Cuota's author makes content, and his other projects, which About also links to.
+const INSTAGRAM: &str = "https://www.instagram.com/geek_updates/";
+const WEBSITE: &str = "https://arshitvaghasiya.com";
 /// Between a page's cards.
 const CARD_GAP: f32 = 4.0;
 /// A slider and its value beside it.
@@ -223,6 +226,29 @@ fn update_cards(ui: &mut egui::Ui, fonts: &Fonts, settings: &mut Settings, updat
     });
 }
 
+/// The About page, like Windows' own: Cuota's icon, the Claude spark, by its name, version and
+/// what it is, then links out to its code, its author's Instagram and his other projects.
+fn about_cards(ui: &mut egui::Ui, fonts: &Fonts, mascot: &Mascot) {
+    let version = concat!("Version ", env!("CARGO_PKG_VERSION"), " \u{B7} Free software, ", env!("CARGO_PKG_LICENSE"));
+    let lines = [env!("CARGO_PKG_DESCRIPTION"), version];
+    widgets::app_card(ui, fonts, "Cuota", &lines, |painter, picture| {
+        mascot.paint_logo(painter, picture.center(), picture.width() / 2.0 - 4.0);
+    });
+    ui.add_space(8.0);
+
+    let ctx = ui.ctx().clone();
+    let links: [(NavIcon, _, _, _); 3] = [
+        (widgets::github_mark(&ctx).into(), "View on GitHub", "Cuota's code, issues and releases", REPOSITORY),
+        (widgets::camera_mark(&ctx).into(), "Follow on Instagram", "@geek_updates, where Arshit creates content", INSTAGRAM),
+        (icon::GLOBE.into(), "More projects by Arshit", "arshitvaghasiya.com", WEBSITE),
+    ];
+    for (icon, title, about, url) in links {
+        if widgets::link_card(ui, fonts, icon, title, Some(about)).on_hover_text(url).clicked() {
+            win::open_page(url);
+        }
+    }
+}
+
 /// A page of the settings window, picked in its sidebar.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Page {
@@ -244,10 +270,12 @@ enum Page {
     Usage,
     /// Whether a new Cuota is out on GitHub, and updating to it.
     Updates,
+    /// Cuota's icon, name and version, and links to its code and its author.
+    About,
 }
 
 impl Page {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::General,
         Self::Appearance,
         Self::Sounds,
@@ -257,6 +285,7 @@ impl Page {
         Self::Pet,
         Self::Usage,
         Self::Updates,
+        Self::About,
     ];
 
     fn name(self) -> &'static str {
@@ -270,6 +299,7 @@ impl Page {
             Self::Pet => "Desktop pet",
             Self::Usage => "Usage",
             Self::Updates => "Updates",
+            Self::About => "About",
         }
     }
 
@@ -284,6 +314,7 @@ impl Page {
             Self::Pet => widgets::clawd_mark(ctx).into(),
             Self::Usage => icon::HISTORY.into(),
             Self::Updates => icon::UPDATE.into(),
+            Self::About => icon::INFO.into(),
         }
     }
 }
@@ -1238,8 +1269,8 @@ impl Overlay {
         PAGE_TITLE + scroll.content_size.y
     }
 
-    /// The pages, then at the bottom a link to Cuota's GitHub and the account, over Cuota's
-    /// version. Quitting is left to the tray icon's menu.
+    /// The pages, then the account at the bottom. Quitting is left to the tray icon's menu, and
+    /// Cuota's version and GitHub to the About page.
     fn settings_sidebar(&mut self, ui: &mut egui::Ui, state: &State) {
         ui.spacing_mut().item_spacing.y = 4.0;
         for page in Page::ALL {
@@ -1249,32 +1280,22 @@ impl Overlay {
         }
 
         let bottom = ui.max_rect();
-        let footer = Rect::from_min_max(pos2(bottom.left(), bottom.bottom() - 20.0), bottom.max);
-        let account_at = pos2(bottom.left(), footer.top() - 4.0 - widgets::ACCOUNT_HEIGHT);
+        let account_at = pos2(bottom.left(), bottom.bottom() - widgets::ACCOUNT_HEIGHT);
         let account = Rect::from_min_size(account_at, vec2(bottom.width(), widgets::ACCOUNT_HEIGHT));
-        let link = Rect::from_min_size(pos2(bottom.left(), account.top() - 4.0 - 36.0), vec2(bottom.width(), 36.0));
-        let mut slot = ui.new_child(UiBuilder::new().max_rect(link));
-        let github = widgets::nav_link(&mut slot, &self.fonts, widgets::github_mark(ui.ctx()), "View on GitHub");
-        if github.on_hover_text(REPOSITORY).clicked() {
-            win::open_page(REPOSITORY);
-        }
         let mut slot = ui.new_child(UiBuilder::new().max_rect(account));
         self.settings_account(&mut slot, state);
-        // Lined up with the entries' icons.
-        let version_at = pos2(footer.left() + 14.0, footer.center().y);
-        let font = FontId::proportional(12.0);
-        // Once a new release is out, it says so, and a click goes to where it's installed.
+
+        // Once a new release is out, it says so above the account, and a click goes to where
+        // it's installed.
         let update = match self.updater.status() {
             update::Status::Available(release) => Some(release.version),
             _ => None,
         };
-        let Some(update) = update else {
-            let version = concat!("Cuota v", env!("CARGO_PKG_VERSION"));
-            ui.painter().text(version_at, Align2::LEFT_CENTER, version, font, widgets::SECONDARY);
-            return;
-        };
+        let Some(update) = update else { return };
+        // Lined up with the entries' icons.
+        let at = pos2(account.left() + 14.0, account.top() - 4.0 - 10.0);
         let text = format!("Update to v{update}");
-        let rect = ui.painter().text(version_at, Align2::LEFT_CENTER, text, font, CLAUDE_ORANGE);
+        let rect = ui.painter().text(at, Align2::LEFT_CENTER, text, FontId::proportional(12.0), CLAUDE_ORANGE);
         let response = ui.interact(rect.expand(4.0), ui.id().with("update"), Sense::click());
         if response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Go to Updates").clicked() {
             self.settings_page = Page::Updates;
@@ -1430,6 +1451,7 @@ impl Overlay {
             clearing,
             updater,
             light_windows,
+            mascot,
             ..
         } = self;
         let page = *page;
@@ -1706,6 +1728,7 @@ impl Overlay {
                 }
             }
             Page::Updates => update_cards(ui, fonts, settings, updater),
+            Page::About => about_cards(ui, fonts, mascot),
         }
     }
 }
@@ -2883,26 +2906,51 @@ mod tests {
         }
     }
 
-    /// The GitHub link hangs from the foot of the sidebar, so a short window brings it up
-    /// toward the pages.
     #[test]
-    fn the_github_link_stays_clear_of_the_pages_in_the_smallest_window() {
+    fn about_shows_cuotas_name_and_version_and_its_links() {
         let (ctx, mut overlay, state) = settings_overlay();
+        overlay.settings_page = Page::About;
         let output = ctx.run_ui(window(SETTINGS_MIN), |ui| {
             overlay.settings_ui(ui, &state);
         });
-        let middle_of = |name: &str| {
+        let version = drawn(&output, concat!("Version ", env!("CARGO_PKG_VERSION"), " \u{B7} Free software, GPL-3.0-or-later"));
+        let name = drawn(&output, "Cuota");
+        assert!(name.bottom() <= version.top());
+        let mut above = version.bottom();
+        for link in ["View on GitHub", "Follow on Instagram", "More projects by Arshit"] {
+            let at = drawn(&output, link);
+            assert!(at.top() > above, "{link} is out of order");
+            above = at.bottom();
+        }
+    }
+
+    /// The account hangs from the foot of the sidebar, so a short window brings it up toward the
+    /// pages, and an update waiting puts a line above it.
+    #[test]
+    fn the_account_stays_clear_of_the_pages_in_the_smallest_window() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        let release = update::Release { version: "9.9.9".into(), page: String::new(), download: None };
+        overlay.updater.set_status(update::Status::Available(release));
+        let output = ctx.run_ui(window(SETTINGS_MIN), |ui| {
+            overlay.settings_ui(ui, &state);
+        });
+        let laid_out = |text: &str| {
             let in_sidebar = output.shapes.iter().find_map(|clipped| match &clipped.shape {
-                egui::Shape::Text(text) if text.galley.text() == name && text.pos.x < SIDEBAR_WIDTH => {
-                    Some(text.visual_bounding_rect().center().y)
+                egui::Shape::Text(shape) if shape.galley.text() == text && shape.pos.x < SIDEBAR_WIDTH => {
+                    Some(Rect::from_min_size(shape.pos, shape.galley.size()))
                 }
                 _ => None,
             });
-            in_sidebar.unwrap_or_else(|| panic!("the sidebar has no {name:?}"))
+            in_sidebar.unwrap_or_else(|| panic!("the sidebar has no {text:?}"))
         };
         let last_page = Page::ALL.last().unwrap().name();
-        // Sidebar entries are 36 points tall, centered on their names, with 4 between them.
-        let gap = middle_of("View on GitHub") - middle_of(last_page) - 36.0;
-        assert!(gap >= 4.0, "the GitHub link is {gap} below {last_page}");
+        // Sidebar entries are 36 points tall, centered on their names. The account is centered
+        // on its email and plan.
+        let pages_end = laid_out(last_page).center().y + 18.0;
+        let account = (laid_out("you@example.com").top() + laid_out("Claude Max 5x").bottom()) / 2.0;
+        let account_top = account - widgets::ACCOUNT_HEIGHT / 2.0;
+        assert!(laid_out("Update to v9.9.9").bottom() <= account_top);
+        let gap = laid_out("Update to v9.9.9").top() - pages_end;
+        assert!(gap >= 4.0, "the update line is {gap} below {last_page}");
     }
 }
