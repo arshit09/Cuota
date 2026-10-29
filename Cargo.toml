@@ -1,6 +1,6 @@
 [package]
 name = "cuota"
-version = "1.6.0"
+version = "1.6.1"
 edition = "2024"
 description = "Windows overlay showing your Claude plan usage limits, with Clawd"
 # The About page in settings links here.
