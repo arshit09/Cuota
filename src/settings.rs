@@ -348,6 +348,9 @@ pub struct Settings {
     pub custom_target: String,
     /// Top-left of the panel in Always on top and Desktop modes, in points.
     pub panel_pos: Option<[f32; 2]>,
+    /// How tall the panel was there without its details, in points, so it opens with its middle
+    /// where it was, however tall it is now.
+    pub panel_height: Option<f32>,
     /// The monitors that each show a copy of the panel in Always on top and Desktop modes, by
     /// Windows' name for them, like `\\.\DISPLAY2`. With fewer than two of them plugged in,
     /// there's just the one panel, wherever it's dragged.
@@ -379,6 +382,7 @@ impl Default for Settings {
             double_click: DoubleClick::default(),
             custom_target: String::new(),
             panel_pos: None,
+            panel_height: None,
             panel_monitors: BTreeSet::new(),
             panel_spots: BTreeMap::new(),
             track_usage: true,

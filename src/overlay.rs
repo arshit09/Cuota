@@ -392,6 +392,17 @@ impl Wheel {
     }
 }
 
+/// Where a panel's middle stays as it grows and shrinks, so sessions starting and ending don't
+/// walk it down the screen.
+#[derive(Clone, Copy)]
+struct Middle {
+    /// How far down the screen, in points: to the fraction, as the window's position is
+    /// rounded, and even while the screen's edge holds the panel back from it.
+    y: f32,
+    /// The panel's top-left as last put there. Found anywhere else, it has been dragged.
+    put: Pos2,
+}
+
 /// A window the panel shows in: its own (the root viewport), or a copy of it on another
 /// monitor while it shows on several.
 #[derive(Default)]
@@ -401,6 +412,9 @@ struct PanelWindow {
     size: Vec2,
     /// The window's actual size last frame, to notice when something else resizes it.
     window_size: Option<Vec2>,
+    /// How tall it is without the details, which hang under it. Zero until it's first sized.
+    height: f32,
+    middle: Option<Middle>,
     wheel: Wheel,
     /// Slides it out of the pointer's way, when that's on.
     dodge: Dodge,
@@ -440,30 +454,50 @@ impl PanelWindow {
         self.dodge.home().unwrap_or(window.min + self.lift)
     }
 
-    /// Moves it up or left as little as it takes for the expanded panel to stay on screen, and
-    /// back again when it shrinks. A resize by mouse wheel moves it by `wheel_shift` first, and
-    /// keeps it on screen too.
-    fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2, wheel_shift: Option<Vec2>) {
+    /// Keeps its middle where it is as it grows and shrinks from `before` to `height` tall
+    /// (without the details; `before` is zero until it has been sized), though it stops at the
+    /// screen's top and bottom, and moves back once it can. Expanded, it moves up or left as
+    /// little as it takes for the details under it to stay on screen too, and back again when
+    /// they close. A resize by mouse wheel moves it by `wheel_shift` instead, and keeps it on
+    /// screen too.
+    fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2, before: f32, wheel_shift: Option<Vec2>) {
         let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else { return };
         // Aside for the pointer, or sliding, it's where the slide puts it.
         if self.dodge.moving() {
             return;
         }
-        let mut at = self.home(rect) + wheel_shift.unwrap_or_default();
+        let (home, height) = (self.home(rect), self.height);
+        let before = if before > 0.0 { before } else { height };
+        let middle = match self.middle {
+            Some(middle) if (middle.put - home).length() <= 2.0 => middle.y,
+            _ => home.y + before / 2.0,
+        };
+        let mut at = match wheel_shift {
+            Some(shift) => home + shift,
+            None => pos2(home.x, middle - height / 2.0),
+        };
         self.lift = Vec2::ZERO;
-        if (self.expanded || wheel_shift.is_some())
-            && let Some(work) = work_area(ctx)
-        {
-            let gap = Vec2::splat(SCREEN_GAP);
-            let fitted = at.min(work.max - size - gap).max(work.min + gap);
-            // Only the details move it back when they close; a resize stays where it landed.
-            if self.expanded {
-                self.lift = at - fitted;
+        if let Some(work) = work_area(ctx) {
+            // One left partly off screen isn't pulled on, though.
+            let top = home.y.min(work.min.y + SCREEN_GAP);
+            let bottom = (home.y + before).max(work.max.y - SCREEN_GAP);
+            at.y = at.y.min(bottom - height).max(top);
+            if self.expanded || wheel_shift.is_some() {
+                let gap = Vec2::splat(SCREEN_GAP);
+                let fitted = at.min(work.max - size - gap).max(work.min + gap);
+                // Only the details move it back when they close; a resize stays where it landed.
+                if self.expanded {
+                    self.lift = at - fitted;
+                } else {
+                    at = fitted;
+                }
             }
-            at = fitted;
         }
-        if at != rect.min {
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at.round()));
+        let y = if wheel_shift.is_some() { at.y + height / 2.0 } else { middle };
+        self.middle = Some(Middle { y, put: at });
+        let to = (at - self.lift).round();
+        if to != rect.min {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(to));
         }
     }
 
@@ -590,6 +624,8 @@ impl Overlay {
             let ctx = ctx.clone();
             Transcripts::spawn(move || ctx.request_repaint())
         };
+        // Opening where it was left, it keeps its middle there.
+        let height = settings.panel_pos.and(settings.panel_height).unwrap_or_default();
 
         Self {
             state,
@@ -609,7 +645,7 @@ impl Overlay {
             scripts: Scripts::default(),
             icon,
             keep_bottom: Arc::new(AtomicBool::new(false)),
-            main: PanelWindow::default(),
+            main: PanelWindow { height, ..PanelWindow::default() },
             copies: Vec::new(),
             screens: monitors::list(),
             screens_read: Some(Instant::now()),
@@ -1034,6 +1070,7 @@ impl Overlay {
         });
         let inner = details.map_or(row, |details| vec2(row.x.max(details.x), row.y + details.y));
         let size = (inner + Vec2::splat(2.0 * margin)).round();
+        let before = std::mem::replace(&mut window.height, (row.y + 2.0 * margin).round());
         let wheel_shift = window.wheel.shift.take();
         // Scripts and window managers can resize it too (one put it back to its first size,
         // cropping the panel), so a size changed to anything else is asked for again. Only
@@ -1046,7 +1083,7 @@ impl Overlay {
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
             self.place_flyout(&ctx, size);
             if !docked {
-                window.fit_on_screen(&ctx, size, wheel_shift);
+                window.fit_on_screen(&ctx, size, before, wheel_shift);
             }
         }
 
@@ -2127,6 +2164,7 @@ impl eframe::App for Overlay {
                 // Where it sits when not expanded or moved aside, so it starts there next time.
                 let at = self.main.home(rect);
                 self.settings.panel_pos = Some([at.x, at.y]);
+                self.settings.panel_height = Some(self.main.height);
             }
         }
 
@@ -2749,6 +2787,43 @@ mod tests {
         assert_eq!(frame(&mut overlay, pos2(700.0, 300.0)), None);
         assert_eq!(overlay.settings.panel_spots.get(&monitor(1)), Some(&[700.0, 300.0]));
         assert!(!copy.placing);
+    }
+
+    #[test]
+    fn the_panel_grows_and_shrinks_about_its_middle_but_stops_at_the_screens_edge() {
+        let (ctx, mut overlay, _) = settings_overlay();
+        // Sized to `height` with its window at `at`: where it's sent.
+        let resize = |overlay: &mut Overlay, at: Pos2, height: f32| {
+            let rect = Rect::from_min_size(at, vec2(300.0, overlay.main.height));
+            let before = std::mem::replace(&mut overlay.main.height, height);
+            let size = vec2(300.0, height);
+            let output = panel_at(&ctx, overlay, rect, |ctx, overlay| overlay.main.fit_on_screen(ctx, size, before, None));
+            moved_to(&output).unwrap_or(at)
+        };
+        // First sized, it stays where it opened.
+        let start = pos2(400.0, 300.0);
+        assert_eq!(resize(&mut overlay, start, 100.0), start);
+        // A session starts: up half as much as it grows, the half point rounded.
+        let at = resize(&mut overlay, start, 115.0);
+        assert_eq!(at, pos2(400.0, 293.0));
+        // Sessions coming and going don't walk it anywhere.
+        let mut at = resize(&mut overlay, at, 100.0);
+        for _ in 0..5 {
+            at = resize(&mut overlay, at, 115.0);
+            at = resize(&mut overlay, at, 100.0);
+        }
+        assert_eq!(at, start);
+        // Dragged, it keeps its middle where it's dropped.
+        assert_eq!(resize(&mut overlay, pos2(500.0, 400.0), 140.0), pos2(500.0, 380.0));
+
+        // By the screen's top, it grows down instead, and moves back once it's shorter.
+        let work = win::work_area(550, 350).unwrap();
+        let top = work.top as f32 + SCREEN_GAP;
+        let below = pos2(400.0, top + 20.0);
+        overlay.main.height = 100.0;
+        let at = resize(&mut overlay, below, 200.0);
+        assert_eq!(at, pos2(400.0, top));
+        assert_eq!(resize(&mut overlay, at, 100.0), below);
     }
 
     #[test]
