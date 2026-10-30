@@ -264,6 +264,8 @@ pub struct State {
     pub error: Option<String>,
     /// The error is only the usage API asking Cuota to slow down, which passes by itself.
     pub rate_limited: bool,
+    /// The error is Claude Code's login having expired, which running Claude Code refreshes.
+    pub expired: bool,
     /// Some Claude Code session on this machine is busy.
     pub working: bool,
     /// Busy ones first.
@@ -385,14 +387,33 @@ struct OAuth {
     subscription_type: Option<String>,
 }
 
+impl OAuth {
+    fn expired(&self) -> bool {
+        self.expires_at.is_some_and(|ms| ms <= Utc::now().timestamp_millis())
+    }
+}
+
 fn read_credentials() -> Result<OAuth, Error> {
     let path = claude_dir().join(".credentials.json");
     let text = std::fs::read_to_string(&path)
         .map_err(|e| Error::NotLoggedIn(format!("{}: {e}", path.display())))?;
     let file: CredentialsFile = serde_json::from_str(&text)
         .map_err(|e| Error::NotLoggedIn(format!("unreadable {}: {e}", path.display())))?;
-    file.oauth
-        .ok_or_else(|| Error::NotLoggedIn("no claude.ai subscription login".into()))
+    file.login()
+}
+
+impl CredentialsFile {
+    /// Its claude.ai login, while it has one.
+    fn login(self) -> Result<OAuth, Error> {
+        let oauth = self
+            .oauth
+            .ok_or_else(|| Error::NotLoggedIn("no claude.ai subscription login".into()))?;
+        // Claude Code blanks the tokens when it finds its login can't be refreshed any more.
+        if oauth.access_token.is_empty() {
+            return Err(Error::NotLoggedIn("signed out".into()));
+        }
+        Ok(oauth)
+    }
 }
 
 /// The login to send. Claude Code lets `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`)
@@ -460,23 +481,27 @@ const COMMAND_NOT_FOUND: i32 = 9009;
 /// Keeps the cmd that runs Claude Code's command out of sight.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Signs Claude Code out on this PC, as its /logout does, by running `claude auth logout`.
-/// Cuota has no login of its own, only Claude Code's, so this signs Cuota out too. A hidden
-/// cmd runs it, so the PATH finds Claude Code whether it's a claude.exe or npm's claude.cmd. It
-/// takes a moment, so it's for a thread of its own. Err says why it couldn't, for the user.
-pub fn log_out() -> Result<(), String> {
+/// Runs a Claude Code `command` in a hidden cmd, so the PATH finds Claude Code whether it's a
+/// claude.exe or npm's claude.cmd. It takes a moment, so it's for a thread of its own.
+fn run_claude(command: &str) -> std::io::Result<std::process::Output> {
     use std::os::windows::process::CommandExt;
+    std::process::Command::new("cmd.exe")
+        .args(["/d", "/c", command])
+        .current_dir(std::env::temp_dir())
+        .stdin(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+}
+
+/// Signs Claude Code out on this PC, as its /logout does, by running `claude auth logout`.
+/// Cuota has no login of its own, only Claude Code's, so this signs Cuota out too. Err says
+/// why it couldn't, for the user.
+pub fn log_out() -> Result<(), String> {
     // Tests click through settings, and must never sign anyone out.
     if cfg!(test) {
         unreachable!("tests never log Claude Code out");
     }
-    let output = std::process::Command::new("cmd.exe")
-        .args(["/d", "/c", "claude auth logout"])
-        .current_dir(std::env::temp_dir())
-        .stdin(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-    let output = match output {
+    let output = match run_claude("claude auth logout") {
         Ok(output) => output,
         Err(e) => {
             log::warn!("Couldn't run claude auth logout: {e}");
@@ -501,6 +526,46 @@ fn log_out_failure(code: Option<i32>, said: &str) -> String {
     match said.lines().map(str::trim).rfind(|line| !line.is_empty()) {
         Some(line) => format!("Claude Code couldn't log out: {line}"),
         None => "Claude Code couldn't log out. Run /logout in Claude Code instead.".to_owned(),
+    }
+}
+
+/// Refreshes Claude Code's expired login by running `claude auth status`, which renews the
+/// token on its way, as any Claude Code command does that finds it expired, and exits. Once
+/// it's fresh, the expired error comes off `state`, so the panel stops asking while usage is
+/// fetched again. Err says why it couldn't, for the user.
+pub fn refresh_login(state: &Shared) -> Result<(), String> {
+    // Tests click the panel's note, and must never run Claude Code.
+    if cfg!(test) {
+        return Err("Tests never run Claude Code.".to_owned());
+    }
+    match run_claude("claude auth status") {
+        Ok(output) if output.status.code() == Some(COMMAND_NOT_FOUND) => {
+            log::warn!("Couldn't find Claude Code to refresh its login");
+            return Err("Cuota couldn't find Claude Code. Open it once to refresh the login.".to_owned());
+        }
+        Ok(_) => {}
+        Err(e) => {
+            log::warn!("Couldn't run claude auth status: {e}");
+            return Err(format!("Couldn't run Claude Code: {e}"));
+        }
+    }
+    match login() {
+        Ok(login) if login.expired() => {
+            log::warn!("Claude Code left its login expired");
+            Err("Claude Code couldn't refresh the login. Click to try again.".to_owned())
+        }
+        Ok(_) => {
+            log::info!("Claude Code refreshed its login");
+            let mut shared = state.lock().unwrap();
+            if shared.expired {
+                let s = Arc::make_mut(&mut shared);
+                s.error = None;
+                s.expired = false;
+            }
+            Ok(())
+        }
+        // Its login has ended for good, which the next fetch tells.
+        Err(_) => Ok(()),
     }
 }
 
@@ -669,10 +734,7 @@ fn session_activity(now: DateTime<Utc>, transcripts: &mut HashMap<PathBuf, Trans
 
 pub fn fetch() -> Result<Usage, Error> {
     let login = login()?;
-    if login
-        .expires_at
-        .is_some_and(|ms| ms <= Utc::now().timestamp_millis())
-    {
+    if login.expired() {
         return Err(Error::Expired);
     }
 
@@ -989,6 +1051,7 @@ impl Poller {
                     self.retry_at = Some(now + wait);
                     self.log_failure(&e, now, wait);
                     s.rate_limited = matches!(e, Error::RateLimited(_));
+                    s.expired = matches!(e, Error::Expired);
                     s.error = Some(e.to_string());
                 }
             }
@@ -1075,6 +1138,7 @@ impl Poller {
         s.updated = Some(fetched_at.with_timezone(&Local));
         s.error = None;
         s.rate_limited = false;
+        s.expired = false;
     }
 }
 
@@ -1159,6 +1223,7 @@ pub fn demo_state() -> State {
         updated: Some(Local::now()),
         error: None,
         rate_limited: false,
+        expired: false,
         working: true,
         sessions: vec![
             session("cuota-94", "Show each session's title in the details", "Cuota", "VS Code", true, 95),
@@ -1341,6 +1406,19 @@ mod tests {
         );
         assert_eq!(log_out_failure(Some(1), "Logging out…\nNetwork error\n\n"), "Claude Code couldn't log out: Network error");
         assert!(log_out_failure(Some(1), " \n").ends_with("Run /logout in Claude Code instead."));
+    }
+
+    #[test]
+    fn a_login_claude_code_gave_up_on_is_signed_out_not_expired() {
+        let login = |json: &str| serde_json::from_str::<CredentialsFile>(json).unwrap().login();
+        let expired = login(r#"{"claudeAiOauth":{"accessToken":"token","expiresAt":1}}"#);
+        assert!(expired.is_ok_and(|login| login.expired()), "running Claude Code refreshes this one");
+        let fresh = login(r#"{"claudeAiOauth":{"accessToken":"token","expiresAt":9999999999999}}"#);
+        assert!(fresh.is_ok_and(|login| !login.expired()));
+        // What Claude Code leaves when its refresh token is turned down.
+        let blanked = login(r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}"#);
+        assert!(matches!(blanked, Err(Error::NotLoggedIn(_))));
+        assert!(matches!(login("{}"), Err(Error::NotLoggedIn(_))));
     }
 
     #[test]

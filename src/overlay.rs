@@ -334,6 +334,15 @@ enum LogOut {
     Failed(String),
 }
 
+/// Refreshing Claude Code's expired login, with a click on the panel's note about it.
+enum Relogin {
+    Idle,
+    /// Claude Code is refreshing it, on a thread of its own, which says how that went.
+    Running(Receiver<Result<(), String>>),
+    /// Why it couldn't, for the note to say.
+    Failed(String),
+}
+
 /// The panel with only Taskbar on: shown beside the taskbar when an icon is clicked, and hidden
 /// again when it loses focus, like Windows' own flyouts.
 #[derive(Clone, Copy, PartialEq)]
@@ -583,6 +592,8 @@ pub struct Overlay {
     clearing: bool,
     /// Where the account menu's Log out has got to.
     log_out: LogOut,
+    /// Where refreshing an expired login from the panel has got to.
+    relogin: Relogin,
     /// Looks for new releases of Cuota, and puts one in place.
     updater: Updater,
     /// Whether Windows' apps are in light mode, as last read, for the panel's Windows theme.
@@ -671,6 +682,7 @@ impl Overlay {
             history: if demo { History::demo() } else { History::load() },
             clearing: false,
             log_out: LogOut::Idle,
+            relogin: Relogin::Idle,
             updater: Updater::new(!demo),
             light_windows: win::light_apps(),
         }
@@ -1032,7 +1044,8 @@ impl Overlay {
         let meters = builder.build(&limits);
         let width = meters.size.x.max(NOTE_WIDTH * scale);
         let font = FontId::proportional(12.0 * scale);
-        let note = note(state, palette).map(|(text, color)| painter.layout(text, font, color, width));
+        let (note, relogin) = self.panel_note(state, palette);
+        let note = note.map(|(text, color)| painter.layout(text, font, color, width));
         // Whatever more was picked to show under them.
         let stats = self.transcripts.latest();
         let source = glance::Source { state, stats: stats.as_deref(), limits: &limits, now };
@@ -1106,7 +1119,15 @@ impl Overlay {
         let mut below = meters_at.y + meters.size.y + note_gap;
         let mut hints = meters.paint(&painter, meters_at);
         if let Some(note) = note {
-            painter.galley(pos2(body_at.x, below), note, palette.text);
+            let at = pos2(body_at.x, below);
+            if relogin && idle {
+                let response = ui.interact(Rect::from_min_size(at, note_size), ui.id().with("note"), Sense::click());
+                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                if response.on_hover_text("Runs Claude Code for a moment, which refreshes its login").clicked() {
+                    self.start_relogin(&ctx);
+                }
+            }
+            painter.galley(at, note, palette.text);
             below += note_size.y;
         }
         hints.extend(glance.paint(&painter, pos2(body_at.x, below + glance_gap)));
@@ -1144,6 +1165,47 @@ impl Overlay {
             window.wheel.resize(ui, details, &mut self.settings);
         }
         next_frame
+    }
+
+    /// The note under the panel's meters. When the login has expired it offers to refresh it,
+    /// then says how that's going. The bool is whether a click on it should refresh it.
+    fn panel_note(&self, state: &State, palette: &Palette) -> (Option<(String, Color32)>, bool) {
+        if !state.expired {
+            return (note(state, palette), false);
+        }
+        match &self.relogin {
+            Relogin::Idle => (Some(("Login token expired. Click here to refresh it.".into(), palette.amber)), true),
+            Relogin::Running(_) => (Some(("Refreshing the login…".into(), palette.dim)), false),
+            Relogin::Failed(why) => (Some((why.clone(), palette.amber)), true),
+        }
+    }
+
+    /// Runs Claude Code for a moment on a thread of its own, which refreshes its expired login,
+    /// then fetches usage with it.
+    fn start_relogin(&mut self, ctx: &egui::Context) {
+        let (done, result) = mpsc::channel();
+        let (ctx, refresh, state) = (ctx.clone(), self.refresh.clone(), self.state.clone());
+        std::thread::spawn(move || {
+            let _ = done.send(claude::refresh_login(&state));
+            let _ = refresh.send(());
+            ctx.request_repaint();
+        });
+        self.relogin = Relogin::Running(result);
+    }
+
+    /// Takes in how refreshing the login went, and forgets why it failed once the login works
+    /// again some other way.
+    fn finish_relogin(&mut self, state: &State) {
+        if let Relogin::Running(result) = &self.relogin {
+            match result.try_recv() {
+                Ok(Ok(())) | Err(TryRecvError::Disconnected) => self.relogin = Relogin::Idle,
+                Ok(Err(why)) => self.relogin = Relogin::Failed(why),
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if !state.expired && matches!(self.relogin, Relogin::Failed(_)) {
+            self.relogin = Relogin::Idle;
+        }
     }
 
     /// Repaints only when something on screen changes: the next animation frame, or the next
@@ -2097,6 +2159,7 @@ impl eframe::App for Overlay {
             repaint_after(ctx, due.saturating_duration_since(now));
         }
         self.keep_pet(ctx, &state);
+        self.finish_relogin(&state);
 
         // Like the sounds, tasks are followed whether or not anything shows them.
         if self.history.update(&state, self.settings.track_usage, Utc::now()) && self.settings_open {
@@ -2674,6 +2737,73 @@ mod tests {
         assert_eq!(order[..3], [Detail::ALL[1], Detail::ALL[2], Detail::ALL[0]], "focus goes with it");
         frame(&mut overlay, vec![key(egui::Key::ArrowUp)]);
         assert_eq!(overlay.settings.panel.details.items()[1].0, Detail::ALL[0]);
+    }
+
+    #[test]
+    fn an_expired_login_offers_a_click_to_refresh_it_and_says_how_that_went() {
+        let (_, mut overlay, state) = settings_overlay();
+        let expired = State { error: Some(claude::Error::Expired.to_string()), expired: true, ..(*state).clone() };
+        let note = |overlay: &Overlay, state: &State| {
+            let (note, click) = overlay.panel_note(state, &Palette::DARK);
+            (note.map(|(text, _)| text), click)
+        };
+        assert_eq!(note(&overlay, &expired), (Some("Login token expired. Click here to refresh it.".into()), true));
+
+        let (done, result) = mpsc::channel();
+        overlay.relogin = Relogin::Running(result);
+        overlay.finish_relogin(&expired);
+        assert_eq!(note(&overlay, &expired), (Some("Refreshing the login…".into()), false), "one click is enough");
+        let why = "Claude Code couldn't refresh the login. Click to try again.";
+        done.send(Err(why.into())).unwrap();
+        overlay.finish_relogin(&expired);
+        assert_eq!(note(&overlay, &expired), (Some(why.into()), true));
+
+        // Logged in again some other way, the failure is forgotten.
+        overlay.finish_relogin(&state);
+        assert!(matches!(overlay.relogin, Relogin::Idle));
+        assert_eq!(note(&overlay, &state), (None, false));
+    }
+
+    #[test]
+    fn a_click_on_the_expired_logins_note_refreshes_it_rather_than_reaching_the_panel() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        overlay.settings.double_click = DoubleClick::Details;
+        let state = State { error: Some(claude::Error::Expired.to_string()), expired: true, ..(*state).clone() };
+        let mut time = 0.0;
+        let mut frame = |overlay: &mut Overlay, events: Vec<egui::Event>| {
+            time += 0.05;
+            let input = egui::RawInput { events, time: Some(time), ..window(vec2(1600.0, 1200.0)) };
+            ctx.run_ui(input, |ui| {
+                overlay.main_panel(ui, &state);
+            })
+        };
+        let output = frame(&mut overlay, vec![]);
+        let note = drawn(&output, "Login token expired. Click here to refresh it.");
+        let at = note.center();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let double_click = |frame: &mut dyn FnMut(&mut Overlay, Vec<egui::Event>) -> egui::FullOutput,
+                            overlay: &mut Overlay,
+                            at: Pos2| {
+            // Half a second on from any click before, so egui doesn't count on from it.
+            for _ in 0..10 {
+                frame(overlay, vec![]);
+            }
+            frame(overlay, vec![egui::Event::PointerMoved(at)]);
+            frame(overlay, vec![button(at, true), button(at, false)]);
+            frame(overlay, vec![button(at, true), button(at, false)]);
+        };
+        // Clicked twice: one refresh, and the details stay shut.
+        double_click(&mut frame, &mut overlay, at);
+        assert!(matches!(overlay.relogin, Relogin::Running(_)));
+        assert!(!overlay.main.expanded);
+        // Beside it, a double-click opens them.
+        double_click(&mut frame, &mut overlay, note.left_center() - vec2(GAP / 2.0, 0.0));
+        assert!(overlay.main.expanded);
     }
 
     /// An overlay showing the demo's usage, the context it draws in, and that usage.

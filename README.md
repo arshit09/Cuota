@@ -159,7 +159,7 @@ The endpoint is undocumented, so a Claude update could break it.
 
 | Problem | Fix |
 |---|---|
-| *Login token expired* | Send a message in Claude Code. Cuota picks up the new token within 15 s. |
+| *Login token expired* | Click the message on the panel. Cuota runs Claude Code for a moment, which refreshes the login. |
 | *No Claude login found* / *Login rejected* | Run `claude`, then `/login`. |
 | *Rate limited* | Cuota backs off on its own. Try a longer `--interval`. |
 | Taskbar icons missing | Click **^** by the clock and drag the Cuota icons onto the taskbar. |
