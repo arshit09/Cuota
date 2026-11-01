@@ -698,6 +698,13 @@ pub fn place_window(window: HWND, x: i32, y: i32, size: Option<(i32, i32)>) {
     QUIET_MOVE.store(false, Ordering::Relaxed);
 }
 
+/// Moves a panel window's top-left to `x`, `y` and sizes it `width` by `height`, in pixels, in
+/// one step. Resized and then moved, as winit would, Windows can show it in between: resized
+/// where it was, a jump each time it grows or shrinks about its middle.
+pub fn set_bounds(window: HWND, x: i32, y: i32, width: i32, height: i32) {
+    unsafe { SetWindowPos(window, 0, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE) };
+}
+
 /// Cuts a window down to `rects`, in pixels from its top-left: elsewhere it neither draws nor
 /// takes clicks, which go to whatever is behind it.
 pub fn shape_window(window: HWND, rects: &[RECT]) {

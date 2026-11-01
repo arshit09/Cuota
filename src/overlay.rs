@@ -92,6 +92,8 @@ const SAVE_DELAY: Duration = Duration::from_secs(1);
 pub(crate) const FRAME_TIME: Duration = Duration::from_millis(16);
 /// After a Show as change, the reported window position is trusted only once the move landed.
 const SETTLE: Duration = Duration::from_millis(500);
+/// How long the panel takes to grow or shrink to fit what it shows.
+const RESHAPE_TIME: Duration = Duration::from_millis(250);
 /// A tray click this soon after the flyout closed is the click that closed it.
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
 /// How often the monitors are listed again, as they're plugged in, unplugged or rearranged.
@@ -401,6 +403,67 @@ impl Wheel {
     }
 }
 
+/// The shape a panel's window takes to fit what it shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Shape {
+    size: Vec2,
+    /// How tall it is without the details, which hang under it.
+    height: f32,
+    /// How far down beside Clawd the meters and what's with them start.
+    body: f32,
+}
+
+impl Shape {
+    /// `t` of the way from this shape to `to`.
+    fn toward(self, to: Self, t: f32) -> Self {
+        Self {
+            size: self.size + (to.size - self.size) * t,
+            height: self.height + (to.height - self.height) * t,
+            body: self.body + (to.body - self.body) * t,
+        }
+    }
+}
+
+/// Eases a panel's window from one shape to the next, a step a frame, so it grows and shrinks
+/// smoothly as sessions, notes and details come and go, rather than jumping.
+#[derive(Default)]
+struct Reshape {
+    /// The shape its window was last given.
+    now: Shape,
+    from: Shape,
+    to: Shape,
+    /// When it set out from `from`, in egui's seconds.
+    start: f64,
+}
+
+impl Reshape {
+    /// Heads for `to` from wherever it is, unless it's already heading there. With `jump` it's
+    /// there at once.
+    fn aim(&mut self, to: Shape, time: f64, jump: bool) {
+        if jump {
+            (self.now, self.from, self.to) = (to, to, to);
+        } else if to != self.to {
+            (self.from, self.to, self.start) = (self.now, to, time);
+        }
+    }
+
+    /// Moves along to `time`. Returns whether it has further to go.
+    fn step(&mut self, time: f64) -> bool {
+        if self.now == self.to {
+            return false;
+        }
+        let t = ((time - self.start) as f32 / RESHAPE_TIME.as_secs_f32()).max(0.0);
+        if t >= 1.0 {
+            self.now = self.to;
+            return false;
+        }
+        // Off at once and easing into place, but gently: in big steps the window outruns what's
+        // drawn in it.
+        self.now = self.from.toward(self.to, (t * std::f32::consts::FRAC_PI_2).sin());
+        true
+    }
+}
+
 /// Where a panel's middle stays as it grows and shrinks, so sessions starting and ending don't
 /// walk it down the screen.
 #[derive(Clone, Copy)]
@@ -418,7 +481,14 @@ struct Middle {
 struct PanelWindow {
     /// The native window, once it has been set up.
     window: Option<isize>,
+    /// The size that fits what it shows.
     size: Vec2,
+    /// Eases its window to that size.
+    shape: Reshape,
+    /// The size its window was last asked to be, on its way to `size`.
+    asked: Vec2,
+    /// The frame it was last drawn in, and at what Size.
+    drawn: Option<(u64, f32)>,
     /// The window's actual size last frame, to notice when something else resizes it.
     window_size: Option<Vec2>,
     /// How tall it is without the details, which hang under it. Zero until it's first sized.
@@ -466,14 +536,14 @@ impl PanelWindow {
     /// Keeps its middle where it is as it grows and shrinks from `before` to `height` tall
     /// (without the details; `before` is zero until it has been sized), though it stops at the
     /// screen's top and bottom, and moves back once it can. Expanded, it moves up or left as
-    /// little as it takes for the details under it to stay on screen too, and back again when
+    /// little as it takes for the details under it to stay on screen too, and back again as
     /// they close. A resize by mouse wheel moves it by `wheel_shift` instead, and keeps it on
-    /// screen too.
-    fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2, before: f32, wheel_shift: Option<Vec2>) {
-        let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else { return };
+    /// screen too. Returns where its window's top-left goes, when that moves.
+    fn fit_on_screen(&mut self, ctx: &egui::Context, size: Vec2, before: f32, wheel_shift: Option<Vec2>) -> Option<Pos2> {
+        let rect = ctx.input(|i| i.viewport().outer_rect)?;
         // Aside for the pointer, or sliding, it's where the slide puts it.
         if self.dodge.moving() {
-            return;
+            return None;
         }
         let (home, height) = (self.home(rect), self.height);
         let before = if before > 0.0 { before } else { height };
@@ -491,11 +561,13 @@ impl PanelWindow {
             let top = home.y.min(work.min.y + SCREEN_GAP);
             let bottom = (home.y + before).max(work.max.y - SCREEN_GAP);
             at.y = at.y.min(bottom - height).max(top);
-            if self.expanded || wheel_shift.is_some() {
+            // Closing, the details hang under it until the window has shrunk past them.
+            let details = self.expanded || size.y > height + 0.5;
+            if details || wheel_shift.is_some() {
                 let gap = Vec2::splat(SCREEN_GAP);
                 let fitted = at.min(work.max - size - gap).max(work.min + gap);
                 // Only the details move it back when they close; a resize stays where it landed.
-                if self.expanded {
+                if details {
                     self.lift = at - fitted;
                 } else {
                     at = fitted;
@@ -505,8 +577,22 @@ impl PanelWindow {
         let y = if wheel_shift.is_some() { at.y + height / 2.0 } else { middle };
         self.middle = Some(Middle { y, put: at });
         let to = (at - self.lift).round();
-        if to != rect.min {
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(to));
+        (to != rect.min).then_some(to)
+    }
+
+    /// Gives its window `size`, and moves it to `at` when given, in one step once it has its
+    /// native window.
+    fn put(&self, ctx: &egui::Context, size: Vec2, at: Option<Pos2>) {
+        let corner = at.or_else(|| ctx.input(|i| i.viewport().outer_rect).map(|rect| rect.min));
+        if let (Some(window), Some(corner)) = (self.window, corner) {
+            let ppp = ctx.pixels_per_point();
+            let (corner, size) = ((corner.to_vec2() * ppp).round(), (size * ppp).round());
+            win::set_bounds(window, corner.x as i32, corner.y as i32, size.x as i32, size.y as i32);
+            return;
+        }
+        ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
+        if let Some(at) = at {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
         }
     }
 
@@ -759,14 +845,17 @@ impl Overlay {
         let click = win::cursor();
         self.flyout = Flyout::Opening(taskbar, pos2(click.x as f32, click.y as f32) / ppp);
         self.shown_frame = ctx.cumulative_frame_nr();
-        self.place_flyout(ctx, self.main.size);
+        if let Some(at) = self.flyout_spot(self.main.size) {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
+        }
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
     }
 
-    /// Beside the taskbar, centered on the click, at `size` once that's known.
-    fn place_flyout(&self, ctx: &egui::Context, size: Vec2) {
-        let (Flyout::Opening(bar, click) | Flyout::Open(bar, click)) = self.flyout else { return };
+    /// Where the flyout's top-left goes while it's open: beside the taskbar, centered on the
+    /// click, at `size` once that's known.
+    fn flyout_spot(&self, size: Vec2) -> Option<Pos2> {
+        let (Flyout::Opening(bar, click) | Flyout::Open(bar, click)) = self.flyout else { return None };
         let size = if size == Vec2::ZERO { vec2(300.0, 80.0) } else { size };
         let along = |click: f32, start: f32, end: f32, length: f32| {
             (click - length / 2.0).clamp(start + 8.0, (end - length - 8.0).max(start + 8.0))
@@ -778,7 +867,7 @@ impl Overlay {
             let x = if bar.left() > 0.0 { bar.left() - size.x - 8.0 } else { bar.right() + 8.0 };
             pos2(x, along(click.y, bar.top(), bar.bottom(), size.y))
         };
-        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(position.round()));
+        Some(position.round())
     }
 
     /// Closes the flyout once it loses focus, unless the settings window took it.
@@ -1033,8 +1122,6 @@ impl Overlay {
         let scale = self.settings.size;
         let margin = MARGIN * scale;
         let palette = self.palette();
-        painter.rect_filled(full, CORNER * scale, palette.background(self.settings.opacity));
-        painter.rect_stroke(full, CORNER * scale, Stroke::new(1.0, palette.border), StrokeKind::Inside);
 
         // Lay everything out first so the window can be sized to fit.
         let view = &self.settings.panel;
@@ -1077,47 +1164,73 @@ impl Overlay {
         let gap = if clawd.x > 0.0 && body.x > 0.0 { GAP * scale } else { 0.0 };
         let row = vec2(clawd.x + gap + body.x, clawd.y.max(body.y));
         // Details scroll once they'd run past DETAILS_HEIGHT or off the screen.
-        let details = window.expanded.then(|| {
-            let room = work_area(&ctx).map_or(DETAILS_HEIGHT, |work| work.height() - row.y - 2.0 * (margin + SCREEN_GAP));
-            vec2(DETAILS_WIDTH, window.details_height.min(DETAILS_HEIGHT).min(room).max(0.0))
-        });
+        let room = work_area(&ctx).map_or(DETAILS_HEIGHT, |work| work.height() - row.y - 2.0 * (margin + SCREEN_GAP));
+        let details_size = vec2(DETAILS_WIDTH, window.details_height.min(DETAILS_HEIGHT).min(room).max(0.0));
+        let details = window.expanded.then_some(details_size);
         let inner = details.map_or(row, |details| vec2(row.x.max(details.x), row.y + details.y));
         let size = (inner + Vec2::splat(2.0 * margin)).round();
-        let before = std::mem::replace(&mut window.height, (row.y + 2.0 * margin).round());
+        window.size = size;
+
+        // The window eases into the shape that fits, a step a frame. Straight into the first, the
+        // one it shows again in, and one at a new Size, which everything in it has jumped to
+        // already.
+        let fits = Shape { size, height: (row.y + 2.0 * margin).round(), body: (row.y - body.y) / 2.0 };
+        let (time, frame) = (ctx.input(|i| i.time), ctx.cumulative_frame_nr());
+        let jump = window.drawn.is_none_or(|(drawn, drawn_scale)| frame > drawn + 1 || drawn_scale != scale);
+        window.drawn = Some((frame, scale));
+        window.shape.aim(fits, time, jump);
+        if window.shape.step(time) {
+            ctx.request_repaint();
+        }
+        let shape = window.shape.now;
+        let asked = shape.size.round();
+        let before = std::mem::replace(&mut window.height, shape.height.round());
         let wheel_shift = window.wheel.shift.take();
         // Scripts and window managers can resize it too (one put it back to its first size,
         // cropping the panel), so a size changed to anything else is asked for again. Only
         // when it changes, so a size Windows won't allow isn't asked for every frame.
         let window_size = ctx.input(|i| i.viewport().inner_rect).map(|r| r.size().round());
-        let resized = window_size != window.window_size && window_size.is_some_and(|actual| actual != size);
+        let resized = window_size != window.window_size && window_size.is_some_and(|actual| actual != asked);
         window.window_size = window_size;
-        if size != window.size || resized {
-            window.size = size;
-            ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
-            self.place_flyout(&ctx, size);
-            if !docked {
-                window.fit_on_screen(&ctx, size, before, wheel_shift);
-            }
+        if asked != window.asked || resized {
+            window.asked = asked;
+            let at = if docked { self.flyout_spot(asked) } else { window.fit_on_screen(&ctx, asked, before, wheel_shift) };
+            window.put(&ctx, asked, at);
         }
+        // Drawn in the shape the window has just been given, before the frame shows: drawn in
+        // the one it had, each step would show a step behind, Clawd jumping about as it went.
+        // egui still thinks the window is its old size, so this frame mustn't be cut to that.
+        let drawn = Rect::from_min_size(full.min, asked);
+        let mut painter = painter;
+        painter.set_clip_rect(drawn);
+        painter.rect_filled(drawn, CORNER * scale, palette.background(self.settings.opacity));
+        painter.rect_stroke(drawn, CORNER * scale, Stroke::new(1.0, palette.border), StrokeKind::Inside);
 
-        let origin = full.min + Vec2::splat(margin);
-        let details = details.map(|details| Rect::from_min_size(origin + vec2(0.0, row.y), vec2(inner.x, details.y)));
+        let origin = drawn.min + Vec2::splat(margin);
+        let row_height = shape.height - 2.0 * margin;
+        // What the window hasn't grown to show yet is cut off inside its border.
+        let inside = drawn.shrink(margin / 2.0);
+        let beside = painter.with_clip_rect(Rect::from_min_size(drawn.min, vec2(drawn.width(), shape.height)).shrink(margin / 2.0));
+        // The details show on as they close, while the window still has room for them.
+        let details = (window.expanded || shape.size.y > shape.height + 0.5).then(|| {
+            Rect::from_min_size(origin + vec2(0.0, row_height), vec2(row.x.max(details_size.x), details_size.y))
+        });
         let mut next_frame = None;
         if clawd.x > 0.0 {
             // Halfway down what's beside him, so a long list of details doesn't leave him
             // perched at the top with a gap under him.
-            let slot = Rect::from_min_size(origin + vec2(0.0, (row.y - clawd.y) / 2.0), clawd);
+            let slot = Rect::from_min_size(origin + vec2(0.0, (row_height - clawd.y) / 2.0), clawd);
             next_frame = self.clawd.paint(&painter, slot, animate, scale);
         }
-        let body_at = origin + vec2(clawd.x + gap, (row.y - body.y) / 2.0);
+        let body_at = origin + vec2(clawd.x + gap, shape.body);
         if status {
             let working = self.clawd.status().1;
-            let next = self.status.paint(&painter, body_at, working, animate, scale, palette);
+            let next = self.status.paint(&beside, body_at, working, animate, scale, palette);
             next_frame = next_frame.into_iter().chain(next).min();
         }
         let meters_at = body_at + vec2(0.0, status_size.y + status_gap);
         let mut below = meters_at.y + meters.size.y + note_gap;
-        let mut hints = meters.paint(&painter, meters_at);
+        let mut hints = meters.paint(&beside, meters_at);
         if let Some(note) = note {
             let at = pos2(body_at.x, below);
             if relogin && idle {
@@ -1127,17 +1240,19 @@ impl Overlay {
                     self.start_relogin(&ctx);
                 }
             }
-            painter.galley(at, note, palette.text);
+            beside.galley(at, note, palette.text);
             below += note_size.y;
         }
-        hints.extend(glance.paint(&painter, pos2(body_at.x, below + glance_gap)));
+        hints.extend(glance.paint(&beside, pos2(body_at.x, below + glance_gap)));
         for (i, (rect, hint)) in hints.into_iter().enumerate() {
             ui.interact(rect, ui.id().with(("hint", i)), Sense::hover()).on_hover_text(hint);
         }
 
         if let Some(area) = details {
-            painter.hline(full.left() + margin..=full.right() - margin, area.top() + 6.0, Stroke::new(1.0, palette.border));
+            let line = painter.with_clip_rect(inside);
+            line.hline(drawn.left() + margin..=drawn.right() - margin, area.top() + 6.0, Stroke::new(1.0, palette.border));
             let mut slot = ui.new_child(UiBuilder::new().max_rect(area));
+            slot.set_clip_rect(area.intersect(inside));
             // A scroll bar that shows up on a light panel. Hover text stays dark: egui gives
             // all windows one style for it.
             if *palette == Palette::LIGHT {
@@ -2607,9 +2722,7 @@ mod tests {
             overlay.settings.size = size;
             for details in [Details::default(), all.clone()] {
                 overlay.settings.panel.details = details;
-                let output = ctx.run_ui(window(vec2(1600.0, 1200.0)), |ui| {
-                    overlay.main_panel(ui, &state);
-                });
+                let output = settled_panel(&ctx, &mut overlay, &state);
                 // He's the only picture in the panel, clipped to his slot plus SPILL all round.
                 let slot = output.shapes.iter().find(|clipped| clipped.shape.texture_id() != egui::TextureId::default());
                 let slot = slot.expect("Clawd is drawn").clip_rect;
@@ -2618,6 +2731,113 @@ mod tests {
             }
             assert!(overlay.main.size.y > (animations::SIZE.y + 2.0 * MARGIN) * size, "the details run past him at {size}");
         }
+    }
+
+    /// Draws the panel until its window has eased into the shape that fits, and returns the
+    /// frame drawn in that shape.
+    fn settled_panel(ctx: &egui::Context, overlay: &mut Overlay, state: &State) -> egui::FullOutput {
+        for _ in 0..60 {
+            let output = ctx.run_ui(window(vec2(1600.0, 1200.0)), |ui| {
+                overlay.main_panel(ui, state);
+            });
+            if overlay.main.shape.now == overlay.main.shape.to {
+                return output;
+            }
+        }
+        panic!("the panel never settled into its shape");
+    }
+
+    /// The size a frame asked the window being drawn to be.
+    fn resized_to(output: &egui::FullOutput) -> Option<Vec2> {
+        let commands = &output.viewport_output.get(&ViewportId::ROOT)?.commands;
+        commands.iter().find_map(|command| match command {
+            ViewportCommand::InnerSize(size) => Some(*size),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_shape_eases_out_to_the_next_and_turns_from_wherever_it_got_to() {
+        let shape = |height: f32| Shape { size: vec2(300.0, height), height, body: 0.0 };
+        let mut reshape = Reshape::default();
+        reshape.aim(shape(100.0), 0.0, true);
+        assert_eq!(reshape.now, shape(100.0));
+        reshape.aim(shape(160.0), 1.0, false);
+        let time = RESHAPE_TIME.as_secs_f64();
+        let mut last = 100.0;
+        for i in 1..=20 {
+            let moving = reshape.step(1.0 + time * f64::from(i) / 20.0);
+            assert!(reshape.now.height > last, "it keeps growing");
+            assert_eq!(moving, i < 20);
+            last = reshape.now.height;
+        }
+        assert_eq!(reshape.now, shape(160.0));
+        // Off at once, and halfway there in a third of the time.
+        reshape.aim(shape(100.0), 2.0, false);
+        reshape.step(2.0 + time / 3.0);
+        assert!((reshape.now.height - 130.0).abs() < 0.1, "{:?}", reshape.now);
+        // Sent somewhere else midway, it heads there from where it got to.
+        let midway = reshape.now.height;
+        reshape.aim(shape(200.0), 2.0 + time / 3.0, false);
+        reshape.step(2.0 + time / 3.0 + time / 10.0);
+        assert!(reshape.now.height > midway && reshape.now.height < 200.0, "{:?}", reshape.now);
+        assert!(!reshape.step(3.0));
+        assert_eq!(reshape.now, shape(200.0));
+    }
+
+    #[test]
+    fn the_panel_grows_and_shrinks_a_step_a_frame_with_clawd_halfway_down_it() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        overlay.settings.panel.details = Details::default();
+        settled_panel(&ctx, &mut overlay, &state);
+        let small = overlay.main.size;
+        let all: Details = Detail::ALL.map(|detail| (detail, true)).into_iter().collect();
+        for (details, to) in [(all, None), (Details::default(), Some(small))] {
+            overlay.settings.panel.details = details;
+            let mut asked = vec![overlay.main.asked];
+            for _ in 0..60 {
+                let output = ctx.run_ui(window(vec2(1600.0, 1200.0)), |ui| {
+                    overlay.main_panel(ui, &state);
+                });
+                // Drawn in the window as it's asked to be, he stays halfway down it all the way.
+                let shape = overlay.main.shape.now;
+                let slot = output.shapes.iter().find(|clipped| clipped.shape.texture_id() != egui::TextureId::default());
+                let slot = slot.expect("Clawd is drawn").clip_rect;
+                assert!((slot.center().y - shape.height / 2.0).abs() <= 1.0, "he's at {slot:?} in {shape:?}");
+                asked.extend(resized_to(&output));
+                if shape == overlay.main.shape.to {
+                    break;
+                }
+            }
+            let target = to.unwrap_or(overlay.main.size);
+            assert_eq!(asked.last(), Some(&target));
+            assert!(asked.len() >= 6, "it gets there in steps, not at once: {asked:?}");
+            let steady = |pair: &[Vec2]| if to.is_some() { pair[1].y <= pair[0].y } else { pair[1].y >= pair[0].y };
+            assert!(asked.windows(2).all(steady) && asked[0].y != target.y, "{asked:?}");
+        }
+    }
+
+    #[test]
+    fn the_panel_jumps_to_a_new_size_setting_and_to_its_shape_when_shown_again() {
+        let (ctx, mut overlay, state) = settings_overlay();
+        let frame = |overlay: &mut Overlay, drawn: bool| {
+            let output = ctx.run_ui(window(vec2(1600.0, 1200.0)), |ui| {
+                if drawn {
+                    overlay.main_panel(ui, &state);
+                }
+            });
+            resized_to(&output)
+        };
+        // Its first shape.
+        frame(&mut overlay, true);
+        assert_eq!(overlay.main.asked, overlay.main.size);
+        // Everything in it is drawn bigger at once, so the window is too.
+        overlay.settings.size = 1.5;
+        assert_eq!(frame(&mut overlay, true), Some(overlay.main.size));
+        // Something new to show while it's hidden: it shows in the shape that fits.
+        frame(&mut overlay, false);
+        overlay.settings.panel.details = Detail::ALL.map(|detail| (detail, true)).into_iter().collect();
+        assert_eq!(frame(&mut overlay, true), Some(overlay.main.size));
     }
 
     /// Where the settings drew `text`, the first time.
@@ -2927,8 +3147,9 @@ mod tests {
             let rect = Rect::from_min_size(at, vec2(300.0, overlay.main.height));
             let before = std::mem::replace(&mut overlay.main.height, height);
             let size = vec2(300.0, height);
-            let output = panel_at(&ctx, overlay, rect, |ctx, overlay| overlay.main.fit_on_screen(ctx, size, before, None));
-            moved_to(&output).unwrap_or(at)
+            let mut moved = None;
+            panel_at(&ctx, overlay, rect, |ctx, overlay| moved = overlay.main.fit_on_screen(ctx, size, before, None));
+            moved.unwrap_or(at)
         };
         // First sized, it stays where it opened.
         let start = pos2(400.0, 300.0);
