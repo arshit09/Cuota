@@ -1,0 +1,8 @@
+# Every crawler is welcome: the point of this site is to be found.
+# Cloudflare may add its own rules above these.
+
+User-agent: *
+Allow: /
+Disallow: /tools/
+
+Sitemap: https://cuota.arshitvaghasiya.com/sitemap.xml

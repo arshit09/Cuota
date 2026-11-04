@@ -867,12 +867,12 @@
         flush();
       } else if ((m = line.match(/^#{1,6}\s+(.*)$/))) {
         flush();
-        if (headline) blocks.push(`<h4>${inline(m[1])}</h4>`);
+        if (headline) blocks.push(`<h3>${inline(m[1])}</h3>`);
         else headline = m[1];
       } else if ((m = line.match(/^\*\*([^*]+?)(?:\s*\((\d+)\))?\*\*:?$/))) {
         flush();
         const count = m[2] ? ` <span class="count">${m[2]}</span>` : "";
-        blocks.push(`<h4>${escape(m[1])}${count}</h4>`);
+        blocks.push(`<h3>${escape(m[1])}${count}</h3>`);
       } else if ((m = line.match(/^[*-]\s+(.*)$/))) {
         if (paragraph.length) flush();
         (list ||= []).push(`<li>${inline(m[1])}</li>`);
@@ -925,8 +925,9 @@
     });
   }
 
-  // Every release from GitHub, for the changelog and the newest one's version and size. The
-  // page shows v1.1.0 until then.
+  // Every release from GitHub, for the changelog and the newest one's version and size. Until
+  // then, and for crawlers that don't run scripts, the page shows the version written in
+  // index.html, so bump it there with each release.
   async function releases() {
     const box = $("[data-releases]");
     try {

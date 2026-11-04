@@ -1,0 +1,32 @@
+# Cuota
+
+> Cuota is a tiny, free and open-source Windows widget that shows how much of your Claude plan you've used: your session, weekly and per-model limits, and the time left until each one resets. Clawd keeps you company while Claude works. It's unofficial and not made by Anthropic.
+
+- Website: https://cuota.arshitvaghasiya.com/
+- Download: [CuotaSetup.exe](https://github.com/arshit09/Cuota/releases/latest/download/CuotaSetup.exe) for Windows 10 and 11, no admin rights needed
+- Code: [github.com/arshit09/Cuota](https://github.com/arshit09/Cuota), GPL-3.0
+- Made by: [Arshit Vaghasiya](https://arshitvaghasiya.com/)
+
+## What it shows
+
+- Session: your 5-hour window
+- Weekly: your usage this week
+- Per model: caps for models like Fable
+- Bars turn amber at 75% and red at 90%. Double-click the panel for reset times, your pace, and where your week went.
+
+## Ways to show it
+
+- Always on top, floating above your windows
+- On the desktop, behind your windows like a widget
+- As tiny icons in the taskbar, by the clock
+- As a desktop pet: Clawd walks your screen, naps when nothing's happening, and lets you know when Claude needs you
+
+## Requirements and privacy
+
+- Claude Code, logged in with a Pro or Max plan. Cuota reuses that login, so there's nothing new to sign in to.
+- Your token is sent only to Anthropic. Everything else stays on your PC.
+
+## Links
+
+- [Releases and changelog](https://github.com/arshit09/Cuota/releases)
+- [Report an issue](https://github.com/arshit09/Cuota/issues)

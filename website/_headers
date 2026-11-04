@@ -1,0 +1,13 @@
+# Cloudflare Pages reads this file and adds these headers; it isn't served.
+
+# The clip-making tool is deployed with the site but isn't a page.
+/tools/*
+  X-Robots-Tag: noindex
+
+# Every response: stay on HTTPS for a year, never be framed by another site,
+# never ask for the camera, microphone or location.
+/*
+  Strict-Transport-Security: max-age=31536000
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
